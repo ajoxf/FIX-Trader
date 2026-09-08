@@ -120,6 +120,13 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     #: guarantees you are never at the front of a queue.
     'DEFAULT_REPEG_DEAD_BAND_TICKS': 1.0,
     'DEFAULT_TIME_IN_FORCE': TimeInForce.DAY.value,
+    #: Which close flag a closing order carries. 'CLOSE' is the plain offset
+    #: flag and suits most venues. SHFE and INE price a close-today
+    #: differently from a close-yesterday, so those contracts want
+    #: 'CLOSE_TODAY', 'CLOSE_YESTERDAY', or 'AUTO' to pick from the trading
+    #: day the position was opened on. It is never 'OPEN': an opposite order
+    #: that does not say it is closing opens the other side instead.
+    'DEFAULT_CLOSE_OFFSET_MODE': 'CLOSE',
     'DEFAULT_COMMISSION_PER_CONTRACT': 0.0,
     'DEFAULT_EXCHANGE_FEE_PER_CONTRACT': 0.0,
     'DEFAULT_CLEARING_FEE_PER_CONTRACT': 0.0,
@@ -182,6 +189,7 @@ CONTRACT_DEFAULTS: Dict[str, str] = {
     'exit_on_timeout': 'DEFAULT_EXIT_ON_TIMEOUT',
     'repeg_dead_band_ticks': 'DEFAULT_REPEG_DEAD_BAND_TICKS',
     'time_in_force': 'DEFAULT_TIME_IN_FORCE',
+    'close_offset_mode': 'DEFAULT_CLOSE_OFFSET_MODE',
     'commission_per_contract': 'DEFAULT_COMMISSION_PER_CONTRACT',
     'exchange_fee_per_contract': 'DEFAULT_EXCHANGE_FEE_PER_CONTRACT',
     'clearing_fee_per_contract': 'DEFAULT_CLEARING_FEE_PER_CONTRACT',

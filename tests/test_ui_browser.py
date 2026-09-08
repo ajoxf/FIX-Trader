@@ -71,6 +71,20 @@ SNAPSHOT = {
         'orders': [], 'pnl_today': 0.0, 'trades_today': 0,
         'last_event': 'BUY 5 @ 0.48', 'target_missing': None,
     }],
+    'portfolio': {
+        'rows': [{
+            'key': 'fef', 'name': 'Iron ore Oct/Nov', 'symbol': 'FEFV6-FEFX6',
+            'decimals': 4, 'side': 'BUY', 'qty': 5, 'avg_price': 0.48,
+            'entry_z': -2.14, 'break_even': 0.518, 'target': 0.57,
+            'stop': 0.18, 'opened_at': datetime.now(timezone.utc).isoformat(),
+            'open_pnl': -20.0, 'margin_locked': 1300.0,
+            'tickets': ['E000004', 'E000005'], 'mid': 0.485,
+            'venue_qty': 5.0, 'venue_long': 5.0, 'venue_short': None,
+            'venue_readable': True, 'both_sides_open': False, 'agrees': True,
+        }],
+        'venue_readable': True, 'open_pnl': -20.0, 'margin': 1300.0,
+        'realised_today': 62.0, 'trades_today': 2,
+    },
 }
 
 
@@ -107,7 +121,7 @@ def test_the_window_renders_every_field_without_a_page_error(server):
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
-        assert page.locator('.win').count() == 1
+        assert page.locator('.contractwin').count() == 1
         assert page.locator('.state').inner_text() == 'IN'
         assert page.locator('.bidc .v').inner_text() == '0.4800'
         assert page.locator('.askc .v').inner_text() == '0.4900'
@@ -209,7 +223,7 @@ def test_a_stale_quote_greys_the_prices_and_says_so(server):
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
         page.wait_for_timeout(900)
-        assert 'stale' in (page.locator('.win').get_attribute('class') or '')
+        assert 'stale' in (page.locator('.contractwin').get_attribute('class') or '')
         assert page.locator('.state').inner_text() == 'HALTED'
         # ...and the way OUT is still available
         assert page.locator('.close-now').is_enabled()
@@ -254,11 +268,87 @@ def test_eight_windows_fit_a_desk_without_the_body_scrolling_sideways(server):
         page = browser.new_page(viewport={'width': 1920, 'height': 1080})
         page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
         page.goto(url, wait_until='domcontentloaded')
-        page.wait_for_selector('.win')
+        page.wait_for_selector('.contractwin')
         page.wait_for_timeout(900)
-        assert page.locator('.win').count() == 8
+        assert page.locator('.contractwin').count() == 8
         overflow = page.evaluate(
             "document.body.scrollWidth - document.body.clientWidth")
         assert overflow <= 0
+        browser.close()
+    assert errors == []
+
+
+# -- the Positions window -------------------------------------------------
+
+def test_the_positions_window_lists_every_open_position_with_its_tickets(server):
+    """The screen that answers 'what am I in, across everything'."""
+    url, _ = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.pv-rows tr')
+        row = page.locator('.pv-rows tr').first.inner_text()
+        for expected in ('Iron ore Oct/Nov', 'BUY', '0.4800', '-2.14',
+                         '0.5180', '0.5700', '$1,300', 'E000004'):
+            assert expected in row, f"{expected!r} missing from {row!r}"
+        assert 'realised today' in page.locator('.pv-foot').inner_text()
+        browser.close()
+    assert errors == []
+
+
+def test_both_sides_open_is_called_out_and_never_netted_to_flat(server):
+    """Long and short at once is a close that went out as an open. Netting it
+    to zero would show the desk as flat while it pays margin on both."""
+    url, tmp = server
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['portfolio']['rows'][0].update({
+        'venue_qty': 0.0, 'venue_long': 5.0, 'venue_short': 5.0,
+        'both_sides_open': True, 'agrees': False})
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.pv-rows tr')
+        page.wait_for_timeout(900)
+        row = page.locator('.pv-rows tr').first
+        text = row.inner_text()
+        assert 'LONG 5' in text and 'SHORT 5' in text
+        assert 'hedged' in (row.get_attribute('class') or '')
+        browser.close()
+    assert errors == []
+
+
+def test_an_unreadable_venue_says_so_instead_of_showing_an_empty_table(server):
+    url, tmp = server
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['portfolio']['venue_readable'] = False
+    snap['portfolio']['rows'][0]['venue_readable'] = False
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.pv-rows tr')
+        page.wait_for_timeout(900)
+        banner = page.locator('.pv-banner')
+        assert not banner.is_hidden()
+        assert 'NOT confirmation' in banner.inner_text()
+        assert 'could not read' in page.locator('.pv-rows tr').first.inner_text()
+        browser.close()
+    assert errors == []
+
+
+def test_closing_from_the_positions_window_asks_and_then_sends(server):
+    url, tmp = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.pv-rows tr')
+        page.locator('.pv-rows tr .btn').first.click()
+        page.wait_for_selector('#modal:not(.hidden)')
+        assert 'tickets' in page.locator('#modal-body').inner_text()
+        page.locator('#modal-confirm').click()
+        page.wait_for_timeout(400)
+        sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
+        assert sent['action'] == 'close_now' and sent['contract'] == 'fef'
         browser.close()
     assert errors == []

@@ -34,6 +34,9 @@ These change what the code sends, so they are worth asking before writing it.
 6. **Trading-hours source.** Session windows are configured per contract today.
    If the venue publishes them in the security definition, read them instead.
 7. **UAT endpoints and hours**, and whether UAT comp ids differ from PROD.
+8. **Which offset flag does each contract want?** Tag 77 `PositionEffect`, or
+   the broker's `CombOffsetFlag`, and whether the close-today / close-yesterday
+   split applies. See "Closing" below — this one is not cosmetic.
 
 ## The message set
 
@@ -65,12 +68,42 @@ These change what the code sends, so they are worth asking before writing it.
 - A reject carries **the venue's own text**, verbatim, into
   `GatewayEvent.text` — tag 58 and tag 103 where they are sent.
 
-## Reduce-only
+## Closing — the offset flag is not optional
 
-A closing order must be capped at the open position and, where the venue
-supports the flag, sent reduce-only. `FakeGateway` refuses an oversized close
-with `"Order would not reduce position size"` on purpose: an exit that
-overfills opens the opposite side of a spread the desk thought it had left.
+**A close is never a bare opposite order.** On a venue that keeps long and
+short apart — every Chinese exchange Orient routes to (SHFE, DCE, CZCE, INE,
+GFEX) takes an offset flag on every order — an opposite order that does not
+say it is closing is an order to OPEN the other way. The desk ends up long and
+short at once, both live, both posting margin, and a screen that nets would
+show it as flat.
+
+This is the FIX equivalent of closing an MT5 ticket, and the system already
+carries everything the wiring needs:
+
+| Ours | What it becomes on the wire |
+|---|---|
+| `OrderRequest.position_effect` | `PositionEffect(77)`: `O` open, `C` close. On the Chinese exchanges, the broker's `CombOffsetFlag` — Open / Close / CloseToday / CloseYesterday |
+| `OrderRequest.reduce_only` | The venue's reduce-only flag where it has one. **A cap, not an instruction** — sent as well as the effect, never instead of it |
+| `OrderRequest.position_id` | Our own position, for a venue that wants a position reference |
+| `OrderRequest.close_tickets` | The venue execution ids of the fills that built the position — its tickets |
+| `qty` | Already capped at what is open on that side; a close can only reduce |
+
+`close_offset_mode` is per contract: `CLOSE` (the plain flag, the default),
+`CLOSE_TODAY`, `CLOSE_YESTERDAY`, or `AUTO`, which picks from the trading day
+the position was opened on. **SHFE and INE price a close-today differently
+from a close-yesterday**, so getting this wrong is a real cost rather than a
+formality — ask Orient which flag each contract wants.
+
+**Unknown degrades to `CLOSE`, never to `OPEN`.** A close whose flag could not
+be determined is still a close; the other way round turns an exit into a
+second position, which is the failure this whole mechanism exists to prevent.
+
+`FakeGateway` models this properly rather than netting: it keeps the two sides
+apart, obeys the flag it is given, and refuses an oversized close with
+`"Order would not reduce position size"`. Two tests hold the line — one sends
+an opposite order flagged OPEN and asserts the desk ends up with **both sides
+live**, and its control sends the same order flagged CLOSE and asserts nothing
+is left.
 
 ## Until it is wired
 

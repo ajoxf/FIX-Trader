@@ -155,9 +155,12 @@ function windowFor(key) {
     await command(on ? 'algo_off' : 'algo_on', key);
   };
   el.querySelector('.close-now').onclick = async () => {
-    const ok = await ask('Close ' + key + '?',
-      'Every open contract on this window is closed at market, now. ' +
-      'This crosses the spread.', 'CLOSE NOW');
+    const name = el.querySelector('.title').textContent;
+    const ok = await ask('Close ' + name + '?',
+      'The position is closed at market, now — this crosses the spread. ' +
+      'The algo on this contract is stood down with it, so it does not ' +
+      're-enter on the next pass; switch it back on when you want it.',
+      'CLOSE NOW');
     if (ok) { await command('close_now', key); toast('ORDER', 'CLOSING', key); }
   };
   el.querySelector('.cog').onclick = () => {
@@ -348,6 +351,130 @@ function renderContract(c) {
   }
 }
 
+/* -- the Positions window -------------------------------------------------
+ *
+ * The per-contract window shows its own position. This is the one screen that
+ * answers "what am I in, across everything" — and it puts what the VENUE says
+ * beside what this book holds, because the two disagreeing is the whole
+ * reason to look.
+ */
+
+function positionsWindow() {
+  let el = document.querySelector('.win[data-key="__positions__"]');
+  if (el) return el;
+  const tpl = document.getElementById('positions-template');
+  el = tpl.content.firstElementChild.cloneNode(true);
+  el.querySelector('.close').onclick = () => {
+    state.closed.add('__positions__');
+    localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));
+    el.remove();
+    renderTabs();
+  };
+  makeDraggable(el, '__positions__');
+  document.getElementById('desktop').prepend(el);
+  const place = state.places['__positions__'];
+  if (place) placeWindow(el, place.x, place.y);
+  return el;
+}
+
+function venueCell(r) {
+  if (!r.venue_readable) return 'could not read';
+  if (r.both_sides_open) {
+    // Long and short at once is a close that went out as an open. It is
+    // never netted to zero and shown as flat.
+    return 'LONG ' + r.venue_long + ' + SHORT ' + r.venue_short;
+  }
+  if (r.venue_qty === null || r.venue_qty === undefined) return 'nothing';
+  return signed(r.venue_qty, 0) + (r.agrees ? '' : '  ≠ book');
+}
+
+function renderPositions(snap) {
+  if (state.closed.has('__positions__')) return;
+  const p = snap.portfolio || { rows: [], venue_readable: true };
+  const el = positionsWindow();
+  const rows = p.rows || [];
+
+  el.querySelector('.pv-count').textContent =
+    rows.length + (rows.length === 1 ? ' open' : ' open');
+  el.querySelector('.pv-empty').classList.toggle('hidden', rows.length > 0);
+
+  // "could not read" is not "flat", and the table must not imply it is.
+  const banner = el.querySelector('.pv-banner');
+  const unreadable = p.venue_readable === false;
+  banner.classList.toggle('hidden', !unreadable);
+  if (unreadable) {
+    banner.textContent = 'The venue could not be read, so what is shown is ' +
+      'this book alone. It is NOT confirmation that the account is flat.';
+  }
+
+  const body = el.querySelector('.pv-rows');
+  body.innerHTML = '';
+  rows.forEach((r) => {
+    const d = r.decimals === undefined ? 4 : r.decimals;
+    const tr = document.createElement('tr');
+    if (r.both_sides_open) tr.className = 'hedged';
+    else if (r.venue_readable && !r.agrees) tr.className = 'disagrees';
+    const cells = [
+      ['txt', r.name],
+      ['txt', r.side ? '<span class="tag ' + r.side + '">' + r.side + '</span>' : DASH],
+      ['r', r.qty === null ? DASH : String(r.qty)],
+      ['r', num(r.avg_price, d)],
+      ['r', num(r.mid, d)],
+      ['r', signed(r.entry_z, 2)],
+      ['r', num(r.break_even, d)],
+      ['r', num(r.target, d)],
+      ['r', num(r.stop, d)],
+      ['r', held(r.opened_at)],
+      ['r', r.margin_locked === null || r.margin_locked === undefined ? DASH
+        : '$' + Math.round(r.margin_locked).toLocaleString()],
+      ['r pnl ' + (r.open_pnl > 0 ? 'up' : r.open_pnl < 0 ? 'dn' : ''), money(r.open_pnl)],
+      ['txt', venueCell(r)],
+      ['tickets', (r.tickets || []).join(' ') || DASH],
+    ];
+    cells.forEach(([cls, html]) => {
+      const td = document.createElement('td');
+      td.className = cls;
+      td.innerHTML = html;
+      tr.appendChild(td);
+    });
+    const act = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.className = 'btn danger';
+    btn.textContent = 'CLOSE';
+    btn.disabled = !r.side;
+    btn.onclick = async () => {
+      const ok = await ask('Close ' + r.name + '?',
+        'The position is closed at market by its own tickets, now. The algo ' +
+        'on this contract is stood down with it.', 'CLOSE NOW');
+      if (ok) await command('close_now', r.key);
+    };
+    act.appendChild(btn);
+    tr.appendChild(act);
+    body.appendChild(tr);
+  });
+
+  const total = el.querySelector('.pv-total');
+  total.innerHTML = '';
+  if (rows.length) {
+    const spec = [['txt', rows.length + ' open'], ['', ''], ['', ''], ['', ''],
+      ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''],
+      ['r', p.margin === null ? DASH : '$' + Math.round(p.margin).toLocaleString()],
+      ['r', money(p.open_pnl)], ['', ''], ['', ''], ['', '']];
+    spec.forEach(([cls, text]) => {
+      const td = document.createElement('td');
+      td.className = cls;
+      td.textContent = text;
+      total.appendChild(td);
+    });
+  }
+
+  el.querySelector('.pv-foot').textContent =
+    'realised today ' + money(p.realised_today) + ' · ' +
+    (p.trades_today || 0) + ' trades';
+  el.querySelector('.pv-day').textContent = p.venue_readable
+    ? 'book and venue agree' : 'venue unreadable';
+}
+
 /* -- chrome --------------------------------------------------------------- */
 
 function renderTabs() {
@@ -357,6 +484,7 @@ function renderTabs() {
     const b = document.createElement('button');
     b.className = 'tk' + (state.focused === el.dataset.key ? ' act' : '');
     b.textContent = el.querySelector('.title').textContent;
+    if (el.dataset.key === '__positions__') b.classList.add('wide-tab');
     b.onclick = () => { el.scrollIntoView({ block: 'nearest' }); state.focused = el.dataset.key; };
     host.appendChild(b);
   });
@@ -429,8 +557,9 @@ async function tick() {
     const res = await fetch('/api/snapshot', { cache: 'no-store' });
     const snap = await res.json();
     renderChrome(snap);
-    const seen = new Set();
+    const seen = new Set(['__positions__']);
     (snap.contracts || []).forEach((c) => { seen.add(c.key); renderContract(c); });
+    renderPositions(snap);
     document.querySelectorAll('.win').forEach((el) => {
       if (!seen.has(el.dataset.key)) el.remove();
     });
@@ -490,7 +619,7 @@ document.getElementById('add-panel').onclick = () => {
   }
   state.closed.forEach((key) => {
     const b = document.createElement('button');
-    b.textContent = key;
+    b.textContent = key === '__positions__' ? 'Positions' : key;
     b.onclick = () => {
       state.closed.delete(key);
       localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));

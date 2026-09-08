@@ -3,7 +3,8 @@ hides go straight to a live account."""
 import pytest
 
 from fixtrader.fake_gateway import FakeGateway, SimContract
-from fixtrader.models import Intent, OrderRequest, OrderState, OrderType, Side
+from fixtrader.models import (Intent, OrderRequest, OrderState, OrderType,
+                              PositionEffect, Side)
 
 
 def gw(**kw):
@@ -14,9 +15,17 @@ def gw(**kw):
     return g
 
 
-def market(key='fef', side=Side.BUY, qty=5.0, intent=Intent.OPEN):
+def market(key='fef', side=Side.BUY, qty=5.0, intent=Intent.OPEN,
+           effect=None):
+    """A market order. The effect follows the intent unless a test is
+    deliberately sending the WRONG one — which is the failure worth having a
+    simulator for."""
+    if effect is None:
+        effect = (PositionEffect.CLOSE if intent is Intent.CLOSE
+                  else PositionEffect.OPEN)
     return OrderRequest(contract_key=key, side=side, qty=qty,
-                        order_type=OrderType.MARKET, intent=intent)
+                        order_type=OrderType.MARKET, intent=intent,
+                        position_effect=effect)
 
 
 def test_a_market_order_crosses_the_executable_side():
@@ -63,7 +72,7 @@ def test_a_close_with_no_position_is_refused():
     g = gw()
     g.send(market(side=Side.SELL, qty=1, intent=Intent.CLOSE))
     rejects = [e for e in g.drain_events() if e.kind == 'REJECTED']
-    assert rejects and 'no position' in rejects[0].text
+    assert rejects and 'no position to close' in rejects[0].text
 
 
 def test_a_closed_instrument_rejects_in_the_venues_own_words():
@@ -106,6 +115,44 @@ def test_averaging_and_flattening_keep_the_position_honest():
     assert pos.qty == 4.0 and pos.avg_price == pytest.approx(0.56)
     g.send(market(side=Side.SELL, qty=4, intent=Intent.CLOSE))
     assert g.positions() == []
+
+
+def test_an_opposite_order_sent_as_an_OPEN_does_not_close_anything():
+    """THE failure. On a venue that keeps the two sides apart — every Chinese
+    exchange Orient routes to — an opposite order that does not carry a close
+    flag opens the other side. The desk is then long AND short, both live,
+    both posting margin, and a netting screen would call it flat."""
+    g = gw()
+    g.send(market(side=Side.BUY, qty=3))
+    g.drain_events()
+    g.send(market(side=Side.SELL, qty=3, effect=PositionEffect.OPEN))
+    g.drain_events()
+
+    pos = g.positions()[0]
+    assert pos.qty == 0.0                       # NET reads flat...
+    assert pos.long_qty == 3.0 and pos.short_qty == 3.0   # ...it is not
+    assert pos.is_gross_hedged
+    assert pos.margin == pytest.approx(260.0 * 6)         # margin on BOTH
+
+
+def test_the_same_order_with_a_close_flag_actually_closes():
+    """The control for the test above: one flag is the whole difference."""
+    g = gw()
+    g.send(market(side=Side.BUY, qty=3))
+    g.drain_events()
+    g.send(market(side=Side.SELL, qty=3, effect=PositionEffect.CLOSE))
+    g.drain_events()
+    assert g.positions() == []
+
+
+def test_a_close_reduces_the_other_side_not_its_own():
+    g = gw()
+    g.send(market(side=Side.SELL, qty=5))        # open a short
+    g.drain_events()
+    g.send(market(side=Side.BUY, qty=2, effect=PositionEffect.CLOSE))
+    g.drain_events()
+    pos = g.positions()[0]
+    assert pos.short_qty == 3.0 and pos.long_qty is None
 
 
 def test_margin_is_reported_so_the_profit_target_can_be_priced():

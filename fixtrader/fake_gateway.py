@@ -22,8 +22,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from .models import (BookTop, Fill, GatewayEvent, Intent, OrderRequest,
-                     OrderState, OrderType, SecurityDef, SessionState, Side,
-                     VenueOrder, VenuePosition)
+                     OrderState, OrderType, PositionEffect, SecurityDef,
+                     SessionState, Side, VenueOrder, VenuePosition)
 from .gateway import CLORDID_PREFIX
 
 
@@ -98,8 +98,16 @@ class FakeGateway:
         self.sim: Dict[str, SimContract] = {c.key: c for c in (contracts or [])}
         self._books: Dict[str, BookTop] = {}
         self._orders: Dict[str, VenueOrder] = {}
-        self._positions: Dict[str, VenuePosition] = {}
+        #: LONG and SHORT kept apart, the way an offset-flag venue keeps
+        #: them. Netting here would hide the failure this simulator exists to
+        #: catch: an opposite order sent WITHOUT a close flag opens a second
+        #: position, and a netting book would quietly show it as a close.
+        self._long: Dict[str, Dict[str, float]] = {}
+        self._short: Dict[str, Dict[str, float]] = {}
         self._events: List[GatewayEvent] = []
+        #: The offset flag each order was sent with. The venue obeys it; it
+        #: does not guess what the sender meant.
+        self._effects: Dict[str, PositionEffect] = {}
         self._state = SessionState.DOWN
         self._seq = 0
         self._exec_seq = 0
@@ -216,8 +224,9 @@ class FakeGateway:
         vo.state = OrderState.WORKING
         self._emit("ACK", vo, "accepted")
 
+        self._effects[clordid] = order.position_effect
         if order.order_type is OrderType.MARKET:
-            self._cross(vo, order.intent)
+            self._cross(vo)
         else:
             self._match_resting()
         return clordid
@@ -237,20 +246,20 @@ class FakeGateway:
         if order.qty <= 0:
             return "Order quantity must be positive"
 
-        if order.intent is Intent.CLOSE:
-            # The rule that matters most in here. A close that exceeds the
-            # open position would REVERSE it, and a simulator that quietly
-            # allowed that would let the bug through to a live account.
-            pos = self._positions.get(order.contract_key)
-            open_qty = abs(pos.qty) if pos else 0.0
+        if order.position_effect.is_close:
+            # The rule that matters most in here. A close that exceeds what is
+            # open on THAT SIDE would reverse it, and a simulator that quietly
+            # allowed it would let the bug through to a live account.
+            book = self._short if order.side is Side.BUY else self._long
+            open_qty = (book.get(order.contract_key) or {}).get('qty', 0.0)
             if open_qty <= 0:
-                return "Reduce-only order with no position to reduce"
+                return ("Close order with no position to close on that side")
             if order.qty > open_qty + 1e-9:
                 return (f"Order would not reduce position size "
                         f"({order.qty:g} against {open_qty:g} open)")
         return None
 
-    def _cross(self, vo: VenueOrder, intent: Intent = Intent.OPEN) -> None:
+    def _cross(self, vo: VenueOrder) -> None:
         book = self._books.get(vo.contract_key)
         px = book.executable(vo.side) if book else None
         if px is None:
@@ -262,7 +271,7 @@ class FakeGateway:
         take = vo.remaining if available is None else min(vo.remaining, available)
         if take <= 0:
             return
-        self._fill(vo, take, px, intent)
+        self._fill(vo, take, px)
 
     def _match_resting(self) -> None:
         """A resting limit fills when the book trades through it."""
@@ -281,8 +290,7 @@ class FakeGateway:
                 size = book.bid_size if book.bid_size is not None else vo.remaining
                 self._fill(vo, min(vo.remaining, size), book.bid)
 
-    def _fill(self, vo: VenueOrder, qty: float, price: float,
-              intent: Intent = Intent.OPEN) -> None:
+    def _fill(self, vo: VenueOrder, qty: float, price: float) -> None:
         if qty <= 0:
             return
         vo.filled_qty += qty
@@ -291,7 +299,9 @@ class FakeGateway:
                     clordid=vo.clordid, contract_key=vo.contract_key,
                     side=vo.side, qty=qty, price=price,
                     fees=None, venue_ts=self.now, our_ts=self.now)
-        self._apply_to_position(vo.contract_key, vo.side, qty, price)
+        self._apply_to_position(vo.contract_key, vo.side, qty, price,
+                                self._effects.get(vo.clordid,
+                                                  PositionEffect.OPEN))
 
         if vo.remaining <= 1e-9:
             vo.state = OrderState.FILLED
@@ -302,24 +312,46 @@ class FakeGateway:
                        f"filled {qty:g} of {vo.qty:g} @ {price:g}", fill)
 
     def _apply_to_position(self, key: str, side: Side, qty: float,
-                           price: float) -> None:
-        pos = self._positions.get(key) or VenuePosition(contract_key=key, qty=0.0)
-        signed = qty * side.sign
-        new_qty = pos.qty + signed
-        if pos.qty == 0 or (pos.qty > 0) == (signed > 0):
-            total = abs(pos.qty) + qty
-            pos.avg_price = (((pos.avg_price or 0.0) * abs(pos.qty)) +
-                             price * qty) / total if total else price
-        elif abs(new_qty) < 1e-9:
-            pos.avg_price = None
-        pos.qty = round(new_qty, 10)
+                           price: float, effect: PositionEffect) -> None:
+        """The venue obeys the flag it was given.
+
+        An order flagged OPEN adds to its own side WHATEVER is open on the
+        other one — which is the whole point: a desk that closes by sending a
+        bare opposite order ends up long AND short, both live, both posting
+        margin. An order flagged as a close reduces the OTHER side.
+        """
+        if effect.is_close:
+            book = self._short if side is Side.BUY else self._long
+            row = book.get(key)
+            if row:
+                row['qty'] = round(row['qty'] - qty, 10)
+                if row['qty'] <= 1e-9:
+                    book.pop(key, None)
+            return
+
+        book = self._long if side is Side.BUY else self._short
+        row = book.setdefault(key, {'qty': 0.0, 'avg': price})
+        total = row['qty'] + qty
+        row['avg'] = ((row['avg'] * row['qty']) + price * qty) / total
+        row['qty'] = round(total, 10)
+
+    def _position_of(self, key: str) -> Optional[VenuePosition]:
+        long_row = self._long.get(key) or {}
+        short_row = self._short.get(key) or {}
+        long_qty = long_row.get('qty', 0.0)
+        short_qty = short_row.get('qty', 0.0)
+        if not long_qty and not short_qty:
+            return None
+        net = round(long_qty - short_qty, 10)
+        avg = (long_row.get('avg') if long_qty >= short_qty
+               else short_row.get('avg'))
         c = self.sim.get(key)
-        pos.margin = (c.margin_per_contract * abs(pos.qty)
-                      if c and pos.qty else None)
-        if abs(pos.qty) < 1e-9:
-            self._positions.pop(key, None)
-        else:
-            self._positions[key] = pos
+        gross = long_qty + short_qty
+        return VenuePosition(contract_key=key, qty=net, avg_price=avg,
+                             margin=(c.margin_per_contract * gross
+                                     if c and gross else None),
+                             long_qty=long_qty or None,
+                             short_qty=short_qty or None)
 
     def cancel(self, clordid: str) -> None:
         vo = self._orders.get(clordid)
@@ -355,7 +387,12 @@ class FakeGateway:
     def positions(self) -> Optional[List[VenuePosition]]:
         if not self.readable:
             return None                   # could not read — NOT "flat"
-        return list(self._positions.values())
+        out = []
+        for key in set(self._long) | set(self._short):
+            pos = self._position_of(key)
+            if pos is not None:
+                out.append(pos)
+        return out
 
     def drain_events(self) -> List[GatewayEvent]:
         out, self._events = self._events, []

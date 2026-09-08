@@ -193,8 +193,7 @@ def test_an_unreadable_venue_leaves_the_book_incomplete_not_flat(tmp_path):
 def test_a_position_the_book_cannot_explain_is_listed_never_closed(tmp_path):
     engine, gw, db, cfg = build(tmp_path)
     # something at the venue that this book knows nothing about
-    gw._positions['fef'] = __import__('fixtrader.models', fromlist=['x']).VenuePosition(
-        contract_key='fef', qty=-2.0, avg_price=0.5)
+    gw._short['fef'] = {'qty': 2.0, 'avg': 0.5}
     engine2 = Engine(cfg, gw, db=db, simulated=True)
     engine2.start()
     assert engine2.unclaimed and 'Nothing has been closed' in engine2.unclaimed[0]['text']
@@ -246,3 +245,110 @@ def test_the_entry_z_recorded_is_the_one_the_decision_fired_at(tmp_path):
     assert rt.position is not None
     assert rt.position.entry_z == pytest.approx(decided_z)
     assert rt.position.entry_std == pytest.approx(rt.window.std)
+
+
+def test_every_close_carries_an_explicit_close_flag_and_its_tickets(tmp_path):
+    """A close is never a bare opposite order. It says it is closing, names
+    the position it closes, and carries that position's venue tickets."""
+    from fixtrader.models import PositionEffect
+    engine, gw, db, cfg = build(tmp_path)
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    pos = rt.position
+    assert pos is not None and pos.tickets
+
+    sent = []
+    original = gw.send
+    gw.send = lambda req: (sent.append(req), original(req))[1]
+
+    engine.close_now('fef')
+    assert len(sent) == 1
+    req = sent[0]
+    assert req.position_effect is PositionEffect.CLOSE
+    assert req.position_effect.is_close
+    assert req.reduce_only is True          # the cap, as well as the flag
+    assert req.position_id == pos.id
+    assert req.close_tickets == pos.tickets
+    assert req.qty == pos.qty               # never more than is open
+
+
+def test_a_close_leaves_no_second_position_at_the_venue(tmp_path):
+    """End to end against a venue that keeps the two sides apart: after a
+    close there is nothing left, not a matched pair posting margin."""
+    engine, gw, db, cfg = build(tmp_path)
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    assert gw.positions()[0].short_qty == 5.0
+
+    engine.close_now('fef')
+    engine.poll(now=gw.now)
+    assert gw.positions() == []
+    assert rt.position is None
+    # and the algo went down with it, so it does not re-enter on the z that
+    # is still sitting where it was
+    assert cfg.contracts['fef'].algo_on is False
+
+
+def test_the_close_flag_follows_the_contract_setting(tmp_path):
+    """SHFE and INE price a close-today differently from a close-yesterday,
+    so the contract chooses. AUTO reads it from the day it was opened."""
+    from fixtrader.models import PositionEffect
+    from fixtrader.executor import close_effect
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 9, 8, 9, 0, tzinfo=timezone.utc)
+
+    class P:
+        opened_session = '2026-09-08'
+
+    class Older:
+        opened_session = '2026-09-07'
+
+    assert close_effect({'close_offset_mode': 'CLOSE'}, P(), now) \
+        is PositionEffect.CLOSE
+    assert close_effect({'close_offset_mode': 'AUTO'}, P(), now) \
+        is PositionEffect.CLOSE_TODAY
+    assert close_effect({'close_offset_mode': 'AUTO'}, Older(), now) \
+        is PositionEffect.CLOSE_YESTERDAY
+
+
+def test_an_unknown_close_flag_degrades_to_CLOSE_and_never_to_OPEN(tmp_path):
+    """Unknown is not a reason to open a position. A close whose flag could
+    not be worked out is still a close."""
+    from fixtrader.models import PositionEffect
+    from fixtrader.executor import close_effect
+    from datetime import datetime, timezone
+    now = datetime(2026, 9, 8, 9, 0, tzinfo=timezone.utc)
+
+    class NoSession:
+        opened_session = None
+
+    assert close_effect({'close_offset_mode': 'AUTO'}, NoSession(), now) \
+        is PositionEffect.CLOSE
+    assert close_effect({'close_offset_mode': 'nonsense'}, None, now) \
+        is PositionEffect.CLOSE
+    assert close_effect({}, None, now) is PositionEffect.CLOSE
+
+
+def test_an_escalated_close_is_still_a_close(tmp_path):
+    """The limit times out and crosses at market — and the market order that
+    replaces it must carry the same close flag, not default to an open."""
+    from fixtrader.models import PositionEffect
+    engine, gw, db, cfg = build(tmp_path, exit_order_type='LIMIT',
+                                exit_limit_timeout_sec=1,
+                                exit_on_timeout='CROSS_AT_MARKET')
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    assert rt.position is not None
+
+    engine.close_now('fef')                       # close_now crosses already
+    sent = []
+    original = gw.send
+    gw.send = lambda req: (sent.append(req), original(req))[1]
+    later = gw.now + __import__('datetime').timedelta(seconds=30)
+    engine.poll(now=later)
+    for req in sent:
+        assert req.position_effect.is_close

@@ -47,6 +47,31 @@ class TimeInForce(str, Enum):
     GTC = "GTC"
 
 
+class PositionEffect(str, Enum):
+    """What an order does to the POSITION, said explicitly to the venue.
+
+    This is the FIX equivalent of closing an MT5 ticket, and it is not
+    optional. An opposite order that does not say it is closing is an order to
+    OPEN the other way: on a venue that keeps long and short separately — and
+    on every Chinese exchange Orient routes to, which take an offset flag on
+    every order — the desk ends up long and short at once, both live, both
+    paying margin, with a position count nobody expected. `reduce_only` alone
+    does not say it either: it is a cap, not an instruction.
+
+    CLOSE_TODAY and CLOSE_YESTERDAY exist because SHFE and INE charge them
+    differently, and closing today's lot against yesterday's fee schedule is
+    a real cost, not a formality.
+    """
+    OPEN = "OPEN"
+    CLOSE = "CLOSE"
+    CLOSE_TODAY = "CLOSE_TODAY"
+    CLOSE_YESTERDAY = "CLOSE_YESTERDAY"
+
+    @property
+    def is_close(self) -> bool:
+        return self is not PositionEffect.OPEN
+
+
 class Intent(str, Enum):
     """What an order is FOR. A close is capped at the open position and may
     never reverse it; an open has no such cap. The executor needs to know
@@ -209,6 +234,14 @@ class OrderRequest:
     tif: TimeInForce = TimeInForce.DAY
     reduce_only: bool = False
     reason: str = ""                       # why the algo sent it
+    #: Said to the VENUE. Never left at OPEN on a closing order — that is the
+    #: order that opens an opposite position instead of closing one.
+    position_effect: PositionEffect = PositionEffect.OPEN
+    #: Our own position, and the venue's own ids for the fills that built it.
+    #: Carried so a close is traceable to what it closes, and so a venue that
+    #: wants a position or ticket reference has one to be given.
+    position_id: Optional[int] = None
+    close_tickets: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -254,9 +287,20 @@ class Fill:
 @dataclass
 class VenuePosition:
     contract_key: str = ""
-    qty: float = 0.0                       # signed: + long, - short
+    qty: float = 0.0                       # signed NET: + long, - short
     avg_price: Optional[float] = None
     margin: Optional[float] = None
+    #: Gross, where the venue keeps the two sides separately — every Chinese
+    #: exchange does. `qty` of 0 with a long of 3 and a short of 3 is not
+    #: flat: it is two live positions, both posting margin, and the screen
+    #: must be able to tell the difference. None where the venue nets.
+    long_qty: Optional[float] = None
+    short_qty: Optional[float] = None
+
+    @property
+    def is_gross_hedged(self) -> bool:
+        """Both sides open at once — almost always a close sent as an open."""
+        return bool(self.long_qty and self.short_qty)
 
 
 @dataclass
@@ -309,7 +353,12 @@ class Position:
     pnl_pct_on_margin: Optional[float] = None
 
     is_simulated: bool = False
+    #: The venue's execution ids for every fill that built this position —
+    #: its tickets. A close carries them.
     tickets: List[str] = field(default_factory=list)
+    #: The venue trading DAY this was opened on, for venues that price a
+    #: close-today differently from a close-yesterday.
+    opened_session: Optional[str] = None
 
     @property
     def is_open(self) -> bool:

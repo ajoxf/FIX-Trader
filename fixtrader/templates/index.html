@@ -58,8 +58,50 @@
   </div>
 </div>
 
+<!-- Every open position, in one place. The per-contract window shows its own;
+     this is the one screen that answers "what am I in, across everything" —
+     with what the VENUE says beside what this book holds, because the two
+     disagreeing is the thing worth seeing. -->
+<template id="positions-template">
+  <section class="win winwide" data-key="__positions__">
+    <div class="titlebar">
+      <span class="swatch" style="background:#1c1c1c"></span>
+      <span class="title">Positions</span>
+      <span class="venue pv-count"></span>
+      <span class="winbtns"><button class="winbtn close" title="Close this window">&times;</button></span>
+    </div>
+    <div class="wbody" style="padding:0">
+      <div class="pv-banner banner critical hidden"></div>
+      <div class="tablewrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Contract</th><th>Side</th><th class="r">Qty</th>
+              <th class="r">Filled @</th><th class="r">Mid</th>
+              <th class="r" title="The z the entry actually fired at">Z in</th>
+              <th class="r">B/E</th><th class="r">Target</th><th class="r">Stop</th>
+              <th class="r">Held</th><th class="r">Margin</th>
+              <th class="r">Open P&amp;L</th>
+              <th title="What the venue says, beside what this book holds">At the venue</th>
+              <th title="The venue's execution ids for the fills that built this position — a close carries them">Tickets</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody class="pv-rows"></tbody>
+          <tfoot><tr class="pv-total"></tr></tfoot>
+        </table>
+      </div>
+      <div class="pv-empty flatline">nothing open</div>
+    </div>
+    <div class="wfoot">
+      <span class="pv-foot"></span>
+      <span class="grow pv-day"></span>
+    </div>
+  </section>
+</template>
+
 <template id="contract-template">
-  <section class="win">
+  <section class="win contractwin">
     <div class="titlebar">
       <span class="swatch"></span>
       <span class="title"></span>

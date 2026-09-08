@@ -26,8 +26,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from . import sizing
-from .models import (Intent, OrderRequest, OrderState, OrderType, Side,
-                     TimeInForce)
+from .models import (Intent, OrderRequest, OrderState, OrderType,
+                     PositionEffect, Side, TimeInForce)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ class WorkingOrder:
         self.state = OrderState.PENDING
         self.text = ""
         self.escalated = False
+        self.position_effect = PositionEffect.OPEN
 
     @property
     def remaining(self) -> float:
@@ -76,7 +77,34 @@ class WorkingOrder:
             'reason': self.reason, 'position_id': self.position_id,
             'sent_at': self.sent_at.isoformat() if self.sent_at else None,
             'sent_at_touch': self.sent_at_touch, 'escalated': self.escalated,
+            'position_effect': self.position_effect.value,
         }
+
+
+def close_effect(settings: Dict[str, Any], position,
+                 now: datetime) -> PositionEffect:
+    """Which close flag this contract's venue wants.
+
+    `CLOSE` is the plain offset flag and suits most venues. SHFE and INE
+    (and anything else that prices a close-today differently) want the split,
+    and `AUTO` picks it from the trading day the position was opened on.
+
+    **Unknown resolves to CLOSE, never to OPEN.** A close whose flag could not
+    be determined is still a close; degrading it to an open would turn an exit
+    into a second position, which is the failure this whole function exists to
+    prevent.
+    """
+    mode = str(settings.get('close_offset_mode', 'CLOSE') or 'CLOSE').upper()
+    if mode in ('CLOSE', 'CLOSE_TODAY', 'CLOSE_YESTERDAY'):
+        return PositionEffect(mode)
+    if mode != 'AUTO':
+        return PositionEffect.CLOSE
+    opened = getattr(position, 'opened_session', None)
+    if not opened:
+        return PositionEffect.CLOSE          # not measured: the safe reading
+    return (PositionEffect.CLOSE_TODAY
+            if opened == now.date().isoformat()
+            else PositionEffect.CLOSE_YESTERDAY)
 
 
 def limit_price(book, side: Side, offset_ticks: float,
@@ -120,14 +148,25 @@ class Executor:
         #: trade the algo took at -2.24, and the whole touch study and trade
         #: journal are built on the z each decision was actually made at.
         self.decisions: Dict[str, Dict[str, Any]] = {}
+        #: The position each closing order is closing. Kept so an escalation
+        #: sends the same close against the same position rather than a fresh
+        #: opposite order with no effect flag on it.
+        self.positions: Dict[str, Any] = {}
 
     # -- sending ----------------------------------------------------------
 
     def place(self, contract, settings: Dict[str, Any], side: Side, qty: float,
               intent: Intent, book, now: datetime, reason: str = "",
               open_qty: float = 0.0, position_id: Optional[int] = None,
-              decision: Optional[Dict[str, Any]] = None) -> Optional[WorkingOrder]:
-        """Send one order. Returns None when there is nothing safe to send."""
+              decision: Optional[Dict[str, Any]] = None,
+              position=None) -> Optional[WorkingOrder]:
+        """Send one order. Returns None when there is nothing safe to send.
+
+        A CLOSE is never a bare opposite order. It carries an explicit
+        `PositionEffect`, the position it is closing, and that position's
+        venue tickets — because an opposite order that does not SAY it is
+        closing is an order to open the other way.
+        """
         prefix = 'exit' if intent is Intent.CLOSE else 'entry'
         order_type = OrderType(settings.get(f'{prefix}_order_type',
                                             OrderType.MARKET.value))
@@ -151,20 +190,32 @@ class Executor:
                 # send a market order the operator did not ask for.
                 return None
 
+        effect = (close_effect(settings, position, now)
+                  if intent is Intent.CLOSE else PositionEffect.OPEN)
         req = OrderRequest(
             contract_key=contract.key, side=side, qty=qty,
             order_type=order_type, intent=intent, price=price,
             tif=TimeInForce(settings.get('time_in_force', 'DAY')),
-            reduce_only=(intent is Intent.CLOSE), reason=reason)
+            # reduce_only is a CAP, not an instruction. It is sent as well as
+            # the effect, never instead of it.
+            reduce_only=(intent is Intent.CLOSE), reason=reason,
+            position_effect=effect,
+            position_id=position_id or getattr(position, 'id', None),
+            close_tickets=list(getattr(position, 'tickets', []) or [])
+            if intent is Intent.CLOSE else [])
 
         touch = book.executable(side) if book is not None else None
         clordid = self.gateway.send(req)
         wo = WorkingOrder(clordid, contract.key, side, qty, order_type, intent,
-                          price, now, touch, reason, position_id)
+                          price, now, touch, reason,
+                          position_id or getattr(position, 'id', None))
+        wo.position_effect = effect
         self.working[clordid] = wo
         self.intents[clordid] = intent
         if decision is not None:
             self.decisions[clordid] = dict(decision)
+        if position is not None:
+            self.positions[clordid] = position
         self._persist(wo, now)
         return wo
 
@@ -204,7 +255,8 @@ class Executor:
                                position_id=wo.position_id,
                                # the decision was made when the LIMIT was
                                # sent; escalating does not re-decide it
-                               decision=self.decisions.get(wo.clordid))
+                               decision=self.decisions.get(wo.clordid),
+                               position=self.positions.get(wo.clordid))
                 else:
                     self.gateway.cancel(wo.clordid)
                     said.append(f"{wo.intent.value.lower()} limit unfilled "

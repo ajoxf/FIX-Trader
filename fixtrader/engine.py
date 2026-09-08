@@ -269,7 +269,11 @@ class Engine:
             rt.contract, settings, side, qty, Intent.CLOSE, book, now,
             reason=reason, open_qty=rt.position.qty,
             position_id=rt.position.id,
-            decision=self._decision(rt.window))
+            decision=self._decision(rt.window),
+            # The position itself, so the order carries an explicit close
+            # flag and the venue tickets it is closing — never a bare
+            # opposite order, which opens the other side instead.
+            position=rt.position)
         if wo is not None:
             self._exit_reasons[wo.clordid] = exit_reason or ExitReason.TARGET
             self._say(rt, "ORDER", f"closing {qty:g} — {reason}")
@@ -316,7 +320,8 @@ class Engine:
                     entry_half_life=decided.get('half_life',
                                                 rt.window.half_life),
                     margin_locked=margin, is_simulated=self.simulated,
-                    tickets=[fill.exec_id])
+                    tickets=[fill.exec_id],
+                    opened_session=now.date().isoformat())
             else:
                 pos = rt.position
                 total = pos.qty + fill.qty
@@ -432,17 +437,29 @@ class Engine:
         return {'ok': True, 'master_algo': self.master_algo}
 
     def close_now(self, key: str) -> Dict[str, Any]:
-        """Cross out of this contract now. A guard may withhold an order; it
-        may never withhold this."""
+        """Cross out of this contract now, and stand its algo down.
+
+        A guard may withhold an order; it may never withhold this.
+
+        The algo goes off with it, and that is deliberate. The z that put the
+        position on is still where it was, so an algo left armed re-enters on
+        the very next pass — a tenth of a second after the trader pressed the
+        button to get out. Pressing the safety control and watching the
+        position come straight back is a control that did nothing. Turning it
+        on again is one click, and it is a decision rather than an accident.
+        """
         rt = self.runtimes.get(key)
         if rt is None or rt.position is None or not rt.position.is_open:
             return {'ok': False, 'error': "nothing open on that contract"}
+        was_armed = rt.contract.algo_on
+        if was_armed:
+            self.set_algo(key, False)
         settings = dict(self.config.effective(key), exit_order_type='MARKET')
         now = utcnow()
         self._send_close(rt, settings, rt.position.side.opposite,
                          rt.position.qty, ExitReason.CLOSE_NOW,
                          "closed by hand", rt.book, now)
-        return {'ok': True}
+        return {'ok': True, 'algo_stood_down': was_armed}
 
     def kill_all(self, close_positions: bool = False) -> Dict[str, Any]:
         """Stand every algo down and cancel our working orders.
@@ -562,8 +579,10 @@ class Engine:
                     and pos.target_price is None else None),
             })
 
+        venue_positions = self.gateway.positions()
         return {
             'ts': now.isoformat(),
+            'portfolio': self._portfolio(contracts, venue_positions),
             'engine': {
                 'alive': True,
                 'loop_ms': round(self.loop_ms, 1),
@@ -591,6 +610,76 @@ class Engine:
             'contracts': contracts,
         }
 
+    def _portfolio(self, contracts: List[Dict[str, Any]],
+                   venue_positions) -> Dict[str, Any]:
+        """Every open position across every contract, in one list.
+
+        It carries what THIS BOOK holds and what the VENUE says beside it,
+        because the two disagreeing is the thing worth seeing. A venue row
+        with both sides open — long and short at once — is a close that went
+        out as an open, and it is called out by name rather than netted to
+        zero and shown as flat.
+
+        `venue` is None where the account could not be READ. That is not
+        "flat", and the screen says so rather than showing an empty table.
+        """
+        by_key = {}
+        if venue_positions is not None:
+            for vp in venue_positions:
+                by_key[vp.contract_key] = vp
+
+        rows: List[Dict[str, Any]] = []
+        for c in contracts:
+            pos = c.get('position')
+            vp = by_key.get(c['key'])
+            if pos is None and vp is None:
+                continue
+            rows.append({
+                'key': c['key'],
+                'name': c['name'],
+                'symbol': c['symbol'],
+                'decimals': c['decimals'],
+                'side': pos['side'] if pos else None,
+                'qty': pos['qty'] if pos else None,
+                'avg_price': pos['avg_price'] if pos else None,
+                'entry_z': pos['entry_z'] if pos else None,
+                'break_even': pos['break_even'] if pos else None,
+                'target': pos['target'] if pos else None,
+                'stop': pos['stop'] if pos else None,
+                'opened_at': pos['opened_at'] if pos else None,
+                'open_pnl': pos['open_pnl'] if pos else None,
+                'margin_locked': pos['margin_locked'] if pos else None,
+                'tickets': pos.get('tickets') if pos else None,
+                'mid': (c.get('market') or {}).get('mid'),
+                'venue_qty': vp.qty if vp is not None else None,
+                'venue_long': vp.long_qty if vp is not None else None,
+                'venue_short': vp.short_qty if vp is not None else None,
+                'venue_readable': venue_positions is not None,
+                'both_sides_open': bool(vp is not None and vp.is_gross_hedged),
+                'agrees': (vp is not None and pos is not None
+                           and abs(vp.qty - (pos['qty'] *
+                                             (1 if pos['side'] == 'BUY' else -1)))
+                           < 1e-9),
+            })
+
+        pnls = [r['open_pnl'] for r in rows if r['open_pnl'] is not None]
+        margins = [r['margin_locked'] for r in rows
+                   if r['margin_locked'] is not None]
+        return {
+            'rows': rows,
+            'venue_readable': venue_positions is not None,
+            # Unmeasured is not zero: a total is only a total when every row
+            # it covers was measured.
+            'open_pnl': (round(sum(pnls), 2)
+                         if len(pnls) == len(rows) and rows else None),
+            'margin': (round(sum(margins), 2)
+                       if len(margins) == len(rows) and rows else None),
+            'realised_today': round(
+                sum(rt.pnl_today for rt in self.runtimes.values()), 2),
+            'trades_today': sum(rt.trades_today
+                                for rt in self.runtimes.values()),
+        }
+
     @staticmethod
     def _position_dict(pos: Optional[Position],
                        open_pnl: Optional[float]) -> Optional[Dict[str, Any]]:
@@ -606,4 +695,5 @@ class Engine:
             'margin_locked': pos.margin_locked,
             'opened_at': pos.opened_at.isoformat() if pos.opened_at else None,
             'open_pnl': round(open_pnl, 2) if open_pnl is not None else None,
+            'tickets': list(pos.tickets or []),
         }

@@ -80,6 +80,18 @@ is installed.
 | `fixtrader/webapp.py` | The Flask process: it renders and it asks; it never trades |
 | `fixtrader/static/`, `templates/` | The terminal — self-hosted, no CDN, no framework |
 
+**Positions** is its own window on the desk: every open position across every
+contract in one list — side, quantity, the price it filled at, the z the entry
+fired at, break-even, target, stop, margin, open P&L — with **what the venue
+says beside what this book holds**, and the venue's own tickets for the fills
+that built each one. A row where the two disagree is tinted; a venue showing
+long AND short at once is called out in red and never netted to zero, because
+that is a close that went out as an open.
+
+**Closes go out by reference, not as opposite orders.** Every closing order
+carries an explicit close flag, the position it closes and that position's
+tickets, capped at what is open on that side — see `docs/FIX_NOTES.md`.
+
 Still to come, in this order: the **Settings** page, the **Exchanges** page,
 and the **Analysis** window. All three are drawn in `docs/screens.html`.
 

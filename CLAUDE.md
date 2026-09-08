@@ -25,8 +25,18 @@ the drawing wins.
 - **The book is persisted and recovered.** The reconciler auto-closes nothing
   until recovery says the book is complete, and never touches a position it
   cannot explain.
+- **A close is never a bare opposite order.** It carries an explicit
+  `PositionEffect`, the position it closes and that position's venue tickets,
+  and it is capped at what is open on that side. `reduce_only` is a CAP, not
+  an instruction — sent as well as the flag, never instead of it. On a venue
+  that keeps long and short apart, an opposite order flagged OPEN opens the
+  other side: the desk is long AND short, both posting margin, and a netting
+  screen calls it flat. An unknown flag degrades to CLOSE, never to OPEN.
 - **No manual order entry.** The only controls that send are the algo switch,
   CLOSE NOW and KILL ALL.
+- **CLOSE NOW stands that contract's algo down.** The z that put the position
+  on has not moved, so an algo left armed re-enters on the next pass — a
+  tenth of a second after the trader pressed the button to get out.
 - **UAT and PROD are separate venues** and the screen always says which.
 
 ## Conventions that are easy to lose in a refactor
