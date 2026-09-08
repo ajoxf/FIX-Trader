@@ -27,6 +27,7 @@
 <!-- Positions at the venue this book cannot explain. Never closed
      automatically; put here for a person to decide. -->
 <div id="unclaimed-banner" class="banner critical hidden" role="alert"></div>
+<div id="restart-banner" class="banner warn hidden" role="status"></div>
 
 <div id="desktop"></div>
 <div id="toasts" aria-live="polite"></div>
@@ -106,6 +107,31 @@
      contract it describes. Sub-tabs: the named contract, and All contracts —
      because a win rate blended across eight of them cannot answer the only
      question this window exists for, which is which one to turn off. -->
+<template id="config-template">
+  <section class="win cfgwin">
+    <div class="titlebar">
+      <span class="swatch" style="background:#7a6cae"></span>
+      <span class="title"></span>
+      <span class="venue cfg-key"></span>
+      <span class="winbtns"><button class="winbtn close" title="Close without saving">&times;</button></span>
+    </div>
+
+    <div class="badgebar">
+      <span class="state cfg-state">SETTINGS</span>
+      <span class="hint">A blank box uses the desk default, shown in grey. <b>0</b> is a number, not a blank.</span>
+    </div>
+
+    <div class="subtabs"><div class="cfg-tabs"></div></div>
+    <div class="cfg-body"></div>
+
+    <div class="wfoot">
+      <button class="btn pri cfg-save">Save</button>
+      <button class="btn cfg-revert" title="Throw away what is typed and read the saved settings again">Revert</button>
+      <span class="grow cfg-note"></span>
+    </div>
+  </section>
+</template>
+
 <template id="analysis-template">
   <section class="win winwide" data-key="__analysis__">
     <div class="titlebar">

@@ -86,6 +86,16 @@ the drawing wins.
 - **`Position.qty` is what REMAINS; `opened_qty` is the size it was opened at.**
   Closing decrements the first, so a journal reading the wrong one reports
   every trade as size 0 — and every cost figure fed from it as unmeasured.
+- **The engine reads `config.json` back while it runs.** Settings are edited
+  in the WEB process, which writes that file and nothing else; the runner
+  watches it and calls `Engine.apply_config`. Three rules hold there: the
+  LIVE switch wins over the file (`algo_on` is never adopted, or a reload
+  stands down a contract the trader just armed); nothing touches the book, a
+  position or an open order; and a change the running engine cannot adopt —
+  a contract added or removed, a tick value, `enabled`, `DATABASE_PATH` — is
+  REPORTED in `config_restart_needed`, never half-applied. A setting that
+  looks saved and is not in force is worse than one that plainly says it
+  needs a restart.
 - **Only one engine may run against a book.** Two trade the same signals on the
   same account and each sees the other's fills as positions it cannot explain.
   The runner refuses to start when the snapshot is being published already.

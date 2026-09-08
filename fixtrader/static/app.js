@@ -163,10 +163,7 @@ function windowFor(key) {
       'CLOSE NOW');
     if (ok) { await command('close_now', key); toast('ORDER', 'CLOSING', key); }
   };
-  el.querySelector('.cog').onclick = () => {
-    toast('GUARD', 'NOT YET', 'The settings panel is the next build step.',
-      key);
-  };
+  el.querySelector('.cog').onclick = () => configWindow(key);
   el.onmousedown = () => { state.focused = key; raise(el); };
   makeDraggable(el, key);
   document.getElementById('desktop').appendChild(el);
@@ -906,6 +903,17 @@ function renderChrome(snap) {
       items.map((u) => u.text).join('  ');
   }
 
+  // A setting that looks saved and is not in force is worse than one that
+  // plainly says it needs the engine bounced. The engine names them.
+  const restart = document.getElementById('restart-banner');
+  const waiting = engine.config_restart_needed || [];
+  restart.classList.toggle('hidden', waiting.length === 0);
+  if (waiting.length) {
+    restart.textContent = 'SAVED, NOT IN FORCE — ' + waiting.join(', ') +
+      '. These change something the running engine already holds; restart it ' +
+      'for them to take effect. Everything else you saved is live now.';
+  }
+
   const link = document.getElementById('link-badge');
   const session = engine.session || {};
   link.textContent = session.state === 'LOGGED_ON'
@@ -933,6 +941,239 @@ function renderChrome(snap) {
 
 /* -- the loop ------------------------------------------------------------- */
 
+/* -- one contract's settings, behind the gear -----------------------------
+ *
+ * The full set of §4.1, because the comprehensiveness is the point: a desk
+ * that cannot set a contract's own costs ends up trading eight instruments
+ * on one instrument's assumptions.
+ *
+ * Two rules the whole panel turns on:
+ *
+ *   - **A blank box means "use the desk default"**, and the effective value
+ *     is rendered beside it in grey so a blank is never mistaken for a zero.
+ *     `0` is a real number and sets an override.
+ *   - **A change that cannot be adopted while running SAYS SO.** The engine
+ *     reports what it could not apply; a setting that looks saved and is not
+ *     in force is worse than one that plainly needs a restart.
+ */
+
+const CFG_GROUPS = [
+  { name: 'Signal', fields: [
+    ['lookback', 'Lookback', 'samples in the rolling window', 'number', { step: 10, min: 2 }],
+    ['stats_update_interval_sec', 'Recompute mean and σ every', 'seconds; 0 = every update. Stable bands are easier to aim at', 'number', { step: 10, min: 0 }],
+    ['entry_threshold', 'Enter at |z|', '', 'number', { step: 0.1, min: 0 }],
+    ['exit_signal_mode', 'Exit on', '', 'select', { options: [['profit', 'Profit target'], ['zscore', 'z-score'], ['hybrid', 'Whichever comes first']] }],
+    ['exit_threshold', 'Exit at |z|', 'used by z-score and hybrid', 'number', { step: 0.1, min: 0 }],
+    ['stop_loss_z', 'Stop at |z|', 'emergency exit', 'number', { step: 0.5, min: 0 }],
+    ['max_hold_minutes', 'Time stop', 'minutes; 0 = no time stop', 'number', { step: 5, min: 0 }],
+  ] },
+  { name: 'Filters', fields: [
+    ['edge_filter_enabled', 'Edge filter', '', 'check'],
+    ['min_std_multiple', 'σ must be at least', '× the round-trip cost', 'number', { step: 0.1, min: 0 }],
+    ['hurst_enabled', 'Hurst filter', 'off by default: on a coarsely quantised spread it reads high', 'check'],
+    ['hurst_threshold', 'Hurst below', 'H under this is mean-reverting', 'number', { step: 0.05, min: 0 }],
+    ['half_life_enabled', 'Half-life filter', '', 'check'],
+    ['max_half_life', 'Half-life at most', 'samples; slower reversion than the intended hold is refused', 'number', { step: 1, min: 0 }],
+    ['min_book_size', 'Book size at least', 'contracts on the touch, both sides', 'number', { step: 1, min: 0 }],
+    ['max_book_spread_ticks', 'Book no wider than', 'ticks', 'number', { step: 1, min: 0 }],
+  ] },
+  { name: 'Size & risk', fields: [
+    ['quantity', 'Quantity per entry', 'contracts', 'number', { step: 1, min: 0 }],
+    ['max_position', 'Maximum position', 'contracts; the hard ceiling', 'number', { step: 1, min: 0 }],
+    ['max_trades_per_day', 'Trades per day', '0 = no limit', 'number', { step: 1, min: 0 }],
+    ['daily_max_loss', 'Daily loss limit', 'money; hitting it turns THIS contract off and says so', 'number', { step: 50, min: 0 }],
+    ['entry_cooldown_seconds', 'Cooldown after an entry', 'seconds', 'number', { step: 5, min: 0 }],
+  ] },
+  { name: 'Execution', fields: [
+    ['entry_order_type', 'Entry', '', 'select', { options: [['LIMIT', 'Limit'], ['MARKET', 'Market']] }],
+    ['exit_order_type', 'Exit', '', 'select', { options: [['MARKET', 'Market'], ['LIMIT', 'Limit']] }],
+    ['entry_limit_offset_ticks', 'Entry priced behind its touch', 'ticks', 'number', { step: 1, min: 0 }],
+    ['exit_limit_offset_ticks', 'Exit priced behind its touch', 'ticks &mdash; patience going in and coming out are different decisions', 'number', { step: 1, min: 0 }],
+    ['entry_limit_timeout_sec', 'Entry unfilled after', 'seconds', 'number', { step: 1, min: 0 }],
+    ['exit_limit_timeout_sec', 'Exit unfilled after', 'seconds', 'number', { step: 1, min: 0 }],
+    ['entry_on_timeout', 'then the entry', '', 'select', { options: [['CANCEL', 'Cancel'], ['CROSS_AT_MARKET', 'Cross at market']] }],
+    ['exit_on_timeout', 'then the exit', 'a missed entry is a trade not taken; a missed exit is a position you still hold', 'select', { options: [['CROSS_AT_MARKET', 'Cross at market'], ['CANCEL', 'Cancel']] }],
+    ['repeg_dead_band_ticks', 'Re-peg dead band', 'ticks the touch must move before an amend &mdash; every amend costs queue position', 'number', { step: 1, min: 0 }],
+    ['time_in_force', 'Time in force', '', 'select', { options: [['DAY', 'Day'], ['IOC', 'IOC'], ['GTC', 'GTC']] }],
+    ['close_offset_mode', 'Closing flag', 'what this venue wants on a close. AUTO reads the venue; an unknown flag degrades to CLOSE, never to OPEN', 'select', { options: [['AUTO', 'Auto'], ['CLOSE', 'Close'], ['CLOSE_TODAY_FIRST', 'Close today first'], ['NONE', 'None (netting venue)']] }],
+  ] },
+  { name: 'Costs', fields: [
+    ['commission_per_contract', 'Commission', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
+    ['exchange_fee_per_contract', 'Exchange fee', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
+    ['clearing_fee_per_contract', 'Clearing fee', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
+    ['slippage_budget_ticks', 'Slippage budget', 'ticks per side &mdash; a BUDGET. Analysis shows the measured figure beside it', 'number', { step: 0.1, min: 0 }],
+    ['profit_target_pct', 'Profit target', '% &mdash; taken AFTER the round trip above', 'number', { step: 0.5, min: 0 }],
+    ['profit_target_basis', 'as a % of', 'margin is the default. A basis with no number behind it renders the target as —, never as 0.00', 'select', { options: [['MARGIN', 'Initial margin'], ['NOTIONAL', 'Notional'], ['ENTRY_SIGMA', 'Entry sigma']] }],
+  ] },
+  { name: 'Display', fields: [
+    ['name', 'Window title', '', 'text', { plain: true }],
+    ['decimals', 'Decimals', 'how prices are printed on this window', 'number', { step: 1, min: 0, plain: true }],
+    ['enabled', 'Trade this contract', 'switching it off needs a restart: its window, book and any position have nowhere to go mid-flight', 'check', { plain: true }],
+  ] },
+];
+
+/* Which fields are NOT per-contract overrides but plain contract fields. A
+ * blank one of these is not "use the desk default" — there is no desk
+ * default for a window title. */
+const CFG_PLAIN = new Set(['name', 'decimals', 'enabled']);
+
+const cfgState = {};    // key -> { group, contract }
+
+function configWindow(key) {
+  let el = document.querySelector('.win[data-key="__config__' + key + '"]');
+  if (el) { raise(el); return el; }
+  const tpl = document.getElementById('config-template');
+  el = tpl.content.firstElementChild.cloneNode(true);
+  el.dataset.key = '__config__' + key;
+  el.dataset.contract = key;
+  cfgState[key] = cfgState[key] || { group: CFG_GROUPS[0].name, contract: null };
+
+  el.querySelector('.close').onclick = () => { el.remove(); renderTabs(); };
+  el.querySelector('.cfg-revert').onclick = () => loadConfig(key);
+  el.querySelector('.cfg-save').onclick = () => saveConfig(key);
+
+  const tabs = el.querySelector('.cfg-tabs');
+  CFG_GROUPS.forEach((g) => {
+    const b = document.createElement('button');
+    b.textContent = g.name;
+    b.className = g.name === cfgState[key].group ? 'on' : '';
+    b.onclick = () => {
+      cfgState[key].group = g.name;
+      tabs.querySelectorAll('button').forEach((x) =>
+        x.classList.toggle('on', x.textContent === g.name));
+      paintConfig(key);
+    };
+    tabs.appendChild(b);
+  });
+
+  el.onmousedown = () => raise(el);
+  makeDraggable(el, '__config__' + key);
+  const desk = document.getElementById('desktop');
+  desk.appendChild(el);
+
+  // A settings panel is a panel over the desk, not another tile in it:
+  // opening one must not re-flow the windows the trader is reading. It
+  // floats beside its own contract, out of the grid, and stays where it is
+  // dragged like everything else.
+  const place = state.places['__config__' + key];
+  if (place) {
+    placeWindow(el, place.x, place.y);
+  } else {
+    el.classList.add('floating');
+    const owner = document.querySelector('.win[data-key="' + key + '"]');
+    const box = desk.getBoundingClientRect();
+    const from = owner ? owner.getBoundingClientRect() : box;
+    const x = Math.max(8, Math.min(from.left - box.left + 24,
+                                   desk.clientWidth - 470));
+    el.style.left = x + 'px';
+    el.style.top = (from.top - box.top + desk.scrollTop + 18) + 'px';
+  }
+  raise(el);
+  loadConfig(key);
+  return el;
+}
+
+async function loadConfig(key) {
+  const el = document.querySelector('.win[data-key="__config__' + key + '"]');
+  if (!el) return;
+  try {
+    const rows = await (await fetch('/api/contracts', { cache: 'no-store' })).json();
+    const row = (rows || []).find((r) => r.key === key);
+    if (!row) {
+      el.querySelector('.cfg-note').textContent =
+        'this contract is not in the configuration file';
+      return;
+    }
+    cfgState[key].contract = row;
+    paintConfig(key);
+    el.querySelector('.cfg-note').textContent = '';
+  } catch (e) {
+    el.querySelector('.cfg-note').textContent = 'could not read the settings';
+  }
+}
+
+function cfgField(field, label, hint, kind, opts, row) {
+  const o = opts || {};
+  const plain = CFG_PLAIN.has(field);
+  // The saved OVERRIDE — blank means "use the desk default". Never the
+  // effective value: filling the box with the default would turn every
+  // fallback into an override the moment somebody pressed Save.
+  const own = plain ? row[field] : (row[field] === undefined ? null : row[field]);
+  const eff = row.effective ? row.effective[field] : undefined;
+  const id = 'cf-' + field;
+  let control;
+  if (kind === 'check') {
+    control = '<input type="checkbox" class="chk" id="' + id +
+      '" data-field="' + field + '"' + (own === true ? ' checked' : '') + '>';
+  } else if (kind === 'select') {
+    control = '<select id="' + id + '" data-field="' + field + '">' +
+      (plain ? '' : '<option value="">&mdash; desk default &mdash;</option>') +
+      (o.options || []).map((op) =>
+        '<option value="' + op[0] + '"' +
+        (String(own) === op[0] ? ' selected' : '') + '>' + op[1] + '</option>').join('') +
+      '</select>';
+  } else {
+    control = '<input type="' + (kind === 'text' ? 'text' : 'number') + '" id="' + id +
+      '" data-field="' + field + '"' +
+      (o.step !== undefined ? ' step="' + o.step + '"' : '') +
+      (o.min !== undefined ? ' min="' + o.min + '"' : '') +
+      ' value="' + (own === null || own === undefined ? '' : own) + '">';
+  }
+  // Unmeasured is not zero, and neither is blank: the grey figure says what
+  // this contract will actually trade on.
+  const effText = (plain || kind === 'check') ? '' :
+    (eff === null || eff === undefined ? DASH : String(eff));
+  const isDefault = !plain && (own === null || own === undefined);
+  return '<label class="f cf-row"><span>' + label +
+    (hint ? ' <small>' + hint + '</small>' : '') + '</span>' +
+    '<span class="cf-c">' + control +
+    (effText ? '<span class="cf-eff' + (isDefault ? '' : ' own') + '" title="' +
+      (isDefault ? 'the desk default' : 'this contract&#39;s own setting') +
+      '">' + effText + '</span>' : '') + '</span></label>';
+}
+
+function paintConfig(key) {
+  const el = document.querySelector('.win[data-key="__config__' + key + '"]');
+  const row = cfgState[key] && cfgState[key].contract;
+  if (!el || !row) return;
+  el.querySelector('.title').textContent = row.name || key;
+  el.querySelector('.cfg-key').textContent = row.symbol || key;
+  const group = CFG_GROUPS.find((g) => g.name === cfgState[key].group)
+    || CFG_GROUPS[0];
+  el.querySelector('.cfg-body').innerHTML = '<div class="cb">' +
+    group.fields.map((f) => cfgField(f[0], f[1], f[2], f[3], f[4], row)).join('') +
+    '</div>';
+}
+
+async function saveConfig(key) {
+  const el = document.querySelector('.win[data-key="__config__' + key + '"]');
+  if (!el) return;
+  const body = {};
+  el.querySelectorAll('[data-field]').forEach((input) => {
+    const field = input.dataset.field;
+    if (input.type === 'checkbox') body[field] = input.checked;
+    else if (input.type === 'number') {
+      // '' clears the override back to the desk default. 0 is a number.
+      body[field] = input.value === '' ? '' : Number(input.value);
+    } else body[field] = input.value;
+  });
+  const res = await fetch('/api/contracts/' + encodeURIComponent(key), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const out = await res.json();
+  if (!out.ok) {
+    el.querySelector('.cfg-note').textContent = out.error || 'not saved';
+    toast('REJECT', 'NOT SAVED', out.error || 'the settings were not saved', key);
+    return;
+  }
+  cfgState[key].contract = Object.assign({}, cfgState[key].contract, body,
+    { effective: out.effective });
+  paintConfig(key);
+  toast('ORDER', 'SAVED', 'the engine picks this up on its next pass', key);
+  el.querySelector('.cfg-note').textContent = 'saved';
+}
+
 async function tick() {
   try {
     const res = await fetch('/api/snapshot', { cache: 'no-store' });
@@ -940,7 +1181,14 @@ async function tick() {
     renderChrome(snap);
     window.__lastSnapshot = snap;
     const seen = new Set(['__positions__', '__analysis__']);
-    (snap.contracts || []).forEach((c) => { seen.add(c.key); renderContract(c); });
+    (snap.contracts || []).forEach((c) => {
+      seen.add(c.key);
+      // A settings panel belongs to its contract and outlives a poll. The
+      // sweep below removes windows for contracts that are gone; it must not
+      // remove the panel of one that is still here.
+      seen.add('__config__' + c.key);
+      renderContract(c);
+    });
     renderPositions(snap);
     if (!analysis.timer) {
       // History, not a market: a slow timer, off the desk's critical path.

@@ -13,7 +13,7 @@ import signal
 import sys
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from . import atomicfile
 from .commands import CommandBridge, apply_command
@@ -86,7 +86,14 @@ def another_engine_is_running(status_path: str,
 def run(config_path: str = "config.json", status_path: str = "status.json",
         command_path: str = "commands.jsonl",
         result_path: str = "results.json", simulated: bool = False,
-        once: bool = False) -> None:
+        once: bool = False,
+        should_stop: Optional[Callable[[], bool]] = None) -> None:
+    """Run the engine loop until a signal, or until `should_stop` says so.
+
+    `should_stop` is how a caller that is not the main thread stops us:
+    signal handlers can only be installed on the main thread, and a test or
+    a launcher that runs the engine beside something else is not it.
+    """
     age = another_engine_is_running(status_path)
     if age is not None and not once:
         raise SystemExit(
@@ -114,6 +121,18 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
         except (ValueError, OSError):
             pass                      # not the main thread; the caller stops us
 
+    def _config_stamp() -> Optional[tuple]:
+        """What makes an edited config.json distinguishable from the one we
+        already read. Size as well as mtime: an editor that writes twice in
+        the same clock tick is not a hypothetical on a fast disk."""
+        try:
+            st = os.stat(config_path)
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    config_stamp = _config_stamp()
+
     interval = float(config.settings.get('ENGINE_POLL_SEC', 0.1) or 0.1)
     #: The snapshot is published at the SCREEN's rate, not the engine's. The
     #: screen refreshes twice a second, so writing it ten times a second was
@@ -126,12 +145,30 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
     logger.info("engine up — %d contracts, %s", len(engine.runtimes),
                 "simulated" if is_sim else "live gateway")
     try:
-        while not stopping['now']:
+        while not stopping['now'] and not (should_stop and should_stop()):
             started = time.monotonic()
             if is_sim:
                 gateway.advance(seconds=interval)
             for command in bridge.drain():
                 bridge.record(command['id'], apply_command(engine, command))
+
+            # Settings are edited in the WEB process, which writes config.json
+            # and nothing else. This is the engine reading it back — without
+            # it, a saved setting sits on disk looking applied while the loop
+            # goes on trading the old one.
+            stamp = _config_stamp()
+            if stamp is not None and stamp != config_stamp:
+                config_stamp = stamp
+                try:
+                    engine.apply_config(TraderConfig.from_file(config_path))
+                except Exception as e:                       # noqa: BLE001
+                    # A half-written or unparseable file is not a reason to
+                    # stop managing live positions. We keep the settings we
+                    # have and try again when the file changes next.
+                    logger.warning("could not read %s (%s) — the engine is "
+                                   "still running on the settings it has",
+                                   config_path, e)
+
             engine.poll()
 
             if once or started - last_published >= publish_every:

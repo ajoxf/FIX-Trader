@@ -92,6 +92,7 @@ body {
   gap: 10px;
 }
 .banner.critical { background: #f4d5d5; color: #6d1f1f; border-bottom-color: #c98d8d; }
+.banner.warn { background: var(--warn-soft); color: #5e4204; border-bottom-color: #dcc389; }
 
 /* -- the desk ------------------------------------------------------------- */
 #desktop {
@@ -544,3 +545,27 @@ table.grid td.up { color: var(--good); } table.grid td.dn { color: var(--ask); }
  * contrast is the point — dimmed, because it is not a threshold to aim at. */
 table.grid tr.cannot-pay td { color: var(--ink-faint); }
 table.grid tr.cannot-pay .tag { opacity: .55; }
+
+/* -- one contract's settings, behind the gear ----------------------------- */
+.cfgwin { width: 460px; }
+/* Out of the grid: opening a settings panel must not re-flow the windows
+ * the trader is reading. `.placed` (after a drag) would otherwise size it
+ * like a contract tile. */
+.win.floating { position: absolute; }
+.win.cfgwin.placed, .win.cfgwin.floating { width: 460px; }
+.cfgwin .cfg-state { background: #7a6cae; color: #fff; }
+.cfgwin .badgebar .hint { font-size: 10px; color: var(--ink-mute); }
+.cfg-body { padding: 8px 9px; display: flex; flex-direction: column; gap: 7px;
+            max-height: 420px; overflow-y: auto; background: var(--panel); }
+.cfg-body .cb { display: flex; flex-direction: column; gap: 7px; }
+.cfg-body .f { grid-template-columns: minmax(0, 1fr) 190px; }
+/* The control and, beside it, the value this contract will actually trade
+ * on. A blank box is not a zero, and the grey figure is what says so. */
+.cf-c { display: flex; align-items: center; gap: 6px; }
+.cf-c > input, .cf-c > select { flex: 1 1 auto; min-width: 0; }
+.cf-c > input.chk { flex: 0 0 auto; }
+.cf-eff { flex: 0 0 54px; text-align: right;
+          font: 500 10.5px/1 var(--mono); font-variant-numeric: tabular-nums;
+          color: var(--ink-faint); }
+.cf-eff.own { color: #2c3036; font-weight: 600; }
+.cfgwin .wfoot .cfg-note { color: var(--ink-mute); }

@@ -930,7 +930,10 @@ this order is building toward.
    recording with the engine, or the window has nothing to show for weeks
 6. The **Exchanges page**: venues with FIX session fields, UAT/PROD, the three
    buttons, contracts with **Read from venue**
-7. The **Settings page**: desk-wide, and the per-contract ⚙
+7. The **Settings page**: desk-wide, and the per-contract ⚙ — plus the
+   engine READING AN EDITED CONFIGURATION BACK. A settings page that writes
+   a file the loop never re-reads is a settings page that does nothing until
+   the next restart, and looks like it worked
 8. `start.py` — one command brings up config, gateway, engine and web, and
    opens the terminal in its own app window
 9. `README.md`, `CLAUDE.md`, `docs/FIX_NOTES.md`

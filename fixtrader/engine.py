@@ -20,6 +20,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
+from . import config as config_mod
 from . import costs as costs_mod
 from . import marketdata, signals as signals_mod, sizing
 from .executor import Executor
@@ -83,6 +84,12 @@ class Engine:
         self.runtimes: Dict[str, ContractRuntime] = {}
         self.master_algo: bool = bool(config.settings.get('ALGO_MASTER_ENABLED', True))
         self.killed: bool = False
+        #: When an edited configuration was last picked up, and anything in
+        #: it that is still waiting for a restart. The screen shows both: a
+        #: setting that looks saved but is not in force is worse than one
+        #: that plainly says it needs the engine bounced.
+        self.config_reloaded_at: Optional[datetime] = None
+        self.config_restart_needed: List[str] = []
         self.loop_ms: float = 0.0
         self.started_at: Optional[datetime] = None
         #: Why a close was sent, kept until the fill that completes it, so the
@@ -486,6 +493,95 @@ class Engine:
                          "closed by hand", rt.book, now)
         return {'ok': True, 'algo_stood_down': was_armed}
 
+    # -- picking up an edited configuration ---------------------------------
+
+    #: Contract fields that cannot be changed under a running engine. Every
+    #: one of them re-prices something the book already holds — a tick value
+    #: changed while a position is open rewrites what that position made —
+    #: or needs the gateway to subscribe again.
+    STRUCTURAL_CONTRACT_FIELDS = ('symbol', 'venue', 'security_id',
+                                  'security_exchange', 'tick_size',
+                                  'tick_value', 'contract_multiplier',
+                                  'currency', 'min_qty', 'qty_step',
+                                  'max_qty')
+
+    def apply_config(self, new: 'TraderConfig') -> Dict[str, Any]:
+        """Adopt an edited configuration without stopping.
+
+        Settings are edited in the web process, which writes `config.json`;
+        this is the engine reading it back. It is deliberately narrow:
+
+        - **The live switch wins over the file.** `algo_on` is not adopted.
+          The file's copy is whatever was last written by the web process,
+          and adopting it would flip a contract the trader had just stood
+          down — or arm one they had not.
+        - **Nothing here touches the book, a position or an open order.** A
+          settings change is a change to what the algo does NEXT.
+        - **Structural changes are REPORTED, not applied.** A contract added
+          or removed needs the gateway to subscribe; a tick value changed
+          under an open position rewrites what that position made. Those want
+          a restart, and the screen says so rather than half-applying them.
+
+        Returns what changed, and what is waiting on a restart.
+        """
+        changed: List[str] = []
+        restart: List[str] = []
+
+        for key, value in new.settings.items():
+            if self.config.settings.get(key) != value:
+                if key in config_mod.STRUCTURAL_SETTINGS:
+                    restart.append(key)
+                    continue
+                self.config.settings[key] = value
+                changed.append(key)
+
+        for key in sorted(set(new.contracts) - set(self.config.contracts)):
+            restart.append(f'contract {key} added')
+        for key in sorted(set(self.config.contracts) - set(new.contracts)):
+            restart.append(f'contract {key} removed')
+
+        for key, incoming in new.contracts.items():
+            mine = self.config.contracts.get(key)
+            if mine is None:
+                continue
+            for field in self.STRUCTURAL_CONTRACT_FIELDS:
+                if getattr(mine, field, None) != getattr(incoming, field, None):
+                    restart.append(f'{key}.{field}')
+            for field in ('name', 'decimals', 'session_open', 'session_close'):
+                if getattr(mine, field) != getattr(incoming, field):
+                    setattr(mine, field, getattr(incoming, field))
+                    changed.append(f'{key}.{field}')
+            # `enabled` is structural: a contract switched off mid-flight has
+            # a window, a book and possibly a position that would have nowhere
+            # to go.
+            if mine.enabled != incoming.enabled:
+                restart.append(f'{key}.enabled')
+            if mine.overrides != incoming.overrides:
+                mine.overrides = dict(incoming.overrides)
+                changed.append(f'{key} settings')
+            # `algo_on` is NOT adopted. See the docstring.
+            mine.spec_source = dict(incoming.spec_source)
+
+        # The statistics window holds its own copy of the three settings that
+        # shape it, so it has to be told. A changed lookback resizes in place
+        # and keeps the samples; the cached mean and sigma are invalidated,
+        # because they were computed over a different window.
+        for key, rt in self.runtimes.items():
+            settings = self.config.effective(key)
+            if rt.window.update_config(
+                    lookback=int(settings['lookback']),
+                    stats_update_interval_sec=settings[
+                        'stats_update_interval_sec'],
+                    entry_threshold=settings['entry_threshold']):
+                changed.append(f'{key} window resized')
+
+        self.config_reloaded_at = utcnow()
+        self.config_restart_needed = restart
+        if changed or restart:
+            logger.info("configuration reloaded — %d changed, %d awaiting a "
+                        "restart", len(changed), len(restart))
+        return {'changed': changed, 'restart_needed': restart}
+
     def kill_all(self, close_positions: bool = False) -> Dict[str, Any]:
         """Stand every algo down and cancel our working orders.
 
@@ -617,6 +713,13 @@ class Engine:
                 'simulated': self.simulated,
                 'book_complete': self.book_complete,
                 'unclaimed': self.unclaimed,
+                #: An edited configuration is in force from the pass that
+                #: picked it up. Anything the engine could not adopt while
+                #: running is named here, so a setting that looks saved and
+                #: is not never passes for one that is.
+                'config_reloaded_at': (self.config_reloaded_at.isoformat()
+                                       if self.config_reloaded_at else None),
+                'config_restart_needed': list(self.config_restart_needed),
                 'session': {
                     'state': self.gateway.state().value,
                     'text': self.gateway.state_text(),

@@ -352,3 +352,140 @@ def test_an_escalated_close_is_still_a_close(tmp_path):
     engine.poll(now=later)
     for req in sent:
         assert req.position_effect.is_close
+
+
+# -- picking up an edited configuration ------------------------------------
+
+def edited(cfg, **settings):
+    """A second TraderConfig, as the web process would have written it."""
+    from fixtrader.config import TraderConfig, ContractConfig
+    new = TraderConfig(path=cfg.path)
+    new.settings = dict(cfg.settings, **settings)
+    for key, c in cfg.contracts.items():
+        clone = ContractConfig(
+            key=key, name=c.name, symbol=c.symbol, venue=c.venue,
+            tick_size=c.tick_size, tick_value=c.tick_value,
+            contract_multiplier=c.contract_multiplier, min_qty=c.min_qty,
+            qty_step=c.qty_step, max_qty=c.max_qty, decimals=c.decimals,
+            enabled=c.enabled, algo_on=c.algo_on,
+            spec_source=dict(c.spec_source), **dict(c.overrides))
+        new.contracts[key] = clone
+    return new
+
+
+def test_an_edited_setting_is_in_force_without_a_restart(tmp_path):
+    """Settings are edited in the web process, which writes config.json. The
+    engine reading it back is the whole point: a saved setting that sits on
+    disk while the loop trades the old one is the worst of both."""
+    engine, gw, db, cfg = build(tmp_path, entry_threshold=2.0)
+    warm_the_window(engine, gw)
+    assert engine.config.effective('fef')['entry_threshold'] == 2.0
+
+    new = edited(cfg)
+    new.contracts['fef'].overrides['entry_threshold'] = 3.5
+    report = engine.apply_config(new)
+
+    assert 'fef settings' in report['changed']
+    assert engine.config.effective('fef')['entry_threshold'] == 3.5
+    # and the window itself was told, not just the settings dict
+    assert engine.runtimes['fef'].window.entry_threshold == 3.5
+
+
+def test_a_reload_does_not_flip_a_switch_the_trader_just_moved(tmp_path):
+    """`algo_on` is the live switch. config.json's copy is whatever the web
+    process last wrote, and adopting it would stand a contract down that the
+    trader had just armed — or arm one they had stood down."""
+    engine, gw, db, cfg = build(tmp_path)
+    warm_the_window(engine, gw)
+    engine.set_algo('fef', False)
+    assert engine.config.contracts['fef'].algo_on is False
+
+    new = edited(cfg)
+    new.contracts['fef'].algo_on = True          # the file is out of date
+    engine.apply_config(new)
+    assert engine.config.contracts['fef'].algo_on is False
+
+
+def test_a_reload_never_touches_the_book_or_an_open_position(tmp_path):
+    engine, gw, db, cfg = build(tmp_path)
+    warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    pos = engine.runtimes['fef'].position
+    assert pos is not None and pos.is_open
+    before = (pos.id, pos.qty, pos.avg_price, list(pos.tickets))
+    samples = len(engine.runtimes['fef'].window.prices)
+
+    new = edited(cfg)
+    new.contracts['fef'].overrides['quantity'] = 9.0
+    engine.apply_config(new)
+
+    after = engine.runtimes['fef'].position
+    assert (after.id, after.qty, after.avg_price, list(after.tickets)) == before
+    assert len(engine.runtimes['fef'].window.prices) == samples
+
+
+def test_a_longer_lookback_keeps_its_samples_and_says_it_resized(tmp_path):
+    engine, gw, db, cfg = build(tmp_path, lookback=30)
+    warm_the_window(engine, gw)
+    kept = len(engine.runtimes['fef'].window.prices)
+
+    new = edited(cfg)
+    new.contracts['fef'].overrides['lookback'] = 60
+    report = engine.apply_config(new)
+
+    window = engine.runtimes['fef'].window
+    assert 'fef window resized' in report['changed']
+    assert window.lookback == 60
+    assert len(window.prices) == kept           # not thrown away
+    assert window.is_warm is False              # and honest about being short
+
+
+def test_a_structural_change_is_reported_and_not_half_applied(tmp_path):
+    """A tick value changed under an open position rewrites what that
+    position made; a contract added needs the gateway to subscribe. Those
+    want a restart, and the screen says so rather than pretending."""
+    engine, gw, db, cfg = build(tmp_path)
+    warm_the_window(engine, gw)
+
+    new = edited(cfg)
+    new.contracts['fef'].tick_value = 5.0
+    new.settings['DATABASE_PATH'] = 'somewhere-else.db'
+    report = engine.apply_config(new)
+
+    assert 'fef.tick_value' in report['restart_needed']
+    assert 'DATABASE_PATH' in report['restart_needed']
+    assert engine.config.contracts['fef'].tick_value == 1.0
+    assert engine.config.settings['DATABASE_PATH'] != 'somewhere-else.db'
+    # and the snapshot carries it, so a setting that looks saved and is not
+    # never passes for one that is
+    snap = engine.snapshot(now=gw.now)
+    assert 'fef.tick_value' in snap['engine']['config_restart_needed']
+    assert snap['engine']['config_reloaded_at'] is not None
+
+
+def test_a_contract_added_or_removed_needs_a_restart(tmp_path):
+    from fixtrader.config import ContractConfig
+    engine, gw, db, cfg = build(tmp_path)
+    warm_the_window(engine, gw)
+
+    new = edited(cfg)
+    new.contracts['other'] = ContractConfig(key='other', symbol='XYZ')
+    del new.contracts['fef']
+    report = engine.apply_config(new)
+
+    assert 'contract other added' in report['restart_needed']
+    assert 'contract fef removed' in report['restart_needed']
+    assert set(engine.config.contracts) == {'fef'}       # nothing half-done
+
+
+def test_a_display_change_is_adopted_live(tmp_path):
+    """A rename or a decimals change re-prices nothing. It applies now."""
+    engine, gw, db, cfg = build(tmp_path)
+    warm_the_window(engine, gw)
+    new = edited(cfg)
+    new.contracts['fef'].name = 'Iron ore Nov/Dec'
+    new.contracts['fef'].decimals = 2
+    report = engine.apply_config(new)
+    assert 'fef.name' in report['changed'] and 'fef.decimals' in report['changed']
+    assert engine.snapshot(now=gw.now)['contracts'][0]['name'] == 'Iron ore Nov/Dec'

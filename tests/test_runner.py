@@ -102,3 +102,54 @@ def test_a_stale_snapshot_is_not_a_running_engine(tmp_path):
 
 def test_no_snapshot_at_all_is_not_a_running_engine(tmp_path):
     assert runner.another_engine_is_running(str(tmp_path / 'nothing.json')) is None
+
+
+def test_an_edited_config_is_picked_up_while_the_loop_runs(tmp_path):
+    """Settings are edited in the WEB process, which writes config.json and
+    nothing else. Without the engine reading it back, a saved setting sits on
+    disk looking applied while the loop goes on trading the old one."""
+    cfg = a_config(tmp_path)
+    passes = {'n': 0}
+
+    def stop_after_a_few():
+        passes['n'] += 1
+        if passes['n'] == 2:
+            # Edited between one pass and the next, exactly as the web
+            # process would have written it.
+            cfg.contracts['fef'].overrides['entry_threshold'] = 3.25
+            cfg.save()
+        return passes['n'] > 6
+
+    runner.run(config_path=str(tmp_path / 'config.json'),
+               status_path=str(tmp_path / 'status.json'),
+               command_path=str(tmp_path / 'commands.jsonl'),
+               result_path=str(tmp_path / 'results.json'),
+               simulated=True, should_stop=stop_after_a_few)
+
+    snap = json.loads((tmp_path / 'status.json').read_text())
+    assert snap['contracts'][0]['settings']['entry_threshold'] == 3.25
+    assert snap['engine']['config_reloaded_at'] is not None
+    assert snap['engine']['config_restart_needed'] == []
+
+
+def test_an_unreadable_config_does_not_stop_the_loop(tmp_path):
+    """A half-written file is not a reason to stop managing live positions."""
+    a_config(tmp_path)
+    passes = {'n': 0}
+
+    def stop_after_a_few():
+        passes['n'] += 1
+        if passes['n'] == 2:
+            (tmp_path / 'config.json').write_text('{ this is not json')
+        return passes['n'] > 6
+
+    runner.run(config_path=str(tmp_path / 'config.json'),
+               status_path=str(tmp_path / 'status.json'),
+               command_path=str(tmp_path / 'commands.jsonl'),
+               result_path=str(tmp_path / 'results.json'),
+               simulated=True, should_stop=stop_after_a_few)
+
+    snap = json.loads((tmp_path / 'status.json').read_text())
+    assert snap['engine']['alive'] is True
+    # the settings it already had are still the ones in force
+    assert snap['contracts'][0]['settings']['entry_threshold'] is not None

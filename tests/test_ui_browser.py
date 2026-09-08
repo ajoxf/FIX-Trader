@@ -624,3 +624,102 @@ def test_clicking_a_window_brings_it_to_the_front(analysis_server):
         assert after['onTop'] is True
         browser.close()
     assert errors == []
+
+
+# -- one contract's settings, behind the gear ------------------------------
+
+def open_config(page):
+    page.locator('.contractwin .cog').click()
+    page.wait_for_selector('.cfgwin')
+    page.wait_for_selector('.cfgwin .cf-row')
+    return page.locator('.cfgwin')
+
+
+def test_the_gear_opens_this_contracts_settings(analysis_server):
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        cfg = open_config(page)
+        assert cfg.locator('.title').inner_text() == 'Iron ore Oct/Nov'
+        # its OWN setting is in the box, and marked as its own
+        box = cfg.locator('#cf-entry_threshold')
+        assert box.input_value() == '2'
+        assert 'own' in (cfg.locator('.cf-row:has(#cf-entry_threshold) .cf-eff')
+                         .get_attribute('class'))
+        # a field it does not set is BLANK, with the desk default in grey
+        blank = cfg.locator('#cf-stop_loss_z')
+        assert blank.input_value() == ''
+        eff = cfg.locator('.cf-row:has(#cf-stop_loss_z) .cf-eff')
+        assert eff.inner_text() == '4'
+        assert 'own' not in (eff.get_attribute('class') or '')
+        browser.close()
+    assert errors == []
+
+
+def test_a_blank_box_clears_an_override_and_zero_sets_one(analysis_server):
+    """The rule the panel turns on: blank means 'use the desk default', and
+    0 is a real number. Confusing the two is how a contract quietly ends up
+    with no cooldown, or with a target of break-even."""
+    from fixtrader.config import TraderConfig
+    url, tmp = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        cfg = open_config(page)
+        cfg.locator('#cf-entry_threshold').fill('')       # back to the default
+        cfg.locator('#cf-stop_loss_z').fill('0')          # a real number
+        cfg.locator('.cfg-save').click()
+        page.wait_for_timeout(600)
+
+        saved = TraderConfig.from_file(str(tmp / 'config.json'))
+        overrides = saved.contracts['fef'].overrides
+        assert overrides.get('entry_threshold') is None
+        assert overrides.get('stop_loss_z') == 0
+        # and the panel now reads back what was actually saved
+        assert cfg.locator('#cf-entry_threshold').input_value() == ''
+        assert cfg.locator('#cf-stop_loss_z').input_value() == '0'
+        browser.close()
+    assert errors == []
+
+
+def test_every_group_of_settings_renders(analysis_server):
+    """The comprehensiveness is the point — a desk that cannot set a
+    contract's own costs trades eight instruments on one's assumptions."""
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        cfg = open_config(page)
+        for group, probe in [('Filters', '#cf-min_std_multiple'),
+                             ('Size & risk', '#cf-max_position'),
+                             ('Execution', '#cf-exit_on_timeout'),
+                             ('Costs', '#cf-profit_target_pct'),
+                             ('Display', '#cf-decimals')]:
+            cfg.locator('.cfg-tabs button', has_text=group).click()
+            page.wait_for_selector('.cfgwin ' + probe)
+        browser.close()
+    assert errors == []
+
+
+def test_a_setting_that_is_saved_but_not_in_force_says_so(server):
+    """A setting that looks saved and is not is worse than one that plainly
+    needs the engine bounced. The engine names them; the banner reads them."""
+    url, tmp = server
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['engine']['config_restart_needed'] = ['fef.tick_value', 'DATABASE_PATH']
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('#restart-banner:not(.hidden)')
+        text = page.locator('#restart-banner').inner_text()
+        assert 'fef.tick_value' in text and 'DATABASE_PATH' in text
+        # the control: nothing waiting, nothing shown
+        snap['engine']['config_restart_needed'] = []
+        (tmp / 'status.json').write_text(json.dumps(snap))
+        page.wait_for_function(
+            "document.getElementById('restart-banner')"
+            ".classList.contains('hidden')")
+        browser.close()
+    assert errors == []
