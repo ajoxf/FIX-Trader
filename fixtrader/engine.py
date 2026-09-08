@@ -59,10 +59,6 @@ class ContractRuntime:
         #: Touches raised but not yet written; the engine drains these.
         self.pending_touches: List[Any] = []
         self.halted_reason: Optional[str] = None
-        #: OUR OWN fills, for the ladder's LTQ column. There is no spread
-        #: tape here, so this is all there is — and the screen says so rather
-        #: than implying a market print.
-        self.prints: List[Dict[str, Any]] = []
 
     def roll_day(self, now: datetime) -> None:
         today = now.date().isoformat()
@@ -330,9 +326,6 @@ class Engine:
     def _apply_fill(self, rt: ContractRuntime, event, intent: Intent,
                     now: datetime) -> None:
         fill = event.fill
-        rt.prints.append({'price': fill.price, 'qty': fill.qty,
-                          'side': fill.side.value, 'ts': now.isoformat()})
-        del rt.prints[:-40]
         contract = rt.contract
         settings = self.config.effective(contract.key)
 
@@ -493,155 +486,6 @@ class Engine:
                          "closed by hand", rt.book, now)
         return {'ok': True, 'algo_stood_down': was_armed}
 
-    # -- manual trading ----------------------------------------------------
-
-    def manual_blocked(self) -> Optional[str]:
-        """Why a hand order cannot be sent right now, or None.
-
-        Two gates, and the second is not a setting. Manual trading is off
-        until a desk turns it on, and it is refused on PROD however it is
-        set: an algo and a hand on the same contract can disagree, and the
-        ladder's job is to prove the order path in UAT, not to trade beside
-        the algo on live money.
-        """
-        if not self.config.settings.get('MANUAL_TRADING_ENABLED', False):
-            return 'manual trading is off — turn it on in Settings'
-        if self.config.environment_label == 'PROD':
-            return ('the ladder is a TEST tool and this is a PROD venue — '
-                    'hand orders are refused. Use TT to trade by hand.')
-        return None
-
-    def manual_order(self, key: str, side: str, qty: float,
-                     price: Optional[float] = None,
-                     order_type: str = 'LIMIT',
-                     now: Optional[datetime] = None) -> Dict[str, Any]:
-        """One click on a ladder row. One click is ONE order.
-
-        The rules that make a hand order safe to send through the same book
-        the algo uses:
-
-        - **Manual trading is off until it is turned on**, desk-wide, and it
-          is a TEST tool: it is refused on a PROD venue whatever the setting
-          says. The ladder is there to prove the order path works, not to
-          trade the desk's money alongside an algo.
-        - **A hand order stands that contract's algo down.** Otherwise the two
-          fight: the trader puts a position on and the algo closes it at its
-          own target, or the trader gets flat and the algo re-enters on the
-          next pass. Whoever is trading a contract, it is one of them.
-        - **An order opposite an open position CLOSES it**, carrying the close
-          flag and that position's tickets, capped at what is open. The excess
-          is NOT sent — reversing takes a second click, deliberately, rather
-          than one click quietly doing two opposite things.
-        - **A guard may withhold a hand OPEN. Nothing withholds a close.**
-        """
-        blocked = self.manual_blocked()
-        if blocked:
-            return {'ok': False, 'error': blocked}
-        rt = self.runtimes.get(key)
-        if rt is None:
-            return {'ok': False, 'error': f'no contract {key}'}
-        if self.killed:
-            return {'ok': False, 'error': 'KILL ALL is on'}
-
-        try:
-            want = Side(str(side).upper())
-        except ValueError:
-            return {'ok': False, 'error': f'{side!r} is not a side'}
-        qty = float(qty or 0)
-        if qty <= 0:
-            return {'ok': False, 'error': 'quantity must be positive'}
-
-        contract = rt.contract
-        settings = self.config.effective(key)
-        # Every entry point on this engine takes its clock from the caller,
-        # so the guards can be exercised without waiting for real seconds.
-        now = now or utcnow()
-        book = rt.book
-        stood_down = False
-        if contract.algo_on:
-            # One of them trades this contract, not both.
-            self.set_algo(key, False)
-            stood_down = True
-
-        pos = rt.position
-        closing = (pos is not None and pos.is_open and pos.side is not want)
-
-        if closing:
-            capped = min(qty, pos.qty)
-            settings = dict(settings, exit_order_type=str(order_type).upper())
-            wo = self.executor.place(
-                contract, settings, want, capped, Intent.CLOSE, book, now,
-                reason='closed by hand', open_qty=pos.qty,
-                position_id=pos.id, position=pos, manual=True,
-                price_override=price)
-            if wo is None:
-                return {'ok': False, 'error': 'nothing could be sent'}
-            self._exit_reasons[wo.clordid] = ExitReason.CLOSE_NOW
-            excess = max(0.0, qty - capped)
-            note = f'closing {capped:g}'
-            if excess:
-                note += (f' — the other {excess:g} was NOT sent; click again '
-                         f'to open the other way')
-            self._say(rt, 'ORDER', f'hand {want.value} {capped:g} — closing')
-            return {'ok': True, 'closing': True, 'qty': capped,
-                    'refused_excess': excess,
-                    'algo_stood_down': stood_down, 'note': note}
-
-        # opening
-        status = rt.guard.status(now)
-        if status['stale']:
-            return {'ok': False, 'algo_stood_down': stood_down,
-                    'error': ('the quote is stale — a hand OPEN is withheld '
-                              'too. A CLOSE never is.')}
-        if book is None or not book.usable:
-            return {'ok': False, 'algo_stood_down': stood_down,
-                    'error': 'the book is one-sided or crossed'}
-        max_position = float(settings.get('max_position', 0) or 0)
-        open_qty = pos.qty if (pos is not None and pos.is_open) else 0.0
-        if max_position and open_qty + qty > max_position:
-            return {'ok': False, 'algo_stood_down': stood_down,
-                    'error': (f'position limit — {open_qty:g} open, '
-                              f'{max_position:g} allowed')}
-
-        settings = dict(settings, entry_order_type=str(order_type).upper())
-        wo = self.executor.place(
-            contract, settings, want, qty, Intent.OPEN, book, now,
-            reason='opened by hand', decision=self._decision(rt.window),
-            manual=True, price_override=price)
-        if wo is None:
-            return {'ok': False, 'algo_stood_down': stood_down,
-                    'error': 'nothing could be sent'}
-        self._say(rt, 'ORDER', f'hand {want.value} {qty:g}')
-        return {'ok': True, 'closing': False, 'qty': qty,
-                'algo_stood_down': stood_down,
-                'note': f'{want.value} {qty:g} sent'}
-
-    def cancel_order(self, clordid: str) -> Dict[str, Any]:
-        """Pull one working order — ours only, and by its own id.
-
-        Behind the same gate as a hand order: on a PROD venue the order this
-        would pull is the algo's, and pulling it by hand while the algo still
-        believes it is working is how a position ends up half on.
-        """
-        blocked = self.manual_blocked()
-        if blocked:
-            return {'ok': False, 'error': blocked}
-        if self.executor.cancel(clordid):
-            return {'ok': True}
-        return {'ok': False, 'error': 'no working order of ours with that id'}
-
-    def cancel_all(self, key: Optional[str] = None) -> Dict[str, Any]:
-        """Pull every working order of OURS on one contract, by hand.
-
-        Behind the manual gate for the same reason `cancel_order` is: on a
-        live venue these are the algo's orders. KILL ALL does not come
-        through here — it stands the algos down first.
-        """
-        blocked = self.manual_blocked()
-        if blocked:
-            return {'ok': False, 'error': blocked}
-        return {'ok': True, 'cancelled': self.executor.cancel_all(key or None)}
-
     def kill_all(self, close_positions: bool = False) -> Dict[str, Any]:
         """Stand every algo down and cancel our working orders.
 
@@ -689,8 +533,6 @@ class Engine:
 
     def snapshot(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         now = now or utcnow()
-        # Computed once: it is a desk-wide answer, not a per-contract one.
-        manual_blocked = self.manual_blocked()
         contracts = []
         for key, rt in self.runtimes.items():
             contract = rt.contract
@@ -750,23 +592,6 @@ class Engine:
                 'position': self._position_dict(pos, open_pnl),
                 'orders': [w.to_dict() for w in
                            self.executor.working_for(key)],
-                'ladder': {
-                    'increment': contract.tick_size,
-                    'prints': rt.prints[-12:],
-                    'manual': manual_blocked is None,
-                    'blocked': manual_blocked,
-                    'click_convention': self.config.settings.get(
-                        'CLICK_CONVENTION', 'TOUCH'),
-                    'click_away_rests': self.config.settings.get(
-                        'CLICK_AWAY_RESTS', True),
-                    'confirm_market': self.config.settings.get(
-                        'CONFIRM_MARKET_CLICKS', False),
-                    'rows': int(self.config.settings.get('LADDER_ROWS', 21)),
-                    'row_height': int(self.config.settings.get(
-                        'LADDER_ROW_HEIGHT_PX', 17)),
-                    'recentre_sec': float(self.config.settings.get(
-                        'RECENTRE_SEC', 5.0) or 0),
-                },
                 'pnl_today': round(rt.pnl_today, 2),
                 'trades_today': rt.trades_today,
                 'last_event': rt.last_event,

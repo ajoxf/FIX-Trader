@@ -50,28 +50,6 @@
   </section>
 
   <section class="card">
-    <h5>The test ladder <span class="note">for proving the order path, not for trading</span></h5>
-    <div class="cb">
-      <label class="f"><span>Hand orders from the ladder <small>UAT and the simulator only</small></span>
-        <input type="checkbox" class="chk" data-key="MANUAL_TRADING_ENABLED"></label>
-      <label class="f"><span>Which column buys</span>
-        <select data-key="CLICK_CONVENTION">
-          <option value="TOUCH">Asks buy, Bids sell (hit / lift)</option>
-          <option value="TT">Bids buy, Asks sell (TT ladder)</option>
-        </select></label>
-      <label class="f"><span>A click away from the touch rests</span>
-        <input type="checkbox" class="chk" data-key="CLICK_AWAY_RESTS"></label>
-      <label class="f"><span>Ask before a market click</span>
-        <input type="checkbox" class="chk" data-key="CONFIRM_MARKET_CLICKS"></label>
-      <div class="hint">The ladder is a <b>test instrument</b>: it is there to
-        prove a click becomes an order, that the ACK comes back and that a
-        close carries its own tickets. A <b>PROD</b> venue refuses every hand
-        order whatever this says. A hand order also <b>stands that contract's
-        algo down</b> &mdash; one of you trades a contract, not both.</div>
-    </div>
-  </section>
-
-  <section class="card">
     <h5>Guards <span class="note">a guard withholds an order, never a close</span></h5>
     <div class="cb">
       <label class="f"><span>Quote stale after <small>seconds; 0 = off</small></span>

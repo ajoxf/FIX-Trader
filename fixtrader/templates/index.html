@@ -226,85 +226,13 @@
   </section>
 </template>
 
-<!-- The ladder: manual trading, one window per contract.
-     Five columns, the reference screen's. The ASKS column buys and the BIDS
-     column sells under the TOUCH convention (a click lifts or hits); the TT
-     convention swaps which column sends which side and nothing else. A click
-     away from the touch RESTS at that price — a buy under the offer cannot
-     cross at any price, and "rest it here" is what a trader means by clicking
-     there. -->
-<template id="ladder-template">
-  <section class="win ladderwin">
-    <div class="titlebar">
-      <span class="swatch" style="background:#1f7ac2"></span>
-      <span class="title"></span>
-      <span class="venue lad-mode"></span>
-      <span class="winbtns"><button class="winbtn close" title="Close the ladder">&times;</button></span>
-    </div>
-
-    <div class="badgebar">
-      <span class="state lad-state">MANUAL</span>
-      <span class="lad-warn hint"></span>
-      <span class="algo"><button class="btn sm lad-type" title="LIMIT rests at the clicked price; MARKET crosses now">LIMIT</button></span>
-    </div>
-
-    <div class="lad-body">
-      <div class="rail">
-        <button class="quick buy-touch" title="Buy at the offer (B)">BUY</button>
-        <button class="quick sell-touch" title="Sell at the bid (S)">SELL</button>
-        <button class="quick flatten" title="Close everything open on this contract, at market, by its own tickets. Asks once (F)">FLATTEN</button>
-
-        <label class="inline-field"><span>Qty</span>
-          <input class="lad-qty" type="number" min="1" step="1" value="1"></label>
-        <div class="keypad">
-          <button class="qty" data-qty="1">1</button>
-          <button class="qty" data-qty="5">5</button>
-          <button class="qty" data-qty="10">10</button>
-          <button class="qty" data-qty="25">25</button>
-        </div>
-
-        <div class="rail-label">Working</div>
-        <div class="cxl-row">
-          <button class="cxl cxl-all" title="Cancel every working order of ours on this contract (X)">CXL All <sup class="count-all"></sup></button>
-        </div>
-
-        <label class="check lad-lock" title="Hold the ladder where it is — no automatic re-centring"><input type="checkbox"> Lock</label>
-        <button class="btn sm recentre" title="Put the window back around the market now">Centre</button>
-
-        <div class="rail-label">Position</div>
-        <div class="lad-pos flatline">flat</div>
-      </div>
-
-      <div class="grid">
-        <table>
-          <thead>
-            <tr>
-              <th class="c-work" title="YOUR resting orders at this level. Click to add one more; right-click to pull one.">Work</th>
-              <th class="c-bid" title="The bid. Click here to SELL at that level.">Bids</th>
-              <th class="c-price">Price</th>
-              <th class="c-ask" title="The offer. Click here to BUY at that level.">Asks</th>
-              <th class="c-ltq" title="The size of the most recent FILL of OURS at this price. There is no spread tape here, so this is our own trading, not the market's.">LTQ</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="wfoot">
-      <span class="lad-touch"></span>
-      <span class="grow lad-note"></span>
-    </div>
-  </section>
-</template>
-
 <template id="contract-template">
   <section class="win contractwin">
     <div class="titlebar">
       <span class="swatch"></span>
       <span class="title"></span>
       <span class="venue"></span>
-      <span class="winbtns"><button class="winbtn ladder-btn" title="Open the test ladder. Hand orders are for proving the order path in UAT — a PROD venue refuses them">&#9776;</button><button class="winbtn cog" title="This contract's settings">&#9881;</button><button class="winbtn close" title="Close this window">&times;</button></span>
+      <span class="winbtns"><button class="winbtn cog" title="This contract's settings">&#9881;</button><button class="winbtn close" title="Close this window">&times;</button></span>
     </div>
     <div class="badgebar">
       <span class="state">&mdash;</span>

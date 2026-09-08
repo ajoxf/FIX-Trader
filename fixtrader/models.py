@@ -234,10 +234,6 @@ class OrderRequest:
     tif: TimeInForce = TimeInForce.DAY
     reduce_only: bool = False
     reason: str = ""                       # why the algo sent it
-    #: Whether a person clicked for this, rather than the algo. Carried all
-    #: the way to the journal: a hand trade and an algo trade in the same
-    #: statistics is a win rate that describes neither.
-    manual: bool = False
     #: Said to the VENUE. Never left at OPEN on a closing order — that is the
     #: order that opens an opposite position instead of closing one.
     position_effect: PositionEffect = PositionEffect.OPEN
@@ -368,8 +364,6 @@ class Position:
     #: The venue trading DAY this was opened on, for venues that price a
     #: close-today differently from a close-yesterday.
     opened_session: Optional[str] = None
-    #: Opened by hand rather than by the algo.
-    manual: bool = False
 
     @property
     def is_open(self) -> bool:

@@ -58,7 +58,6 @@ class WorkingOrder:
         self.text = ""
         self.escalated = False
         self.position_effect = PositionEffect.OPEN
-        self.manual = False
 
     @property
     def remaining(self) -> float:
@@ -79,7 +78,6 @@ class WorkingOrder:
             'sent_at': self.sent_at.isoformat() if self.sent_at else None,
             'sent_at_touch': self.sent_at_touch, 'escalated': self.escalated,
             'position_effect': self.position_effect.value,
-            'manual': self.manual,
         }
 
 
@@ -161,8 +159,7 @@ class Executor:
               intent: Intent, book, now: datetime, reason: str = "",
               open_qty: float = 0.0, position_id: Optional[int] = None,
               decision: Optional[Dict[str, Any]] = None,
-              position=None, manual: bool = False,
-              price_override: Optional[float] = None) -> Optional[WorkingOrder]:
+              position=None) -> Optional[WorkingOrder]:
         """Send one order. Returns None when there is nothing safe to send.
 
         A CLOSE is never a bare opposite order. It carries an explicit
@@ -184,16 +181,10 @@ class Executor:
 
         price = None
         if order_type is OrderType.LIMIT:
-            if price_override is not None:
-                # A hand click names its own price. The offset is the ALGO's
-                # way of choosing one; a trader who clicked a row meant that
-                # row.
-                price = sizing.round_to_tick(price_override, contract.tick_size)
-            else:
-                price = limit_price(book, side,
-                                    float(settings.get(f'{prefix}_limit_offset_ticks',
-                                                       1.0) or 0.0),
-                                    contract.tick_size)
+            price = limit_price(book, side,
+                                float(settings.get(f'{prefix}_limit_offset_ticks',
+                                                   1.0) or 0.0),
+                                contract.tick_size)
             if price is None:
                 # No book to price a limit against. Crossing instead would
                 # send a market order the operator did not ask for.
@@ -208,7 +199,7 @@ class Executor:
             # reduce_only is a CAP, not an instruction. It is sent as well as
             # the effect, never instead of it.
             reduce_only=(intent is Intent.CLOSE), reason=reason,
-            position_effect=effect, manual=manual,
+            position_effect=effect,
             position_id=position_id or getattr(position, 'id', None),
             close_tickets=list(getattr(position, 'tickets', []) or [])
             if intent is Intent.CLOSE else [])
@@ -219,7 +210,6 @@ class Executor:
                           price, now, touch, reason,
                           position_id or getattr(position, 'id', None))
         wo.position_effect = effect
-        wo.manual = manual
         self.working[clordid] = wo
         self.intents[clordid] = intent
         if decision is not None:
@@ -288,14 +278,6 @@ class Executor:
             wo.price = wanted
             self._persist(wo, now)
         return said
-
-    def cancel(self, clordid: str) -> bool:
-        """Pull ONE of our orders. Never one we did not send."""
-        wo = self.working.get(clordid)
-        if wo is None or wo.state.is_done:
-            return False
-        self.gateway.cancel(clordid)
-        return True
 
     def cancel_all(self, contract_key: Optional[str] = None) -> int:
         """Cancel OUR working orders, scoped by ClOrdID. Never touches an

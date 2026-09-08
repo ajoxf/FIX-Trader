@@ -24,9 +24,6 @@ const state = {
   focused: null,
   free: false,
   notify: { orders: false, fills: true, positions: true, rejects: true },
-  // Which ladders are open. NOT persisted: a test tool does not reopen
-  // itself on the next start.
-  ladders: new Set(),
 };
 
 /* -- formatting ---------------------------------------------------------- */
@@ -165,14 +162,6 @@ function windowFor(key) {
       're-enter on the next pass; switch it back on when you want it.',
       'CLOSE NOW');
     if (ok) { await command('close_now', key); toast('ORDER', 'CLOSING', key); }
-  };
-  const ladBtn = el.querySelector('.ladder-btn');
-  if (ladBtn) ladBtn.onclick = () => {
-    state.ladders.add(key);
-    ladderWindow(key);
-    const c = (window.__lastSnapshot ? window.__lastSnapshot.contracts || [] : [])
-      .find((x) => x.key === key);
-    if (c) renderLadder(c);
   };
   el.querySelector('.cog').onclick = () => {
     toast('GUARD', 'NOT YET', 'The settings panel is the next build step.',
@@ -944,238 +933,6 @@ function renderChrome(snap) {
 
 /* -- the loop ------------------------------------------------------------- */
 
-/* -- the ladder -----------------------------------------------------------
- *
- * A TEST instrument. It is here so a desk can prove the order path by hand
- * in UAT — that a click becomes an order, that the ACK comes back, that a
- * close carries its own tickets — before an algo is trusted with it. The
- * engine refuses every hand order on a PROD venue whatever this screen
- * offers; the screen shows the refusal on the window's own face rather than
- * looking like a ladder that simply will not click.
- *
- * One click is ONE order. The engine decides what the click means: opposite
- * an open position it CLOSES, capped at what is open, and it stands that
- * contract's algo down. Nothing here computes any of that.
- */
-
-const ladders = {};        // key -> { centre, locked, qty, type, lastMid }
-
-function ladderWindow(key) {
-  let el = document.querySelector('.win[data-key="__ladder__' + key + '"]');
-  if (el) { raise(el); return el; }
-  const tpl = document.getElementById('ladder-template');
-  el = tpl.content.firstElementChild.cloneNode(true);
-  el.dataset.key = '__ladder__' + key;
-  el.dataset.contract = key;
-  const st = ladders[key] = ladders[key] ||
-    { centre: null, locked: false, qty: 1, type: 'LIMIT', lastMid: null };
-
-  const q = (sel) => el.querySelector(sel);
-
-  q('.close').onclick = () => {
-    state.ladders.delete(key); el.remove(); renderTabs();
-  };
-  q('.lad-type').onclick = () => {
-    st.type = st.type === 'LIMIT' ? 'MARKET' : 'LIMIT';
-    q('.lad-type').textContent = st.type;
-  };
-  q('.lad-qty').oninput = (e) => {
-    st.qty = Math.max(1, Math.floor(Number(e.target.value) || 1));
-    el.querySelectorAll('.keypad .qty').forEach((b) => {
-      b.classList.toggle('on', Number(b.dataset.qty) === st.qty);
-    });
-  };
-  el.querySelectorAll('.keypad .qty').forEach((b) => {
-    b.onclick = () => { st.qty = Number(b.dataset.qty); q('.lad-qty').value = st.qty;
-                        q('.lad-qty').dispatchEvent(new Event('input')); };
-  });
-  q('.buy-touch').onclick = () => send(key, 'BUY', null, 'MARKET');
-  q('.sell-touch').onclick = () => send(key, 'SELL', null, 'MARKET');
-  q('.flatten').onclick = async () => {
-    const ok = await ask('Flatten ' + key + '?',
-      'Everything open on this contract is closed at market, now, by its ' +
-      'own tickets — and this contract\'s algo is stood down with it.',
-      'FLATTEN');
-    if (ok) { await command('close_now', key); toast('ORDER', 'CLOSING', key); }
-  };
-  q('.cxl-all').onclick = async () => {
-    const r = await command('cancel_all', key);
-    if (r.ok) toast('ORDER', 'CANCELLED', (r.cancelled || 0) + ' working', key);
-    else toast('REJECT', 'REFUSED', r.error, key);
-  };
-  q('.lad-lock input').onchange = (e) => { st.locked = e.target.checked; };
-  q('.recentre').onclick = () => { st.centre = null; };
-
-  el.onmousedown = () => raise(el);
-  makeDraggable(el, '__ladder__' + key);
-  document.getElementById('desktop').appendChild(el);
-  const place = state.places['__ladder__' + key];
-  if (place) placeWindow(el, place.x, place.y);
-  raise(el);
-  return el;
-}
-
-/* Which side a column sends. It changes NOTHING but that: the price, the
- * sizing and the execution are identical either way. */
-function sideFor(column, convention) {
-  if (convention === 'TT') return column === 'bid' ? 'BUY' : 'SELL';
-  return column === 'ask' ? 'BUY' : 'SELL';         // TOUCH: lift the offer
-}
-
-async function send(key, side, price, type) {
-  const lad = (window.__lastSnapshot ? (window.__lastSnapshot.contracts || [])
-    .find((c) => c.key === key) : null);
-  const st = ladders[key];
-  const qty = st ? st.qty : 1;
-  const orderType = type || (st ? st.type : 'LIMIT');
-  if (orderType === 'MARKET' && lad && lad.ladder && lad.ladder.confirm_market) {
-    const ok = await ask(side + ' ' + qty + ' at market?',
-      'This crosses the spread now. Opposite an open position it CLOSES it, ' +
-      'capped at what is open.', side);
-    if (!ok) return;
-  }
-  const r = await command('manual_order', key,
-    { side, qty, price: orderType === 'MARKET' ? null : price,
-      order_type: orderType });
-  if (!r.ok) { toast('REJECT', 'REFUSED', r.error, key); return; }
-  toast('ORDER', 'HAND ' + side,
-    (r.closing ? 'closing ' : 'working ') + (r.qty !== undefined ? r.qty : qty) +
-    (price === null || price === undefined ? ' at market' : ' at ' + price), key);
-  if (r.algo_stood_down) {
-    toast('GUARD', 'ALGO OFF',
-      'A hand order stands that contract\'s algo down — one of you trades ' +
-      'this contract, not both. Switch it back on when you want it.', key);
-  }
-  if (r.refused_excess) {
-    toast('GUARD', 'NOT SENT',
-      r.refused_excess + ' beyond the open position was NOT sent. Reversing ' +
-      'takes a second click, deliberately.', key);
-  }
-}
-
-function renderLadder(c) {
-  const el = document.querySelector('.win[data-key="__ladder__' + c.key + '"]');
-  if (!el) return;
-  const lad = c.ladder || {};
-  const st = ladders[c.key];
-  const q = (sel) => el.querySelector(sel);
-  const d = c.decimals === undefined ? 4 : c.decimals;
-  const inc = lad.increment || c.tick_size || 0.01;
-  const rows = lad.rows || 21;
-
-  el.querySelector('.title').textContent = c.name + '  ' + c.symbol;
-  q('.lad-mode').textContent = 'TEST · ' +
-    (window.__lastSnapshot && window.__lastSnapshot.engine
-      ? (window.__lastSnapshot.engine.environment || '') : '');
-  el.classList.toggle('blocked', !lad.manual);
-  q('.lad-state').textContent = lad.manual ? 'MANUAL' : 'REFUSED';
-  q('.lad-warn').textContent = lad.blocked || '';
-  el.querySelectorAll('.rail button').forEach((b) => {
-    if (!b.classList.contains('recentre')) b.disabled = !lad.manual;
-  });
-  q('.lad-type').textContent = st.type;
-  el.style.setProperty('--row-h', (lad.row_height || 17) + 'px');
-
-  const bid = c.market ? c.market.bid : null;
-  const ask = c.market ? c.market.ask : null;
-  const mid = c.market ? c.market.mid : null;
-
-  // Re-centring never happens under a click: only when the market leaves the
-  // window, or when the trader asks for it.
-  if (mid !== null && mid !== undefined && !st.locked) {
-    const span = (rows / 2) * inc;
-    if (st.centre === null || Math.abs(mid - st.centre) > span * 0.6) {
-      st.centre = Math.round(mid / inc) * inc;
-    }
-  }
-  if (st.centre === null) { q('.lad-note').textContent = 'no market'; return; }
-
-  const working = {};                    // price -> { qty, close, ids: [] }
-  let atMarket = 0;
-  (c.orders || []).forEach((o) => {
-    if (o.price === null || o.price === undefined) { atMarket += 1; return; }
-    const k = (Math.round(o.price / inc) * inc).toFixed(6);
-    const cell = working[k] || (working[k] = { qty: 0, close: false, ids: [] });
-    cell.qty += (o.qty - (o.filled_qty || 0));
-    cell.close = cell.close || o.intent === 'CLOSE';
-    cell.ids.push(o.clordid);
-  });
-  const prints = {};                     // price -> our own last fill size
-  (lad.prints || []).forEach((p) => {
-    prints[(Math.round(p.price / inc) * inc).toFixed(6)] = p.qty;
-  });
-
-  const half = Math.floor(rows / 2);
-  const body = el.querySelector('.grid tbody');
-  body.innerHTML = '';
-  for (let i = half; i >= -half; i--) {
-    const price = st.centre + i * inc;
-    const k = (Math.round(price / inc) * inc).toFixed(6);
-    const tr = document.createElement('tr');
-    const isBid = bid !== null && Math.abs(price - bid) < inc / 2;
-    const isAsk = ask !== null && Math.abs(price - ask) < inc / 2;
-    if (isBid) tr.classList.add('inside');
-    if (mid !== null && Math.abs(price - mid) < inc / 2) tr.classList.add('at-mid');
-
-    const w = working[k];
-    const ltq = prints[k];
-    tr.innerHTML =
-      '<td class="c-work' + (w && w.close ? ' cl' : '') + '">' +
-        (w ? String(w.qty) : '') + '</td>' +
-      '<td class="c-bid' + (isBid ? ' q' : '') + '">' +
-        (isBid && c.market.bid_size ? c.market.bid_size : '') + '</td>' +
-      '<td class="c-price">' + price.toFixed(d) + '</td>' +
-      '<td class="c-ask' + (isAsk ? ' q' : '') + '">' +
-        (isAsk && c.market.ask_size ? c.market.ask_size : '') + '</td>' +
-      '<td class="c-ltq">' + (ltq === undefined ? '' : ltq) + '</td>';
-
-    const clickable = (col, td) => {
-      td.onclick = () => {
-        if (!lad.manual) { toast('REJECT', 'REFUSED', lad.blocked, c.key); return; }
-        const side = sideFor(col, lad.click_convention);
-        const touch = side === 'BUY' ? ask : bid;
-        const away = touch === null ||
-          (side === 'BUY' ? price < touch - inc / 2 : price > touch + inc / 2);
-        if (away && !lad.click_away_rests) {
-          toast('GUARD', 'NOT SENT',
-            'A click away from the touch is set to be refused, not rested. ' +
-            'CLICK_AWAY_RESTS turns that back on.', c.key);
-          return;
-        }
-        send(c.key, side, price, st.type);
-      };
-    };
-    clickable('bid', tr.children[1]);
-    clickable('ask', tr.children[3]);
-    // Right-click pulls ONE of ours at that level, by its own id.
-    tr.children[0].oncontextmenu = async (e) => {
-      e.preventDefault();
-      if (!w || !w.ids.length) return;
-      const r = await command('cancel_order', c.key, { clordid: w.ids[0] });
-      if (r.ok) toast('ORDER', 'CANCELLED', 'one at ' + price.toFixed(d), c.key);
-      else toast('REJECT', 'REFUSED', r.error, c.key);
-    };
-    body.appendChild(tr);
-  }
-
-  const count = (c.orders || []).length;
-  q('.count-all').textContent = count ? '(' + count + ')' : '';
-  const pos = c.position;
-  const pel = q('.lad-pos');
-  if (pos && pos.qty) {
-    pel.className = 'lad-pos ' + (pos.side === 'BUY' ? 'long' : 'short');
-    pel.textContent = (pos.side === 'BUY' ? '+' : '-') + pos.qty +
-      ' @ ' + num(pos.avg_price, d);
-  } else {
-    pel.className = 'lad-pos flatline';
-    pel.textContent = 'flat';
-  }
-  q('.lad-touch').textContent = num(bid, d) + ' / ' + num(ask, d);
-  q('.lad-note').textContent = (lad.click_convention === 'TT'
-    ? 'Bids buy · Asks sell' : 'Asks buy · Bids sell') +
-    (atMarket ? ' · ' + atMarket + ' at market' : '');
-}
-
 async function tick() {
   try {
     const res = await fetch('/api/snapshot', { cache: 'no-store' });
@@ -1183,15 +940,7 @@ async function tick() {
     renderChrome(snap);
     window.__lastSnapshot = snap;
     const seen = new Set(['__positions__', '__analysis__']);
-    (snap.contracts || []).forEach((c) => {
-      seen.add(c.key);
-      renderContract(c);
-      if (state.ladders.has(c.key)) {
-        seen.add('__ladder__' + c.key);
-        ladderWindow(c.key);
-        renderLadder(c);
-      }
-    });
+    (snap.contracts || []).forEach((c) => { seen.add(c.key); renderContract(c); });
     renderPositions(snap);
     if (!analysis.timer) {
       // History, not a market: a slow timer, off the desk's critical path.
@@ -1217,29 +966,6 @@ function restartTimer() {
 }
 
 /* -- wiring --------------------------------------------------------------- */
-
-/* Ladder keys. Only ever the ladder in front, and never while a field has
- * the caret — a quantity being typed is not a stream of BUY orders. */
-document.addEventListener('keydown', (e) => {
-  const tag = (e.target.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
-  if (e.metaKey || e.ctrlKey || e.altKey) return;
-  const el = document.querySelector('.win.ladderwin.raised');
-  if (!el) return;
-  const key = el.dataset.contract;
-  const k = e.key.toLowerCase();
-  if (k === 'b') el.querySelector('.buy-touch').click();
-  else if (k === 's') el.querySelector('.sell-touch').click();
-  else if (k === 'f') el.querySelector('.flatten').click();
-  else if (k === 'x') el.querySelector('.cxl-all').click();
-  else if (k === 'l') el.querySelector('.lad-lock input').click();
-  else if (k === 'm') el.querySelector('.lad-type').click();
-  else if (['1', '5'].includes(k)) {
-    const qty = el.querySelector('.lad-qty');
-    qty.value = k; qty.dispatchEvent(new Event('input'));
-  } else return;
-  e.preventDefault();
-});
 
 document.getElementById('kill').onclick = async () => {
   const ok = await ask('KILL ALL?',

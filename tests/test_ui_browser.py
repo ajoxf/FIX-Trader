@@ -69,10 +69,6 @@ SNAPSHOT = {
                      'opened_at': datetime.now(timezone.utc).isoformat(),
                      'open_pnl': -20.0},
         'orders': [], 'pnl_today': 0.0, 'trades_today': 0,
-        'ladder': {'increment': 0.01, 'prints': [], 'manual': True,
-                   'blocked': None, 'click_convention': 'TOUCH',
-                   'click_away_rests': True, 'confirm_market': False,
-                   'rows': 11, 'row_height': 17, 'recentre_sec': 5.0},
         'last_event': 'BUY 5 @ 0.48', 'target_missing': None,
     }],
     'portfolio': {
@@ -626,101 +622,5 @@ def test_clicking_a_window_brings_it_to_the_front(analysis_server):
         }""")
         assert after['raised'] is True
         assert after['onTop'] is True
-        browser.close()
-    assert errors == []
-
-
-# -- the ladder ------------------------------------------------------------
-
-def open_ladder(page):
-    page.locator('.contractwin .ladder-btn').click()
-    page.wait_for_selector('.ladderwin')
-    return page.locator('.ladderwin')
-
-
-def test_the_ladder_opens_from_the_button_and_reads_the_market(server):
-    url, _ = server
-    errors = []
-    with sync_playwright() as p:
-        browser, page = open_page(p, url, errors)
-        lad = open_ladder(page)
-        assert lad.locator('.lad-state').inner_text() == 'MANUAL'
-        assert lad.locator('.lad-touch').inner_text() == '0.4800 / 0.4900'
-        # 11 rows, and the touch is quoted on its own side
-        assert lad.locator('tbody tr').count() == 11
-        assert lad.locator('td.c-bid.q').inner_text() == '25'
-        assert lad.locator('td.c-ask.q').inner_text() == '25'
-        browser.close()
-    assert errors == []
-
-
-def test_a_click_sends_the_side_that_column_means(server):
-    """TOUCH: the ASKS column lifts the offer and BUYS. One click is one
-    order, and the price is the row that was clicked."""
-    url, tmp = server
-    errors = []
-    with sync_playwright() as p:
-        browser, page = open_page(p, url, errors)
-        lad = open_ladder(page)
-        lad.locator('td.c-ask.q').click()
-        page.wait_for_timeout(400)
-        sent = json.loads((tmp / 'commands.jsonl').read_text()
-                          .strip().splitlines()[-1])
-        assert sent['action'] == 'manual_order'
-        assert sent['args']['side'] == 'BUY'
-        assert abs(sent['args']['price'] - 0.49) < 1e-9
-
-        lad.locator('td.c-bid.q').click()               # the other column
-        page.wait_for_timeout(400)
-        sent = json.loads((tmp / 'commands.jsonl').read_text()
-                          .strip().splitlines()[-1])
-        assert sent['args']['side'] == 'SELL'
-        browser.close()
-    assert errors == []
-
-
-def test_a_prod_venue_shows_the_refusal_on_the_ladder_and_sends_nothing(server):
-    """The ladder is a TEST tool. On a live venue it does not look like a
-    ladder that merely will not click — it says why, in the engine's words."""
-    url, tmp = server
-    snap = json.loads((tmp / 'status.json').read_text())
-    snap['contracts'][0]['ladder'].update(
-        {'manual': False,
-         'blocked': 'the ladder is a TEST tool and this is a PROD venue'})
-    (tmp / 'status.json').write_text(json.dumps(snap))
-    errors = []
-    with sync_playwright() as p:
-        browser, page = open_page(p, url, errors)
-        lad = open_ladder(page)
-        page.wait_for_timeout(900)
-        assert lad.locator('.lad-state').inner_text() == 'REFUSED'
-        assert 'PROD' in lad.locator('.lad-warn').inner_text()
-        assert lad.locator('.buy-touch').is_disabled()
-        page.wait_for_timeout(300)
-        text = ((tmp / 'commands.jsonl').read_text()
-                if os.path.exists(tmp / 'commands.jsonl') else '')
-        assert 'manual_order' not in text
-        browser.close()
-    assert errors == []
-
-
-def test_flatten_asks_once_through_the_shared_modal(server):
-    url, tmp = server
-    errors = []
-    with sync_playwright() as p:
-        browser, page = open_page(p, url, errors)
-        lad = open_ladder(page)
-        lad.locator('.flatten').click()
-        page.wait_for_selector('#modal:not(.hidden)')
-        page.locator('#modal-cancel').click()           # answered NO
-        page.wait_for_timeout(300)
-        text = ((tmp / 'commands.jsonl').read_text()
-                if os.path.exists(tmp / 'commands.jsonl') else '')
-        assert 'close_now' not in text
-        lad.locator('.flatten').click()                 # the control
-        page.wait_for_selector('#modal:not(.hidden)')
-        page.locator('#modal-confirm').click()
-        page.wait_for_timeout(400)
-        assert 'close_now' in (tmp / 'commands.jsonl').read_text()
         browser.close()
     assert errors == []

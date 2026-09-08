@@ -104,15 +104,9 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
             return engine.set_master(bool(args.get('on', True)))
         if action == 'close_now':
             return engine.close_now(key)
-        if action == 'manual_order':
-            return engine.manual_order(
-                key, args.get('side'), args.get('qty'),
-                price=args.get('price'),
-                order_type=args.get('order_type', 'LIMIT'))
-        if action == 'cancel_order':
-            return engine.cancel_order(args.get('clordid', ''))
         if action == 'cancel_all':
-            return engine.cancel_all(key)
+            return {'ok': True,
+                    'cancelled': engine.executor.cancel_all(key or None)}
         if action == 'kill_all':
             return engine.kill_all(bool(args.get('close_positions', False)))
         if action == 'resume':
