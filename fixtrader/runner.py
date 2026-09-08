@@ -69,6 +69,14 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
             pass                      # not the main thread; the caller stops us
 
     interval = float(config.settings.get('ENGINE_POLL_SEC', 0.1) or 0.1)
+    #: The snapshot is published at the SCREEN's rate, not the engine's. The
+    #: screen refreshes twice a second, so writing it ten times a second was
+    #: nine wasted writes and — on Windows, where a rename over an open file
+    #: is refused — five times the chance of colliding with the reader.
+    publish_every = float(config.settings.get('PRICE_REFRESH_SEC', 0.5) or 0.5)
+    last_published = 0.0
+    publish_failures = 0
+
     logger.info("engine up — %d contracts, %s", len(engine.runtimes),
                 "simulated" if is_sim else "live gateway")
     try:
@@ -79,7 +87,30 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
             for command in bridge.drain():
                 bridge.record(command['id'], apply_command(engine, command))
             engine.poll()
-            atomicfile.write_json(status_path, engine.snapshot())
+
+            if once or started - last_published >= publish_every:
+                last_published = started
+                try:
+                    atomicfile.write_json(status_path, engine.snapshot())
+                    if publish_failures:
+                        logger.info("snapshot published again after %d "
+                                    "failed attempts", publish_failures)
+                        publish_failures = 0
+                except Exception as e:                       # noqa: BLE001
+                    # NOTHING here may stop the loop. The snapshot is what the
+                    # screen reads; the loop is what manages live positions.
+                    # An engine that dies because a browser had a display file
+                    # open has stopped trading for a reason that has nothing
+                    # to do with trading — and that is exactly what happened
+                    # the first time this ran on Windows.
+                    publish_failures += 1
+                    if publish_failures in (1, 10) or publish_failures % 100 == 0:
+                        logger.warning(
+                            "could not publish the snapshot (%s) — the engine "
+                            "is still running; the screen will say its prices "
+                            "are not live until this clears [%d in a row]",
+                            e, publish_failures)
+
             if once:
                 break
             elapsed = time.monotonic() - started
