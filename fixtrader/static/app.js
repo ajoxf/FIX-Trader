@@ -549,7 +549,17 @@ function renderPositions(snap) {
  */
 
 const analysis = { key: null, period: 'all', mode: 'live', timer: null,
-                   modeChosen: false };
+                   modeChosen: false,
+                   //: Which load is current. Two are easily in flight at
+                   //: once — a poll and a filter change — and if the slower
+                   //: one renders last the window shows one filter's rows
+                   //: under another filter's label. On this window that is
+                   //: not cosmetic: it is simulated trades appearing in a
+                   //: figure labelled live.
+                   seq: 0,
+                   //: The replay is expensive and its answer does not change
+                   //: with a poll — only with the contract or the period.
+                   replayFor: null, replayCache: null };
 
 function analysisWindow() {
   let el = document.querySelector('.win[data-key="__analysis__"]');
@@ -833,8 +843,97 @@ function renderAnalysisTabs(el, contracts) {
   add(null, 'All contracts');
 }
 
+/* -- what a different threshold would have done ---------------------------
+ *
+ * The touch table says which level REVERTS most — the inner bands always do.
+ * This is the question that follows, and it has a different answer: what did
+ * each level MAKE, after this contract's own round trip.
+ *
+ * Everything the replay does not know is printed under the table. A backtest
+ * whose assumptions are not on the page is a backtest somebody will quote
+ * without them.
+ */
+function renderReplay(el, report, live) {
+  const body = el.querySelector('.an-replay tbody');
+  const finding = el.querySelector('.an-replay-finding');
+  const note = el.querySelector('.an-replay-assumptions');
+  body.innerHTML = '';
+  // Nothing to run, or nothing long enough to run: that is about the
+  // RECORDING, and a table of dashes would read as "nothing paid".
+  if (!report || !report.rows || !report.rows.length || report.blocked_by) {
+    finding.className = 'finding warn an-replay-finding';
+    finding.textContent = 'Nothing to replay — ' +
+      ((report && report.blocked_by) ||
+       'no recorded prices for this contract over this period') +
+      '. The engine records a sample per pass while it runs.';
+    note.textContent = '';
+    return;
+  }
+  const best = report.best;
+  report.rows.forEach((r) => {
+    const tr = document.createElement('tr');
+    const isLive = live !== null && live !== undefined &&
+      Math.abs(r.entry_threshold - live) < 1e-9;
+    // A row nobody can judge is shown — the contrast is the point — and
+    // dimmed, because it is not a threshold to aim at.
+    if (!r.enough_to_judge) tr.classList.add('cannot-pay');
+    if (best && r.entry_threshold === best.entry_threshold) {
+      tr.classList.add('pays');
+    }
+    tr.innerHTML =
+      '<td><span class="tag">±' + num(r.entry_threshold, 2) + '</span>' +
+      (isLive ? ' <small>live</small>' : '') + '</td>' +
+      '<td class="r">' + (r.trades || 0) + '</td>' +
+      '<td class="r">' + (r.win_rate === null ? DASH : num(r.win_rate, 1) + '%') + '</td>' +
+      '<td class="r ' + cls(r.net) + '">' + money(r.net) + '</td>' +
+      '<td class="r ' + cls(r.per_trade) + '">' + money(r.per_trade) + '</td>' +
+      '<td class="r ' + cls(r.worst) + '">' + money(r.worst) + '</td>' +
+      '<td class="r">' + (r.median_hold_sec === null ? DASH
+        : seconds(r.median_hold_sec)) + '</td>' +
+      '<td>' + (r.enough_to_judge ? 'yes'
+        : '<span title="fewer than ten closed trades">too few</span>') + '</td>';
+    body.appendChild(tr);
+  });
+
+  if (best) {
+    finding.className = 'finding an-replay-finding';
+    finding.innerHTML = '<b>±' + num(best.entry_threshold, 2) +
+      ' is the threshold that PAID on this recording</b> — ' + best.trades +
+      ' closed trades for ' + money(best.net) + ' after costs (' +
+      money(best.per_trade) + ' each). A level that reverts more often is ' +
+      'not the same as a level that pays: the inner bands come back more ' +
+      'reliably and their move cannot cover the round trip.';
+  } else {
+    finding.className = 'finding warn an-replay-finding';
+    // If every row was withheld, the reason is the signal's own words, not
+    // a guess about the threshold — that is what sends a desk to change the
+    // number that was never the problem.
+    const withheld = report.rows.map((r) => r.blocked_by).filter(Boolean);
+    finding.textContent = withheld.length === report.rows.length
+      ? 'Nothing was entered at any threshold — ' + withheld[0] +
+        '. The threshold is not what is stopping this.'
+      : 'No threshold cleared its own costs on this recording with enough ' +
+        'trades to judge. That is a finding, not a missing number — ' +
+        'lowering the threshold onto something that reverts beautifully is ' +
+        'exactly how it gets worse.';
+  }
+
+  const a = report.assumptions || {};
+  note.innerHTML = 'This is a <b>signal</b> replay, not a fill simulator. ' +
+    'The book was ' + (a.book || 'assumed') + '; ' + (a.fills || '') + '; ' +
+    (a.costs || '') + '. Read against ' + (report.samples || 0) +
+    ' recorded prices.';
+}
+
+function cls(v) {
+  if (v === null || v === undefined) return '';
+  return v > 0 ? 'up' : v < 0 ? 'dn' : '';
+}
+
 async function loadAnalysis() {
   if (state.closed.has('__analysis__')) return;
+  const mine = ++analysis.seq;
+  const current = () => mine === analysis.seq;
   const el = analysisWindow();
   const contracts = (window.__lastSnapshot || {}).contracts || [];
   if (analysis.key === undefined) analysis.key = null;
@@ -868,6 +967,7 @@ async function loadAnalysis() {
 
   if (analysis.key === null) {
     const report = await getAnalysis('/api/analysis' + query);
+    if (!current()) return;                 // superseded while in flight
     if (!report) { say('the analysis could not be read'); return; }
     desk.classList.remove('hidden');
     el.querySelectorAll('.an-tiles, .an-two').forEach((n) => n.classList.add('hidden'));
@@ -880,6 +980,7 @@ async function loadAnalysis() {
   } else {
     const report = await getAnalysis('/api/analysis/' +
       encodeURIComponent(analysis.key) + query);
+    if (!current()) return;                 // superseded while in flight
     if (!report) {
       say('no analysis for ' + analysis.key +
           ' — it is on the screen but not in the configuration');
@@ -893,6 +994,22 @@ async function loadAnalysis() {
     renderExits(el, report.exits);
     renderCosts(el, report.costs, report.key);
     renderJournal(el, report.journal, report.decimals);
+    // Much slower than the rest of the window — it re-runs the whole
+    // recorded series at every threshold — so it is fetched separately, and
+    // only when the question it answers has actually changed. Re-running it
+    // on the fifteen-second refresh would spend most of the desk's CPU
+    // recomputing an answer nobody asked again.
+    const asked = analysis.key + '|' + analysis.period;
+    if (asked !== analysis.replayFor) {
+      analysis.replayFor = asked;
+      getAnalysis('/api/replay/' + encodeURIComponent(analysis.key) +
+        '?period=' + analysis.period).then((r) => {
+          analysis.replayCache = r;
+          if (current()) renderReplay(el, r, report.entry_threshold);
+        });
+    } else if (analysis.replayCache) {
+      renderReplay(el, analysis.replayCache, report.entry_threshold);
+    }
     el.querySelector('.an-note').textContent = report.symbol +
       ' · closed trades only';
     el.querySelector('.an-journal-note').textContent =
@@ -917,8 +1034,10 @@ async function loadAnalysis() {
  * are one dropdown away is the window quietly lying. */
 async function elsewhereNote(el, query) {
   const modes = { live: 'Live only', sim: 'Simulated only', both: 'Live + simulated' };
+  const mine = analysis.seq;
   const others = Object.keys(modes).filter((m) => m !== analysis.mode);
   for (const other of others) {
+    if (mine !== analysis.seq) return;      // the filter moved on
     const alt = await getAnalysis('/api/analysis/' +
       encodeURIComponent(analysis.key) +
       query.replace('mode=' + analysis.mode, 'mode=' + other));

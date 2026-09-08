@@ -569,3 +569,9 @@ table.grid tr.cannot-pay .tag { opacity: .55; }
           color: var(--ink-faint); }
 .cf-eff.own { color: #2c3036; font-weight: 600; }
 .cfgwin .wfoot .cfg-note { color: var(--ink-mute); }
+
+/* The threshold that actually paid. Marked, because the table beside it —
+ * which level reverts most — reliably points somewhere else. */
+table.grid tr.pays td { background: #eef6f0; }
+table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700; }
+.an-replay-assumptions { line-height: 1.5; }

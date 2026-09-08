@@ -86,6 +86,14 @@ the drawing wins.
   cover the round trip. Any "best level" must clear its costs, or the Analysis
   window invites lowering the threshold onto something that reverts
   beautifully and loses money every time.
+- **The replay is a SIGNAL replay and says so on its own face.** It calls
+  `stats` and `signals` — never a second implementation of a rule — over
+  recorded mids. The book either side of the mid was never stored, so the
+  spread is a stated assumption printed under the table; costs are the
+  configured BUDGET and `slippage_measured` is None for ever; there is no
+  queue. Where every entry was withheld it reports the signal's own words,
+  because "nothing crossed the threshold" when the edge filter was the
+  blocker sends the desk to change the number that was never the problem.
 - **Slippage can be NEGATIVE** — the market moving our way between the price an
   order was aimed at and the fill. That is a price improvement, not a cost, and
   a budget is never negative: proposing one would have the edge filter pay the

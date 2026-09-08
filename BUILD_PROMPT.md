@@ -329,6 +329,45 @@ section sits in phase 1 rather than being bolted on later:
 
 ---
 
+### 2.7 The replay — what a different threshold would have done
+
+The touch table in §2.6 says which level REVERTS most. It is always an inner
+band, and that is the finding that loses money if it is acted on directly.
+The replay answers the question that follows: what did each level MAKE, after
+this contract's own round trip.
+
+It re-runs `stats.StatsWindow`, `signals.entry_signal` and
+`signals.exit_signal` — the desk's own code, never a second implementation —
+over the mids the engine recorded, and charges the configured round trip
+against every trade. A threshold changed in `signals.py` changes what the
+replay says on the same commit.
+
+**What it is honest about, on the page, under every table:**
+
+- **It is a SIGNAL replay, not a fill simulator.** The card says so.
+- **The book was not recorded** — only the mid. The spread is an ASSUMPTION,
+  one tick by default, and it is not cosmetic: an exit reads the executable
+  side, so a replay run on the mid would flatter every exit by half a spread.
+- **Costs are BUDGETED.** `slippage_measured` is None and stays None. The
+  measured figure lives in §2.6 beside the budget, and a backtest reporting a
+  cost it never paid is how a budget stops being corrected from data.
+- **There is no queue.** A limit entry is treated as filled where its signal
+  fired, which flatters a limit strategy.
+- **A position open at the end is excluded** from every P&L figure and
+  counted separately.
+- **Fewer than ten closed trades is not a finding**, and such a row can never
+  be named best however much money is against it.
+- **Where every entry was withheld, the SIGNAL'S OWN WORDS are reported** —
+  "edge 1.1x, sigma against a round trip of…", not "nothing crossed the
+  threshold". The second is a different answer, and it sends the desk to
+  change the number that was never the problem.
+
+`GET /api/replay/<key>?period=&thresholds=` returns the sweep. The best row
+is the one that PAID with enough trades behind it, and where nothing cleared
+its costs the window says that outright rather than leaving a blank.
+
+---
+
 ## 3. The Exchanges page
 
 This is where the system is connected, and in this phase it is the page that
@@ -938,9 +977,9 @@ this order is building toward.
    opens the terminal in its own app window
 9. `README.md`, `CLAUDE.md`, `docs/FIX_NOTES.md`
 
-**Phase 2 — deferred.** Wire `FixGateway` against Orient's UAT; measured
-slippage against the budget; margin from the venue; Telegram; the backtest
-replay over recorded snapshots.
+**Phase 2.** Wire `FixGateway` against Orient's UAT; measured slippage
+against the budget; margin from the venue; Telegram. The **backtest replay**
+(`replay.py`, §2.7) is built.
 
 ---
 

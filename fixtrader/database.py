@@ -329,6 +329,37 @@ class Database:
                 " ORDER BY ts DESC LIMIT ?", (key, limit)).fetchall()
         return [r['price'] for r in reversed(rows)]
 
+    def samples_between(self, key: str, since=None, until=None,
+                        limit: int = 200000):
+        """Recorded mids for one contract, oldest first, as (ts, price).
+
+        `recent_samples` returns prices alone for warming a window on
+        restart; a replay needs the clock too, because a time stop and a
+        cooldown are measured in seconds and not in rows.
+        """
+        from datetime import datetime as _dt
+        sql = "SELECT ts, price FROM samples WHERE contract_key = ?"
+        args: list = [key]
+        if since is not None:
+            sql += " AND ts >= ?"
+            args.append(since.isoformat() if hasattr(since, 'isoformat')
+                        else str(since))
+        if until is not None:
+            sql += " AND ts <= ?"
+            args.append(until.isoformat() if hasattr(until, 'isoformat')
+                        else str(until))
+        sql += " ORDER BY ts ASC LIMIT ?"
+        args.append(int(limit))
+        rows = []
+        with self._connect() as conn:
+            for row in conn.execute(sql, args):
+                ts, price = row['ts'], row['price']
+                try:
+                    rows.append((_dt.fromisoformat(ts), float(price)))
+                except (TypeError, ValueError):
+                    continue          # a row we cannot read is skipped, not zeroed
+        return rows
+
     def trim_samples(self, key: str, keep: int = 2000) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(

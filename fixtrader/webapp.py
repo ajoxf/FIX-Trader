@@ -139,6 +139,51 @@ def create_app(config_path: str = "config.json",
         return jsonify(analysis.contract_report(_db(config), config, key,
                                                 period, mode))
 
+    @app.get('/api/replay/<path:key>')
+    def api_replay(key):
+        """What a DIFFERENT entry threshold would have done to the same
+        recorded market.
+
+        A SIGNAL replay, and the response says so: the book either side of
+        the recorded mid was never stored, the costs are the configured
+        budget rather than anything measured, and there is no queue. The
+        `assumptions` block travels with every figure for exactly that
+        reason.
+        """
+        from . import analysis, replay as replay_mod
+        config = load_config()
+        contract = config.contracts.get(key)
+        if contract is None:
+            return jsonify({'ok': False, 'error': f"no contract {key}"}), 404
+        period, _mode = _filters()          # a replay has no live/sim split:
+        # it re-runs the SIGNAL over recorded prices, and prices are prices.
+        since = analysis.period_start(period)
+        settings = config.effective(key)
+        rows = _db(config).samples_between(key, since=since)
+
+        thresholds = request.args.get('thresholds', '')
+        try:
+            levels = [float(x) for x in thresholds.split(',') if x.strip()]
+        except ValueError:
+            levels = []
+        if not levels:
+            base = float(settings.get('entry_threshold', 2.0) or 2.0)
+            levels = sorted({round(v, 2) for v in
+                             (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, base)})
+
+        out = replay_mod.sweep(
+            rows, settings, contract.tick_size, contract.tick_value,
+            thresholds=levels,
+            contract_multiplier=contract.contract_multiplier,
+            contract_key=key)
+        out.update({'ok': True, 'key': key, 'symbol': contract.symbol,
+                    'period': period, 'samples': len(rows),
+                    'decimals': contract.decimals,
+                    'entry_threshold': settings.get('entry_threshold'),
+                    'recorded_from': rows[0][0].isoformat() if rows else None,
+                    'recorded_to': rows[-1][0].isoformat() if rows else None})
+        return jsonify(out)
+
     @app.get('/api/analysis/<path:key>/trades.csv')
     def api_analysis_trades_csv(key):
         from . import analysis

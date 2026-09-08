@@ -28,6 +28,15 @@ def run_once(tmp_path, **kw):
                simulated=True, once=True, **kw)
 
 
+def _published(tmp_path):
+    """The first contract's settings from the snapshot on disk, or {}."""
+    try:
+        snap = json.loads((tmp_path / 'status.json').read_text())
+    except (OSError, ValueError):
+        return {}                    # mid-write; the caller tries again
+    return (snap.get('contracts') or [{}])[0].get('settings', {})
+
+
 def test_a_pass_publishes_a_snapshot(tmp_path):
     a_config(tmp_path)
     run_once(tmp_path)
@@ -110,19 +119,23 @@ def test_an_edited_config_is_picked_up_while_the_loop_runs(tmp_path):
     nothing else. Without the engine reading it back, a saved setting sits on
     disk looking applied while the loop goes on trading the old one."""
     cfg = a_config(tmp_path)
-    # `should_stop` is asked far more often than once a pass — commands are
-    # drained through the wait — so this counts time, not calls.
+    # Driven by what the loop has actually DONE, not by a stopwatch: a test
+    # that waits a fixed 0.15s passes alone and fails on a loaded box, which
+    # makes it noise rather than a check.
     started = time.monotonic()
     edited = {'done': False}
 
     def stop_after_a_few():
-        if not edited['done'] and time.monotonic() - started > 0.15:
-            # Edited under the running loop, exactly as the web process
-            # would have written it.
+        if not edited['done'] and (tmp_path / 'status.json').exists():
+            # A snapshot exists, so the loop is running. Edited under it,
+            # exactly as the web process would have written it.
             cfg.contracts['fef'].overrides['entry_threshold'] = 3.25
             cfg.save()
             edited['done'] = True
-        return edited['done'] and time.monotonic() - started > 0.6
+            return False
+        if edited['done'] and _published(tmp_path).get('entry_threshold') == 3.25:
+            return True
+        return time.monotonic() - started > 20.0      # a bounded failure
 
     runner.run(config_path=str(tmp_path / 'config.json'),
                status_path=str(tmp_path / 'status.json'),
@@ -140,13 +153,20 @@ def test_an_unreadable_config_does_not_stop_the_loop(tmp_path):
     """A half-written file is not a reason to stop managing live positions."""
     a_config(tmp_path)
     started = time.monotonic()
-    broken = {'done': False}
+    broken = {'passes': 0}
 
     def stop_after_a_few():
-        if not broken['done'] and time.monotonic() - started > 0.15:
+        if not broken['passes'] and (tmp_path / 'status.json').exists():
             (tmp_path / 'config.json').write_text('{ this is not json')
-            broken['done'] = True
-        return broken['done'] and time.monotonic() - started > 0.6
+            broken['passes'] = 1
+            return False
+        if broken['passes']:
+            broken['passes'] += 1
+            # Long enough for the watcher to have seen the broken file and
+            # for the loop to have published again after it.
+            if broken['passes'] > 200 and (tmp_path / 'status.json').exists():
+                return True
+        return time.monotonic() - started > 20.0      # a bounded failure
 
     runner.run(config_path=str(tmp_path / 'config.json'),
                status_path=str(tmp_path / 'status.json'),
@@ -176,14 +196,18 @@ def test_a_switch_does_not_wait_for_an_engine_pass(tmp_path):
     bridge = CommandBridge(str(tmp_path / 'commands.jsonl'),
                            str(tmp_path / 'results.json'))
     started = time.monotonic()
-    sent = {'id': None}
+    sent = {'id': None, 'at': None}
 
     def stop_when_answered():
-        if sent['id'] is None and time.monotonic() - started > 0.2:
+        # Sent once the loop is demonstrably up, so the measurement below is
+        # of the answer and not of the start-up.
+        if sent['id'] is None and (tmp_path / 'status.json').exists():
+            sent['at'] = time.monotonic()
             sent['id'] = bridge.submit('algo_off', 'fef', {})
+            return False
         if sent['id'] is not None and bridge.result(sent['id']) is not None:
             return True
-        return time.monotonic() - started > 1.5      # a bounded failure
+        return time.monotonic() - started > 20.0     # a bounded failure
 
     runner.run(config_path=str(tmp_path / 'config.json'),
                status_path=str(tmp_path / 'status.json'),
@@ -193,8 +217,8 @@ def test_a_switch_does_not_wait_for_an_engine_pass(tmp_path):
 
     answered = bridge.result(sent['id'])
     assert answered is not None and answered.get('ok') is True
-    # answered well inside one 2s engine pass
-    assert time.monotonic() - started < 1.5
+    # answered well inside one 2s engine pass, measured from the send
+    assert time.monotonic() - sent['at'] < 1.5
 
 
 def test_a_command_publishes_the_snapshot_at_once(tmp_path):
@@ -210,11 +234,13 @@ def test_a_command_publishes_the_snapshot_at_once(tmp_path):
     bridge = CommandBridge(str(tmp_path / 'commands.jsonl'),
                            str(tmp_path / 'results.json'))
     started = time.monotonic()
-    sent = {'id': None}
+    sent = {'id': None, 'at': None}
 
     def stop_when_the_screen_shows_it():
-        if sent['id'] is None and time.monotonic() - started > 0.2:
+        if sent['id'] is None and (tmp_path / 'status.json').exists():
+            sent['at'] = time.monotonic()
             sent['id'] = bridge.submit('algo_off', 'fef', {})
+            return False
         if sent['id'] is not None and (tmp_path / 'status.json').exists():
             try:
                 snap = json.loads((tmp_path / 'status.json').read_text())
@@ -222,7 +248,7 @@ def test_a_command_publishes_the_snapshot_at_once(tmp_path):
                 return False
             if snap['contracts'] and snap['contracts'][0]['algo_on'] is False:
                 return True
-        return time.monotonic() - started > 2.0       # a bounded failure
+        return time.monotonic() - started > 20.0      # a bounded failure
 
     runner.run(config_path=str(tmp_path / 'config.json'),
                status_path=str(tmp_path / 'status.json'),
@@ -232,5 +258,6 @@ def test_a_command_publishes_the_snapshot_at_once(tmp_path):
 
     snap = json.loads((tmp_path / 'status.json').read_text())
     assert snap['contracts'][0]['algo_on'] is False
-    # well inside one 5s screen refresh, and one 2s engine pass
-    assert time.monotonic() - started < 2.0
+    # well inside one 5s screen refresh, and one 2s engine pass, measured
+    # from the send rather than from the start of the process
+    assert time.monotonic() - sent['at'] < 2.0

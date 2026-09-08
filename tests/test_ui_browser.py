@@ -373,7 +373,10 @@ def with_analysis(tmp_path, report=None, desk=None):
         key='fef', name='Iron ore Oct/Nov', symbol='FEFV6-FEFX6',
         tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
         quantity=5, commission_per_contract=1.0, slippage_budget_ticks=0.5,
-        entry_threshold=2.0)
+        entry_threshold=2.0, lookback=120, exit_signal_mode='zscore',
+        # The replay runs the contract's OWN settings, so the fixture has to
+        # be a contract whose edge filter actually lets a trade through.
+        edge_filter_enabled=False, stats_update_interval_sec=0)
     cfg.save()
 
     db = Database(str(tmp_path / 'a.db'))
@@ -406,6 +409,16 @@ def with_analysis(tmp_path, report=None, desk=None):
     # Fills carrying MEASURED slippage, so the costs panel has something to
     # compare the budget against — and one that could not be priced, which
     # must be counted separately rather than averaged in as zero.
+    # Recorded mids for the replay card to run over: a mean-reverting series
+    # with a fixed seed, so what it finds is repeatable rather than lucky.
+    import random
+    rng = random.Random(7)
+    px, rows = 0.60, []
+    for i in range(4000):
+        px += (0.60 - px) * 0.04 + rng.gauss(0, 0.012)
+        rows.append((base + timedelta(seconds=i), round(px, 4)))
+    db.save_samples('fef', rows)
+
     from fixtrader.models import Fill
     for i in range(6):
         db.save_fill(Fill(venue='SIM', exec_id=f'E{i:03d}', clordid='FT-1',
@@ -546,7 +559,11 @@ def test_simulated_trades_are_not_shown_in_a_live_figure(analysis_server):
         page.wait_for_timeout(700)
         assert page.locator('.an-journal tbody tr').count() == 12
         page.select_option('.an-mode', 'sim')      # a chosen filter stands
-        page.wait_for_timeout(900)
+        # Waited for, not slept through: a fixed pause passes alone and
+        # fails beside its neighbours, which makes it noise.
+        page.wait_for_function(
+            "() => document.querySelector('.an-journal')"
+            ".innerText.includes('no closed trades')", timeout=10000)
         # the fixture's trades are all live, so simulated-only is empty
         assert 'no closed trades' in page.locator('.an-journal').inner_text()
         browser.close()
@@ -729,5 +746,48 @@ def test_a_setting_that_is_saved_but_not_in_force_says_so(server):
         page.wait_for_function(
             "document.getElementById('restart-banner')"
             ".classList.contains('hidden')")
+        browser.close()
+    assert errors == []
+
+
+# -- what a different threshold would have done ----------------------------
+
+def test_the_replay_card_reads_the_recording_and_shows_its_assumptions(
+        analysis_server):
+    """The touch table says which level reverts. This says which level PAID,
+    and it prints what it does not know underneath — a backtest whose
+    assumptions are not on the page is one somebody will quote without
+    them."""
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        page.wait_for_selector('.an-replay tbody tr')
+        rows = page.locator('.an-replay tbody tr')
+        assert rows.count() >= 4
+        note = page.locator('.an-replay-assumptions').inner_text()
+        assert 'signal' in note and 'not a fill simulator' in note
+        assert 'not recorded' in note            # the book was assumed
+        assert 'BUDGET' in note or 'budget' in note
+        browser.close()
+    assert errors == []
+
+
+def test_a_replay_with_nothing_recorded_says_so_rather_than_showing_zeros(
+        analysis_server, tmp_path):
+    """Zero because nothing was recorded and zero because nothing paid are
+    different statements."""
+    url, tmp = analysis_server
+    from fixtrader.database import Database
+    db = Database(str(tmp / 'a.db'))
+    with db._connect() as conn:
+        conn.execute("DELETE FROM samples")
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        page.wait_for_timeout(1200)
+        finding = page.locator('.an-replay-finding').inner_text()
+        assert 'Nothing to replay' in finding
+        assert page.locator('.an-replay tbody tr').count() == 0
         browser.close()
     assert errors == []
