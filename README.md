@@ -103,8 +103,22 @@ that is a close that went out as an open.
 carries an explicit close flag, the position it closes and that position's
 tickets, capped at what is open on that side — see `docs/FIX_NOTES.md`.
 
-Still to come, in this order: the **Settings** page, the **Exchanges** page,
-and the **Analysis** window. All three are drawn in `docs/screens.html`.
+**Settings** is the desk-wide page: the loop, the master switches, the guards,
+the desk limits, and the defaults every blank box on a contract falls back to.
+It shows what the engine **achieved** beside what was asked of it, and names
+the two settings that need a restart rather than warning about it on every
+save.
+
+**Exchanges** is where the system is connected: venues with their FIX session
+fields, UAT and PROD as separate rows that never look alike, **Connect**,
+**Test** and **Diagnose** answering in the venue's own words with the step
+that fixes each failure, and the contracts table with **Read specifications
+from the venue** — which reports rather than applies, because a specification
+changed under a running desk is every money figure on that window changing
+without anybody being told. Against the simulator it says so: a gateway built
+from your own configuration cannot confirm it.
+
+Still to come: the **Analysis** window, drawn in `docs/screens.html`.
 
 ## Status
 

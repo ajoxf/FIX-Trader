@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{% block title %}Nexus FIX{% endblock %}</title>
+<link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}?v={{ asset_version }}">
+</head>
+<body class="page-body">
+
+<div id="brand">
+  <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="6.5" y="10.9" width="11" height="2.2" fill="#1c1c1c"></rect>
+    <circle cx="7" cy="12" r="3.4" fill="#1f7ac2"></circle>
+    <circle cx="17" cy="12" r="3.4" fill="#b83232"></circle>
+  </svg>
+  <span class="brand-name">NEXUS FIX</span>
+  <span class="brand-note">{% block subtitle %}{% endblock %}</span>
+  <span id="env-badge" class="env">&mdash;</span>
+</div>
+
+<div class="pgbar">
+  <h4>{% block heading %}{% endblock %}</h4>
+  <span class="crumb">{% block crumb %}{% endblock %}</span>
+  <span class="pgbar-right">
+    {% block actions %}{% endblock %}
+    <a class="tk" href="/">Back to the desk</a>
+  </span>
+</div>
+
+<div class="pagebody">
+  {% block content %}{% endblock %}
+</div>
+
+<!-- One shared modal. No native confirm() / alert() / prompt(), ever. -->
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box">
+    <h2 id="modal-title"></h2>
+    <p id="modal-body"></p>
+    <div class="modal-actions">
+      <button id="modal-cancel" class="btn">Cancel</button>
+      <button id="modal-confirm" class="btn danger"></button>
+    </div>
+  </div>
+</div>
+<div id="toasts" aria-live="polite"></div>
+
+<script src="{{ url_for('static', filename='pages.js') }}?v={{ asset_version }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -31,7 +31,7 @@ from fixtrader.config import DEFAULT_SETTINGS, TraderConfig  # noqa: E402
 #: are ordinary config rows and the operator deletes or edits them.
 STARTER_CONTRACTS = {
     'fef_v6x6': {
-        'name': 'Iron ore Oct/Nov', 'symbol': 'FEFV6-FEFX6', 'venue': 'SIM',
+        'name': 'Iron ore Oct/Nov', 'symbol': 'FEFV6-FEFX6', 'venue': '',
         'tick_size': 0.01, 'tick_value': 1.0, 'contract_multiplier': 100.0,
         'currency': 'USD', 'min_qty': 1.0, 'qty_step': 1.0, 'max_qty': 50.0,
         'decimals': 4, 'enabled': True, 'algo_on': True,
@@ -40,7 +40,7 @@ STARTER_CONTRACTS = {
         'clearing_fee_per_contract': 0.15,
     },
     'fef_x6z6': {
-        'name': 'Iron ore Nov/Dec', 'symbol': 'FEFX6-FEFZ6', 'venue': 'SIM',
+        'name': 'Iron ore Nov/Dec', 'symbol': 'FEFX6-FEFZ6', 'venue': '',
         'tick_size': 0.01, 'tick_value': 1.0, 'contract_multiplier': 100.0,
         'currency': 'USD', 'min_qty': 1.0, 'qty_step': 1.0, 'max_qty': 50.0,
         'decimals': 4, 'enabled': True, 'algo_on': True,
@@ -49,7 +49,7 @@ STARTER_CONTRACTS = {
         'clearing_fee_per_contract': 0.15,
     },
     'cl_z6f7': {
-        'name': 'WTI Dec/Jan', 'symbol': 'CLZ6-CLF7', 'venue': 'SIM',
+        'name': 'WTI Dec/Jan', 'symbol': 'CLZ6-CLF7', 'venue': '',
         'tick_size': 0.01, 'tick_value': 10.0, 'contract_multiplier': 1000.0,
         'currency': 'USD', 'min_qty': 1.0, 'qty_step': 1.0, 'max_qty': 20.0,
         'decimals': 4, 'enabled': True, 'algo_on': False,
@@ -61,6 +61,10 @@ STARTER_CONTRACTS = {
 
 
 def first_run(config_path: str, env_path: str) -> None:
+    """Write what is missing. The example contracts carry NO venue: until one
+    is configured on the Exchanges page the system runs against the simulator
+    and says SIMULATED, and a contract pointing at a venue that does not exist
+    would read as a broken reference rather than as an honest default."""
     if not os.path.exists(config_path):
         config = TraderConfig(path=config_path)
         config.settings = dict(DEFAULT_SETTINGS)

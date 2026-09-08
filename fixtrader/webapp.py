@@ -75,6 +75,14 @@ def create_app(config_path: str = "config.json",
     def index():
         return render_template('index.html', asset_version=ASSET_VERSION)
 
+    @app.get('/settings')
+    def settings_page():
+        return render_template('settings.html', asset_version=ASSET_VERSION)
+
+    @app.get('/exchanges')
+    def exchanges_page():
+        return render_template('exchanges.html', asset_version=ASSET_VERSION)
+
     # -- the screen --------------------------------------------------------
 
     @app.get('/api/snapshot')
@@ -149,6 +157,51 @@ def create_app(config_path: str = "config.json",
         return jsonify({'ok': True,
                         'effective': contract.settings_with_defaults(config.settings)})
 
+    # -- venues ------------------------------------------------------------
+
+    @app.post('/api/contracts')
+    def api_create_contract():
+        """Add a contract. The key is derived from the symbol so two rows
+        cannot quietly share one."""
+        import re
+        from .config import ContractConfig
+        config = load_config()
+        data = dict(request.get_json(silent=True) or {})
+        symbol = str(data.get('symbol') or '').strip()
+        if not symbol:
+            return jsonify({'ok': False, 'error': 'a symbol is required'}), 400
+        venue = str(data.get('venue') or '').strip()
+        if venue and venue not in config.venues:
+            return jsonify({'ok': False,
+                            'error': f"no venue {venue!r}"}), 400
+        key = data.get('key') or re.sub(r'[^a-z0-9]+', '_',
+                                        symbol.lower()).strip('_')
+        if key in config.contracts:
+            return jsonify({'ok': False,
+                            'error': f"{key} already exists"}), 409
+        data['symbol'] = symbol
+        allowed = {k: v for k, v in data.items() if k != 'key'}
+        config.contracts[key] = ContractConfig.from_dict(key, allowed)
+        config.save()
+        return jsonify({'ok': True, 'key': key})
+
+    @app.delete('/api/contracts/<path:key>')
+    def api_delete_contract(key):
+        """Refused while anything is open on it — and the refusal says what."""
+        config = load_config()
+        if key not in config.contracts:
+            return jsonify({'ok': False, 'error': f"no contract {key}"}), 404
+        snap = read_status()
+        for c in snap.get('contracts', []):
+            if c.get('key') == key and c.get('position'):
+                pos = c['position']
+                return jsonify({'ok': False, 'error':
+                                f"{pos['side']} {pos['qty']:g} is open on "
+                                f"this contract. Close it first."}), 409
+        config.contracts.pop(key)
+        config.save()
+        return jsonify({'ok': True})
+
     @app.get('/api/venues')
     def api_venues():
         """Public form only. The password is reported as set or not set and
@@ -156,7 +209,246 @@ def create_app(config_path: str = "config.json",
         return jsonify([v.to_public_dict()
                         for v in load_config().venues.values()])
 
+    @app.post('/api/venues/<path:name>')
+    def api_save_venue(name):
+        """Create or update one venue.
+
+        The password never reaches `config.json`. It goes to `.env` under the
+        venue's own key, and only when a non-empty value is sent — an empty
+        field means "leave it alone", so re-saving a form that shows no
+        password cannot wipe the one that is set.
+        """
+        from .config import VenueConfig, env_key_for, write_env_value
+        config = load_config()
+        data = dict(request.get_json(silent=True) or {})
+        password = data.pop('password', None)
+        data.pop('password_set', None)
+        data.pop('name', None)
+
+        existing = config.venues.get(name)
+        raw = existing.to_dict() if existing else {}
+        raw.update({k: v for k, v in data.items() if k in VENUE_FIELDS})
+        raw.setdefault('environment', '')
+        raw.setdefault('password_env', env_key_for(name))
+        try:
+            venue = VenueConfig.from_dict(name, raw)
+        except ValueError as e:
+            # The environment is the one field with no default: UAT and PROD
+            # are separate venues and neither is assumed.
+            return jsonify({'ok': False, 'error': str(e)}), 400
+
+        config.venues[name] = venue
+        config.save()
+        if password:
+            write_env_value(venue.password_env, password)
+        return jsonify({'ok': True, 'venue': venue.to_public_dict()})
+
+    @app.delete('/api/venues/<path:name>')
+    def api_delete_venue(name):
+        config = load_config()
+        if name not in config.venues:
+            return jsonify({'ok': False, 'error': f"no venue {name}"}), 404
+        using = [c.key for c in config.contracts.values() if c.venue == name]
+        if using:
+            # Deleting the venue a contract routes through would leave the
+            # contract pointing at nothing, and the refusal names them.
+            return jsonify({'ok': False, 'error':
+                            f"{len(using)} contract(s) route through it: "
+                            f"{', '.join(using)}"}), 409
+        config.venues.pop(name)
+        config.save()
+        return jsonify({'ok': True})
+
+    def _gateway_for(config, venue):
+        """A gateway for one venue, for the three buttons. Never the engine's
+        — this process renders and asks; it does not trade."""
+        contracts = [c for c in config.contracts.values()
+                     if c.venue == venue.name]
+        if not venue.host:
+            from .fake_gateway import FakeGateway, SimContract
+            sims = [SimContract(c.key, tick_size=c.tick_size or 0.01,
+                                tick_value=c.tick_value or 1.0)
+                    for c in contracts]
+            return FakeGateway(sims), contracts, True
+        from .gateway import FixGateway
+        return FixGateway(venue, contracts), contracts, False
+
+    @app.get('/api/venues/<path:name>/<any(connect,test,diagnose):action>')
+    def api_venue_action(name, action):
+        """Connect, Test and Diagnose.
+
+        Every failure carries the step that fixes it. None of them ever
+        returns a credential, and the answer is the venue's own words rather
+        than "check the log".
+        """
+        config = load_config()
+        venue = config.venues.get(name)
+        if venue is None:
+            return jsonify({'ok': False, 'error': f"no venue {name}"}), 404
+
+        gateway, contracts, simulated = _gateway_for(config, venue)
+        rows = []
+        try:
+            gateway.start()
+            state = gateway.state()
+            ok = state.value == 'LOGGED_ON'
+            rows.append({
+                'check': 'Session',
+                'ok': ok,
+                'detail': f"{state.value} — {gateway.state_text()}",
+                'fix': '' if ok else (
+                    'Check the host, port and comp ids, and that the '
+                    'password is set in .env.'),
+            })
+
+            if action in ('test', 'diagnose'):
+                rows.append({
+                    'check': 'Environment',
+                    'ok': True,
+                    'detail': (f"{venue.environment}"
+                               + (' — SIMULATED, no venue is connected'
+                                  if simulated else '')),
+                    'fix': '',
+                })
+                rows.append({
+                    'check': 'Password',
+                    'ok': venue.has_password,
+                    # Set or not set. Never the value, and never a masked
+                    # version of it either.
+                    'detail': ('set in .env as ' + venue.password_env
+                               if venue.has_password else
+                               'NOT set — the session cannot log on'),
+                    'fix': '' if venue.has_password else
+                           f"Type it into the password field and save; it is "
+                           f"written to .env as {venue.password_env}.",
+                })
+                rows.append({
+                    'check': 'Account',
+                    'ok': bool(venue.account),
+                    'detail': venue.account or 'not set',
+                    'fix': '' if venue.account else
+                           'Every order is stamped with it.',
+                })
+
+            if action == 'diagnose':
+                for contract in contracts:
+                    rows.append(_contract_check(gateway, contract, simulated))
+                rows.extend(getattr(gateway, 'diagnose', lambda: [])())
+        except Exception as e:                              # noqa: BLE001
+            rows.append({'check': 'Session', 'ok': False,
+                         'detail': f"{type(e).__name__}: {e}", 'fix': ''})
+        finally:
+            try:
+                gateway.stop()
+            except Exception:                               # noqa: BLE001
+                pass
+
+        return jsonify({
+            'ok': all(r['ok'] for r in rows),
+            'rows': rows,
+            'simulated': simulated,
+        })
+
+    @app.post('/api/contracts/<path:key>/read-from-venue')
+    def api_read_specs(key):
+        """Fill the specifications from the venue's own security definition.
+
+        It REPORTS rather than applies: each field comes back with what the
+        venue says and what the config holds, and the operator presses the
+        button. A specification changed under a running desk is every money
+        figure on that window changing without anybody being told.
+        """
+        config = load_config()
+        contract = config.contracts.get(key)
+        if contract is None:
+            return jsonify({'ok': False, 'error': f"no contract {key}"}), 404
+        venue = config.venues.get(contract.venue)
+        if venue is None:
+            return jsonify({'ok': False,
+                            'error': f"contract {key} has no venue"}), 400
+
+        gateway, _, simulated = _gateway_for(config, venue)
+        try:
+            gateway.start()
+            gateway.subscribe(contract)
+            spec = gateway.security_definition(contract)
+        finally:
+            try:
+                gateway.stop()
+            except Exception:                               # noqa: BLE001
+                pass
+
+        if spec is None:
+            return jsonify({'ok': False, 'simulated': simulated,
+                            'error': "the venue did not publish a definition "
+                                     "for this contract"})
+        fields = []
+        for field in ('tick_size', 'tick_value', 'contract_multiplier',
+                      'currency', 'min_qty', 'qty_step', 'max_qty'):
+            theirs = getattr(spec, field, None)
+            ours = getattr(contract, field, None)
+            fields.append({
+                'field': field, 'venue': theirs, 'config': ours,
+                'agrees': theirs is None or ours is None or theirs == ours,
+                'source': contract.spec_source.get(field, 'unset'),
+            })
+        return jsonify({'ok': True, 'simulated': simulated, 'fields': fields,
+                        'trading_status': spec.trading_status,
+                        'note': SIMULATED_SPEC_NOTE if simulated else None})
+
     return app
+
+
+#: What may be written to a venue from the UI. `password` is handled on its
+#: own and never lands here; anything not on this list is ignored rather than
+#: quietly set.
+VENUE_FIELDS = (
+    'environment', 'broker', 'host', 'port', 'md_host', 'md_port',
+    'sender_comp_id', 'target_comp_id', 'sender_sub_id', 'target_sub_id',
+    'on_behalf_of_comp_id', 'fix_version', 'username', 'account',
+    'heartbeat_sec', 'reset_seq_on_logon', 'use_tls', 'data_dictionary',
+    'store_path', 'log_path', 'enabled',
+)
+
+
+#: What the simulator can and cannot tell you. It is built from the contract's
+#: own configuration, so it reports back exactly what it was given — which
+#: means it can never disagree, and a green Diagnose against it confirms
+#: NOTHING about the specifications. Saying so is the difference between a
+#: check and the appearance of one.
+SIMULATED_SPEC_NOTE = (
+    "the simulator reports back what you configured, so this confirms "
+    "nothing — these figures are checked against the venue when the FIX "
+    "session is wired")
+
+
+def _contract_check(gateway, contract, simulated=False):
+    """One contract against the venue's own definition of it."""
+    spec = gateway.security_definition(contract)
+    if spec is None:
+        return {'check': contract.key, 'ok': False,
+                'detail': 'the venue published no definition',
+                'fix': 'Check the symbol, and how this venue identifies a '
+                       'spread contract (docs/FIX_NOTES.md).'}
+    for field in ('tick_size', 'tick_value', 'contract_multiplier'):
+        theirs = getattr(spec, field, None)
+        ours = getattr(contract, field, None)
+        if theirs is not None and ours is not None and theirs != ours:
+            return {
+                'check': contract.key, 'ok': False,
+                'detail': (f"venue says {field} is {theirs}, "
+                           f"config says {ours}"),
+                # Not a warning. Every money figure on that window runs
+                # through these two numbers.
+                'fix': f"Read the specifications from the venue and accept "
+                       f"{theirs}, or correct the config.",
+            }
+    detail = (f"tick {spec.tick_size} value {spec.tick_value} "
+              f"mult {spec.contract_multiplier} {spec.currency} "
+              f"{spec.trading_status or ''}").strip()
+    if simulated:
+        detail += f" — {SIMULATED_SPEC_NOTE}"
+    return {'check': contract.key, 'ok': True, 'detail': detail, 'fix': ''}
 
 
 def main(argv=None) -> int:

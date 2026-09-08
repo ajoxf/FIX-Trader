@@ -30,7 +30,12 @@ def build_gateway(config, simulated: bool):
     screen says SIMULATED — which is a true statement about what is on it,
     and a good deal safer than a screen that looks live and is not.
     """
-    if simulated or not config.venues:
+    # No venue, or a venue with no endpoint, means the simulator — and the
+    # screen says SIMULATED where a PROD badge would go. The alternative is a
+    # FIX session pointed at nothing, which looks like a connection failure
+    # somebody could waste an afternoon retyping a port to fix.
+    reachable = [v for v in config.venues.values() if v.host and v.enabled]
+    if simulated or not reachable:
         from .fake_gateway import FakeGateway, SimContract
         sims = []
         for c in config.contracts.values():
@@ -41,7 +46,7 @@ def build_gateway(config, simulated: bool):
                 currency=c.currency or "USD"))
         return FakeGateway(sims), True
     from .gateway import FixGateway
-    venue = next(iter(config.venues.values()))
+    venue = reachable[0]
     return FixGateway(venue, list(config.contracts.values())), False
 
 
