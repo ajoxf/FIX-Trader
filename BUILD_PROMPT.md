@@ -42,6 +42,44 @@ now so that dropping the real session in later touches exactly one module.
 
 ---
 
+## 0.1 The screens, and what the operator has already settled
+
+**[`docs/screens.html`](docs/screens.html) is the design reference.** All five
+screens are drawn there at desk scale, in the terminal's real visual language,
+with every window state the system can be in. Open it before writing any
+markup: where this document and that file disagree about layout, the file wins.
+
+Four decisions were put to the operator against those screens and answered.
+They are settled — build to them, do not re-open them:
+
+1. **The profit target is a percentage of INITIAL MARGIN.** Notional and
+   sigma-at-entry remain in the code as selectable bases (§6.4) because a venue
+   that cannot report margin has to fall back to something, but **margin is the
+   default and the one the desk trades on**. Where margin cannot be read, the
+   window shows an em dash and names what is missing — it does not quietly
+   switch basis.
+2. **Entry and exit are each independently MARKET or LIMIT, chosen per
+   contract.** This is a widening of what was first proposed: the limit
+   machinery is not an entry-only path. It must serve a **closing** order too —
+   see §6.5, which is the part of this build with the most room to go wrong.
+3. **CLOSE NOW and KILL ALL stay on the screen.** Per-contract close, and a
+   global switch that stands every algo down and cancels our working orders.
+   Both ask once. Nothing else on the screen sends an order.
+4. **Six to ten contracts on screen at once.** Windows are sized so eight fit a
+   1920×1080 desk with room — roughly 270×415 px. Every field in §2.2 is
+   always on the window at that size; nothing hides behind a hover.
+
+**Still open, and to be asked rather than assumed** (they are listed on the
+last panel of `docs/screens.html`): whether the z-strip stays; how Orient
+identifies a spread contract (`Symbol(55)` alone, `SecurityID` +
+`SecurityExchange`, or a multi-leg definition); whether market data is a
+separate FIX session; whether a separate account/margin window is wanted
+beyond the per-contract position line; and whether Telegram is worth wiring.
+None of them blocks this phase. Where one is reached, build the version drawn
+in `docs/screens.html` and leave the seam obvious.
+
+---
+
 ## 1. What a "contract" is here
 
 One row in configuration, one window on the screen:
@@ -319,12 +357,19 @@ Port the full set, because the comprehensiveness is the point:
 - `daily_max_loss` (money; hitting it turns this contract's algo OFF and says so)
 - `entry_cooldown_seconds` (default 60)
 
-**Execution**
+**Execution** — entry and exit are set **independently**, and each may be
+either type. Every combination must work, including limit-in / limit-out:
 - `entry_order_type`: `LIMIT` (default) / `MARKET`
 - `exit_order_type`: `MARKET` (default) / `LIMIT`
-- `limit_offset_ticks` (how far through/behind the touch a limit is priced)
-- `limit_timeout_sec` (unfilled after this → cancel, or escalate to market;
-  a tick chooses which)
+- `entry_limit_offset_ticks` / `exit_limit_offset_ticks` (how far behind its own
+  touch each is priced; separate, because patience going in and patience coming
+  out are different decisions)
+- `entry_limit_timeout_sec` / `exit_limit_timeout_sec` (unfilled after this →)
+- `entry_on_timeout` / `exit_on_timeout`: `CANCEL` / `CROSS_AT_MARKET`
+  (default `CANCEL` for an entry, `CROSS_AT_MARKET` for an exit — a missed
+  entry is a trade not taken, a missed exit is a position you still hold)
+- `repeg_dead_band_ticks` (how far the touch must move before an amend; every
+  amend costs queue position)
 - `time_in_force`: `DAY` / `IOC` / `GTC`
 - `session_flat_at` (venue clock; blank = hold)
 
@@ -500,14 +545,17 @@ break_even  = entry_price ± round_trip_cost / (tick_value/tick_size × qty)
 target      = break_even ± (profit_target_pct / 100) × basis / (…same k…)
 ```
 
-`basis` is what `profit_target_pct` is a percentage **of**, and it is a
-per-contract choice with three options, because desks mean different things by
-it: `MARGIN` (initial margin for the position, where the venue reports it —
-what the trade actually costs to hold), `NOTIONAL` (price × multiplier × qty),
-or `ENTRY_SIGMA` (σ at entry — a target expressed in the move it is trying to
-catch). Default `MARGIN`; **where the basis cannot be measured there is no
-target — show `—` and say what is missing.** A target of 0.00 would read as
-"get out at break-even", which is a different instruction.
+`basis` is what `profit_target_pct` is a percentage **of**. **The operator has
+settled this: it is `MARGIN`** — the initial margin the position ties up, read
+from the venue, because that is what the trade actually costs to hold. Two
+other bases stay selectable per contract for the case where a venue will not
+report margin: `NOTIONAL` (price × multiplier × qty) and `ENTRY_SIGMA` (σ at
+entry — the target expressed in the move being caught).
+
+**Where the basis cannot be measured there is no target: show `—` and name
+what is missing.** Do not silently fall back to notional — a target that
+changes meaning without saying so is worse than no target. A target of 0.00
+would read as "get out at break-even", which is a different instruction again.
 
 The exit fires when the **executable closing side** of the book reaches the
 target: a short covers on the **ask**, a long leaves on the **bid**. Never the
@@ -518,12 +566,48 @@ whichever comes first. **The stop-loss is always the z-score one** — it is a
 safety net, not a profit-take — plus the time stop and the session cutoff.
 
 ### 6.5 The order lifecycle
-Entry as `entry_order_type`; a limit is priced `limit_offset_ticks` from the
-touch, re-priced only when it moves further than the dead band (every amend
-loses queue position), and after `limit_timeout_sec` is either cancelled or
-escalated to market — the tick decides which, and the escalation is announced.
-Exits default to market. Every order carries a `ClOrdID` unique across
-restarts, and the account and environment it was sent under.
+
+**Entry and exit each have their own order type, set per contract, and either
+may be MARKET or LIMIT.** One code path serves both — write it once, with the
+side and the intent (`OPEN` / `CLOSE`) as arguments — because the operator can
+and will run limit-in / limit-out on one contract and market-in / market-out on
+the next.
+
+A **MARKET** order crosses the executable side for its direction and is done.
+
+A **LIMIT** order is the part of this build with the most room to go wrong:
+
+- priced `limit_offset_ticks` from the touch on its own side, never through it;
+- **re-priced only when the touch moves further than the dead band.** Every
+  amend loses queue position, so re-pricing on every pass guarantees you are
+  never at the front of a queue, which defeats quoting entirely;
+- amended by `OrderCancelReplaceRequest`, never cancel-then-new — the second
+  form gives up the queue and opens a window where the order does not exist;
+- after `limit_timeout_sec` it is **cancelled or crossed at market**, per the
+  contract's own setting, and the escalation is **announced** — a toast and an
+  events row, never a silent change of order type;
+- partial fills are the normal case, not an error. The position is whatever has
+  filled; the remainder stays working under the same `ClOrdID` lineage, and the
+  window shows `3/5` rather than rounding to one or the other.
+
+**A closing limit has two rules a working entry does not:**
+
+1. **It must be able to reduce and never to reverse.** Send it `reduce-only`
+   where the venue supports the flag, and cap the quantity at the open position
+   in any case. An exit that overfills opens the opposite side of a spread the
+   desk thought it had left.
+2. **It is not a broker-side stop, and no stop is ever attached.** It is a
+   resting order this process owns, cancelled at shutdown with everything else.
+   The stop-loss (§6.4) stays a level this system watches and acts on — nothing
+   protective is left sitting at the venue.
+
+**A guard may withhold a working limit's re-price; nothing may withhold the
+escalation to market on a CLOSE.** If the exit limit times out and the contract
+is set to escalate, it escalates — a stale quote, a jump settle, a filter, none
+of them stand in the way of getting out.
+
+Every order carries a `ClOrdID` unique across restarts, and the account and
+environment it was sent under.
 
 ### 6.6 Restarts and reconciliation
 Positions and working orders are written to SQLite on **every change** and
@@ -695,8 +779,17 @@ Put these in `CLAUDE.md` as the first thing the next session reads:
   and `—` when the basis is unmeasured
 - **sizing** — ticks to money on contracts with different tick values; a
   regression test that a wrong multiplier is caught
-- **executor** — limit, timeout, escalation, cancel, reject; a reject surfacing
-  the venue's text verbatim
+- **executor** — **all four combinations** of entry/exit order type
+  (market-in/market-out, market-in/limit-out, limit-in/market-out,
+  limit-in/limit-out), each opening and closing a position end to end
+- **executor, the limit path** — offset pricing on the correct side; the dead
+  band suppressing an amend inside it and allowing one outside it; amend by
+  cancel-replace rather than cancel-then-new; timeout cancelling on an entry and
+  crossing on an exit; a partial fill leaving the remainder working under the
+  same lineage; a closing limit capped at the open position so it can never
+  reverse; and the escalation on a CLOSE firing **through** a stale quote, a
+  jump settle and a filter, each with its control
+- **executor** — cancel and reject; a reject surfacing the venue's text verbatim
 - **book / recovery** — restart with an open position; the incomplete-book rule
   closing nothing; UNCLAIMED never auto-closed
 - **guards** — stale, jump, session, limits; each with a control; and the rule
@@ -713,7 +806,8 @@ Put these in `CLAUDE.md` as the first thing the next session reads:
 
 ## 13. Build order
 
-**Phase 1 — this phase.**
+**Phase 1 — this phase.** Read `docs/screens.html` first; it is the layout
+this order is building toward.
 1. `models.py`, `config.py` (atomic save, `.env` keys, venue/contract schema), tests
 2. `sizing.py`, `costs.py`, `stats.py`, `signals.py` — all pure, all tested
 3. `fake_gateway.py` and the `Gateway` protocol; `FixGateway` stubbed
