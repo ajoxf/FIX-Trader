@@ -88,6 +88,7 @@ is installed.
 | `fixtrader/executor.py` | One order path for entries and exits, market or limit |
 | `fixtrader/engine.py` | The loop, the book, recovery, and one snapshot per pass |
 | `fixtrader/database.py` | SQLite (WAL): positions, orders, fills, touches, events |
+| `fixtrader/analysis.py` | The feedback loop: the touch study, the costs, the journal |
 | `fixtrader/webapp.py` | The Flask process: it renders and it asks; it never trades |
 | `fixtrader/static/`, `templates/` | The terminal — self-hosted, no CDN, no framework |
 
@@ -118,7 +119,24 @@ changed under a running desk is every money figure on that window changing
 without anybody being told. Against the simulator it says so: a gateway built
 from your own configuration cannot confirm it.
 
-Still to come: the **Analysis** window, drawn in `docs/screens.html`.
+**Analysis** is the feedback loop, one contract at a time — because a win rate
+blended across eight of them cannot answer the only question it exists for,
+which is which contract to turn off. It reports what happened **after** each
+standard-deviation touch: how many came back, how long they took, how far they
+went against you first, and how many became a trade. A level is only named as
+the one to trade if the move back to the mean **covers the round trip** — the
+inner bands always revert more often, and they are also the ones that cannot
+pay for the trade. Costs are shown as budget against measurement, which closes
+the loop the settings page opens: the edge filter refuses entries using the
+*budgeted* slippage, so a budget that is wrong silently refuses trades that
+would have paid, or passes trades that do not. The correction is offered as a
+button; nothing here applies its own findings.
+
+A contract with fewer than ten closed trades is marked **too few to judge** and
+given no verdict. An open position is named and excluded from every figure. A
+touch still running is counted separately and left out of the percentages —
+folding it in as a miss understates every level, and understates the widest
+levels most, because those are the ones still open.
 
 ## Status
 

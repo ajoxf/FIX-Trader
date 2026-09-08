@@ -106,6 +106,62 @@ def create_app(config_path: str = "config.json",
             return jsonify({'ok': None, 'pending': True})
         return jsonify(result)
 
+    # -- analysis ----------------------------------------------------------
+
+    def _db(config):
+        from .database import Database
+        return Database(config.settings.get('DATABASE_PATH', 'fixtrader.db'))
+
+    def _filters():
+        """Period and mode, applied identically by every analysis route. A
+        route that silently blended simulated fills into a live figure would
+        be a bug, not a convenience."""
+        period = request.args.get('period', 'all')
+        mode = request.args.get('mode', 'live')
+        if mode not in ('live', 'sim', 'both'):
+            mode = 'live'
+        return period, mode
+
+    @app.get('/api/analysis')
+    def api_analysis_desk():
+        from . import analysis
+        config = load_config()
+        period, mode = _filters()
+        return jsonify(analysis.desk_report(_db(config), config, period, mode))
+
+    @app.get('/api/analysis/<path:key>')
+    def api_analysis_contract(key):
+        from . import analysis
+        config = load_config()
+        if key not in config.contracts:
+            return jsonify({'ok': False, 'error': f"no contract {key}"}), 404
+        period, mode = _filters()
+        return jsonify(analysis.contract_report(_db(config), config, key,
+                                                period, mode))
+
+    @app.get('/api/analysis/<path:key>/trades.csv')
+    def api_analysis_trades_csv(key):
+        from . import analysis
+        config = load_config()
+        period, mode = _filters()
+        rows = analysis.contract_report(_db(config), config, key, period,
+                                        mode)['journal']
+        columns = ['opened_at', 'closed_at', 'side', 'qty', 'entry_z',
+                   'exit_z', 'entry_price', 'exit_price', 'gross', 'fees',
+                   'net', 'on_margin', 'held_min', 'exit_reason', 'simulated',
+                   'tickets']
+        return _csv(f"{key}-trades.csv", columns, rows)
+
+    @app.get('/api/analysis/<path:key>/touches.csv')
+    def api_analysis_touches_csv(key):
+        config = load_config()
+        period, mode = _filters()
+        rows = _db(config).touches(key, limit=20000)
+        columns = ['ts', 'level', 'direction', 'price', 'z', 'mean', 'std',
+                   'half_life', 'algo_armed', 'became_trade', 'state',
+                   'resolved_at', 'seconds_to_revert', 'adverse_sigma']
+        return _csv(f"{key}-touches.csv", columns, rows)
+
     # -- configuration -----------------------------------------------------
 
     @app.get('/api/settings')
@@ -397,6 +453,33 @@ def create_app(config_path: str = "config.json",
                         'note': SIMULATED_SPEC_NOTE if simulated else None})
 
     return app
+
+
+def _csv(filename, columns, rows):
+    """A CSV with EMPTY cells where nothing was measured, never zeros.
+
+    A spreadsheet full of zeros averages them in, and the figure that comes
+    out reads like a measurement.
+    """
+    import csv
+    import io
+    from flask import Response
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(columns)
+    for row in rows:
+        out = []
+        for column in columns:
+            value = row.get(column)
+            if value is None:
+                out.append('')
+            elif isinstance(value, (list, tuple)):
+                out.append(' '.join(str(v) for v in value))
+            else:
+                out.append(value)
+        writer.writerow(out)
+    return Response(buf.getvalue(), mimetype='text/csv', headers={
+        'Content-Disposition': f'attachment; filename="{filename}"'})
 
 
 #: What may be written to a venue from the UI. `password` is handled on its

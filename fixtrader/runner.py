@@ -13,6 +13,7 @@ import signal
 import sys
 import time
 from datetime import datetime, timezone
+from typing import Optional
 
 from . import atomicfile
 from .commands import CommandBridge, apply_command
@@ -50,10 +51,50 @@ def build_gateway(config, simulated: bool):
     return FixGateway(venue, list(config.contracts.values())), False
 
 
+#: How fresh a snapshot has to be for us to conclude another engine is alive
+#: and publishing. Generous: a paused debugger or a slow disk must not look
+#: like a dead engine, because the cost of being wrong here is refusing to
+#: start when nothing is running.
+ANOTHER_ENGINE_WITHIN_SEC = 5.0
+
+
+def another_engine_is_running(status_path: str,
+                              within: float = ANOTHER_ENGINE_WITHIN_SEC
+                              ) -> Optional[float]:
+    """Seconds since the last snapshot, if one is being published right now.
+
+    Two engines against one book is a genuinely bad accident: both trade the
+    same signals on the same account, each sees the other's fills as positions
+    it cannot explain, and the reconciler is handed a book that changes under
+    it. An operator double-clicking the launcher is all it takes.
+
+    The snapshot is the heartbeat — it is written every pass and nothing else
+    writes it. A file being updated now means somebody is alive behind it.
+    """
+    try:
+        raw = atomicfile.read_json(status_path, default=None)
+        if not raw or not raw.get('ts'):
+            return None
+        from datetime import datetime as _dt
+        age = (datetime.now(timezone.utc)
+               - _dt.fromisoformat(raw['ts'])).total_seconds()
+    except Exception:                                    # noqa: BLE001
+        return None
+    return age if 0 <= age <= within else None
+
+
 def run(config_path: str = "config.json", status_path: str = "status.json",
         command_path: str = "commands.jsonl",
         result_path: str = "results.json", simulated: bool = False,
         once: bool = False) -> None:
+    age = another_engine_is_running(status_path)
+    if age is not None and not once:
+        raise SystemExit(
+            f"Another engine is already publishing {status_path} "
+            f"({age:.1f}s ago). Two engines against one book both trade the "
+            f"same signals and each sees the other's fills as positions it "
+            f"cannot explain. Stop that one first, or point this at a "
+            f"different --status and --config.")
     config = TraderConfig.from_file(config_path)
     db = Database(config.settings.get('DATABASE_PATH', 'fixtrader.db'))
     gateway, is_sim = build_gateway(config, simulated)

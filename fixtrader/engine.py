@@ -244,6 +244,7 @@ class Engine:
             self.executor.place(contract, settings, sig.side, sig.qty,
                                 Intent.OPEN, book, now, reason=sig.reason,
                                 decision=self._decision(rt.window))
+            self._mark_touch_traded(rt, sig.side)
             self._say(rt, "ORDER",
                       f"{sig.side.value} {sig.qty:g} — {sig.reason}")
 
@@ -259,6 +260,29 @@ class Engine:
         """
         return {'z': window.z, 'mean': window.mean, 'std': window.std,
                 'half_life': window.half_life}
+
+    def _mark_touch_traded(self, rt: ContractRuntime, side: Side) -> None:
+        """Record that THIS touch is the one an entry acted on.
+
+        The touch study's "traded" column is what says whether the level the
+        algo fires at is the level that actually reverts — a level that
+        reverts 86% of the time and is never traded is a threshold set wrong.
+        The mark has to be made when the order goes, because by the time the
+        fill lands the z may have crossed into another band entirely.
+        """
+        touch = getattr(rt.window, 'last_touch', None)
+        if touch is None:
+            return
+        # A SELL is taken at a high z, a BUY at a low one. A touch of the
+        # opposite sign is not the one this entry acted on.
+        wanted_positive = side is Side.SELL
+        if (touch.level > 0) != wanted_positive:
+            return
+        if touch.became_trade:
+            return
+        touch.became_trade = True
+        if self.db is not None:
+            self.db.save_touch(touch)
 
     def _has_working_close(self, key: str) -> bool:
         return any(w.is_close for w in self.executor.working_for(key))
@@ -313,7 +337,7 @@ class Engine:
                 margin = self.gateway.margin_for(contract.key, fill.qty)
                 rt.position = Position(
                     contract_key=contract.key, side=fill.side, qty=fill.qty,
-                    avg_price=fill.price, opened_at=now,
+                    opened_qty=fill.qty, avg_price=fill.price, opened_at=now,
                     entry_z=decided.get('z', rt.window.z),
                     entry_mean=decided.get('mean', rt.window.mean),
                     entry_std=decided.get('std', rt.window.std),
@@ -328,6 +352,7 @@ class Engine:
                 pos.avg_price = ((pos.avg_price * pos.qty)
                                  + fill.price * fill.qty) / total
                 pos.qty = total
+                pos.opened_qty = total
                 pos.tickets.append(fill.exec_id)
                 pos.margin_locked = self.gateway.margin_for(contract.key, total)
 

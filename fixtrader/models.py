@@ -329,6 +329,11 @@ class Position:
     avg_price: float = 0.0
 
     opened_at: Optional[datetime] = None
+    #: The size this position was OPENED at. `qty` is what remains and is
+    #: decremented as it closes, so by the time a trade reaches the journal it
+    #: is zero — and a trade journal reporting every trade as size 0 makes
+    #: every cost figure it feeds read as unmeasured.
+    opened_qty: float = 0.0
     entry_z: Optional[float] = None
     entry_mean: Optional[float] = None
     entry_std: Optional[float] = None

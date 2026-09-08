@@ -102,6 +102,130 @@
   </section>
 </template>
 
+<!-- The feedback loop, per contract. Its own window so it can sit beside the
+     contract it describes. Sub-tabs: the named contract, and All contracts —
+     because a win rate blended across eight of them cannot answer the only
+     question this window exists for, which is which one to turn off. -->
+<template id="analysis-template">
+  <section class="win winwide" data-key="__analysis__">
+    <div class="titlebar">
+      <span class="swatch" style="background:#3f8b52"></span>
+      <span class="title">Analysis</span>
+      <span class="venue an-note">closed trades only</span>
+      <span class="winbtns"><button class="winbtn close" title="Close this window">&times;</button></span>
+    </div>
+
+    <div class="subtabs">
+      <div class="an-tabs"></div>
+      <span class="right">
+        <select class="an-period" title="Cut by when each trade CLOSED">
+          <option value="all">Since inception</option>
+          <option value="30d">Last 30 days</option>
+          <option value="7d">Last 7 days</option>
+          <option value="today">Today</option>
+        </select>
+        <select class="an-mode" title="Simulated fills are never blended into a live figure without being asked for">
+          <option value="live">Live only</option>
+          <option value="both">Live + simulated</option>
+          <option value="sim">Simulated only</option>
+        </select>
+        <a class="btn sm an-csv" href="#" download>Export CSV</a>
+      </span>
+    </div>
+
+    <div class="wbody an-body" style="padding:8px;gap:8px">
+
+      <div class="tiles an-tiles"></div>
+
+      <div class="an-two">
+        <div class="card">
+          <h5>Standard-deviation touches <span class="note">what happened after each one</span></h5>
+          <div class="tablewrap">
+            <table class="grid an-touches">
+              <thead><tr>
+                <th>Level</th><th class="r">Touches</th><th style="width:84px"></th>
+                <th class="r" title="Reached the mean, of those that resolved">Reverted</th>
+                <th class="r" title="Median time from the touch to the mean">Median</th>
+                <th class="r" title="Median further adverse move before it turned">Adverse</th>
+                <th class="r" title="How many became an entry">Traded</th>
+                <th class="r" title="Still running — counted, and left out of the percentage">Open</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="cb"><div class="finding an-touch-finding"></div></div>
+        </div>
+
+        <div class="an-stack">
+          <div class="card">
+            <h5>How they ended</h5>
+            <div class="tablewrap">
+              <table class="grid an-exits">
+                <thead><tr><th>Reason</th><th class="r">Count</th><th class="r">Net</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h5>Costs <span class="note">budget against measurement</span></h5>
+            <div class="tablewrap">
+              <table class="grid an-costs">
+                <thead><tr><th>Item</th><th class="r">Budgeted</th><th class="r">Actual</th><th class="r">Diff</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <div class="cb"><div class="finding warn an-cost-finding"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h5>Trade journal <span class="note an-journal-note"></span></h5>
+        <div class="tablewrap tall">
+          <table class="grid an-journal">
+            <thead><tr>
+              <th>Entry</th><th>Exit</th><th>Side</th><th class="r">Qty</th>
+              <th class="r" title="The z the entry actually fired at">Z in</th>
+              <th class="r">Z out</th>
+              <th class="r">Price in</th><th class="r">Price out</th>
+              <th class="r">Gross</th><th class="r">Costs</th><th class="r">Net</th>
+              <th class="r">On margin</th><th class="r">Held</th><th>Ended</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="cb"><div class="hint">Every column is what was recorded
+          <b>at the time</b>, never recomputed now. Empty where nothing was
+          measured, never zero.</div></div>
+      </div>
+
+      <!-- the All-contracts comparison -->
+      <div class="card an-desk hidden">
+        <h5>All contracts <span class="note">a comparison, not an average</span></h5>
+        <div class="tablewrap">
+          <table class="grid an-desk-table">
+            <thead><tr>
+              <th>Contract</th><th class="r">Trades</th><th class="r">Win</th>
+              <th style="width:70px"></th>
+              <th class="r">Net</th><th class="r">Avg</th><th class="r">On margin</th>
+              <th class="r">Cost drag</th><th class="r">Avg hold</th>
+              <th class="r">Best SD</th><th>Verdict</th>
+            </tr></thead>
+            <tbody></tbody>
+            <tfoot><tr class="an-desk-total"></tr></tfoot>
+          </table>
+        </div>
+        <div class="cb"><div class="hint an-desk-note"></div></div>
+      </div>
+
+    </div>
+    <div class="wfoot">
+      <span class="an-foot"></span>
+      <span class="grow an-updated"></span>
+    </div>
+  </section>
+</template>
+
 <template id="contract-template">
   <section class="win contractwin">
     <div class="titlebar">

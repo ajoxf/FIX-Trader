@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS positions (
     contract_key TEXT NOT NULL,
     side TEXT NOT NULL,
     qty REAL NOT NULL,
+    opened_qty REAL,
     avg_price REAL NOT NULL,
     opened_at TEXT,
     entry_z REAL, entry_mean REAL, entry_std REAL, entry_half_life REAL,
@@ -117,7 +118,8 @@ class Database:
         """Written on EVERY change: the book has to survive a crash between
         the fill and the next poll."""
         with self._lock, self._connect() as conn:
-            row = (pos.contract_key, pos.side.value, pos.qty, pos.avg_price,
+            row = (pos.contract_key, pos.side.value, pos.qty,
+                   pos.opened_qty or pos.qty, pos.avg_price,
                    _iso(pos.opened_at), pos.entry_z, pos.entry_mean,
                    pos.entry_std, pos.entry_half_life, pos.margin_locked,
                    pos.break_even, pos.target_price, pos.stop_price,
@@ -128,18 +130,20 @@ class Database:
                    json.dumps(pos.tickets))
             if pos.id is None:
                 cur = conn.execute(
-                    "INSERT INTO positions (contract_key, side, qty, avg_price,"
+                    "INSERT INTO positions (contract_key, side, qty,"
+                    " opened_qty, avg_price,"
                     " opened_at, entry_z, entry_mean, entry_std,"
                     " entry_half_life, margin_locked, break_even, target_price,"
                     " stop_price, closed_at, exit_price, exit_z, exit_reason,"
                     " gross_pnl, fees_paid, net_pnl, pnl_pct_on_margin,"
-                    " is_simulated, tickets) VALUES (" + ",".join("?" * 23) + ")",
+                    " is_simulated, tickets) VALUES (" + ",".join("?" * 24) + ")",
                     row)
                 pos.id = cur.lastrowid
             else:
                 conn.execute(
                     "UPDATE positions SET contract_key=?, side=?, qty=?,"
-                    " avg_price=?, opened_at=?, entry_z=?, entry_mean=?,"
+                    " opened_qty=?, avg_price=?, opened_at=?, entry_z=?,"
+                    " entry_mean=?,"
                     " entry_std=?, entry_half_life=?, margin_locked=?,"
                     " break_even=?, target_price=?, stop_price=?, closed_at=?,"
                     " exit_price=?, exit_z=?, exit_reason=?, gross_pnl=?,"
@@ -153,7 +157,8 @@ class Database:
     def _position_from_row(r: sqlite3.Row) -> Position:
         return Position(
             id=r['id'], contract_key=r['contract_key'], side=Side(r['side']),
-            qty=r['qty'], avg_price=r['avg_price'],
+            qty=r['qty'], opened_qty=(r['opened_qty'] or r['qty']),
+            avg_price=r['avg_price'],
             opened_at=_dt(r['opened_at']), entry_z=r['entry_z'],
             entry_mean=r['entry_mean'], entry_std=r['entry_std'],
             entry_half_life=r['entry_half_life'],

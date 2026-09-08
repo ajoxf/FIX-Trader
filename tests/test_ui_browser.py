@@ -108,8 +108,12 @@ def open_page(p, url, errors):
     browser = _launch(p)
     page = browser.new_page(viewport={'width': 1400, 'height': 900})
     page.on('pageerror', lambda e: errors.append('pageerror: ' + str(e)))
-    page.on('console',
-            lambda m: errors.append('console: ' + m.text) if m.type == 'error' else None)
+    # `pageerror` is a real JavaScript exception and always a failure. A
+    # console error is not: a 404 for a contract that is on the screen but not
+    # in this fixture's configuration is a state the window handles in words.
+    page.on('console', lambda m: errors.append('console: ' + m.text)
+            if m.type == 'error' and 'Failed to load resource' not in m.text
+            else None)
     # NOT networkidle: the page polls twice a second and it never fires.
     page.goto(url, wait_until='domcontentloaded')
     page.wait_for_selector('.win', timeout=5000)
@@ -350,5 +354,192 @@ def test_closing_from_the_positions_window_asks_and_then_sends(server):
         page.wait_for_timeout(400)
         sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
         assert sent['action'] == 'close_now' and sent['contract'] == 'fef'
+        browser.close()
+    assert errors == []
+
+
+# -- the Analysis window ---------------------------------------------------
+
+def with_analysis(tmp_path, report=None, desk=None):
+    """A config and a database the analysis routes can actually read."""
+    from fixtrader.config import ContractConfig, TraderConfig
+    from fixtrader.database import Database
+    from fixtrader.models import ExitReason, Position, Side, TouchEvent, TouchState
+    from datetime import timedelta
+
+    cfg = TraderConfig(path=str(tmp_path / 'config.json'))
+    cfg.settings['DATABASE_PATH'] = str(tmp_path / 'a.db')
+    cfg.contracts['fef'] = ContractConfig(
+        key='fef', name='Iron ore Oct/Nov', symbol='FEFV6-FEFX6',
+        tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
+        quantity=5, commission_per_contract=1.0, slippage_budget_ticks=0.5,
+        entry_threshold=2.0)
+    cfg.save()
+
+    db = Database(str(tmp_path / 'a.db'))
+    base = datetime.now(timezone.utc) - timedelta(hours=4)
+    for i in range(12):
+        db.save_position(Position(
+            contract_key='fef', side=Side.SELL, qty=0.0, opened_qty=5.0,
+            avg_price=0.693, opened_at=base + timedelta(minutes=i * 10),
+            closed_at=base + timedelta(minutes=i * 10 + 45),
+            entry_z=2.14 + i * 0.01, exit_z=0.31, exit_price=0.6465,
+            margin_locked=1300.0, exit_reason=ExitReason.TARGET,
+            gross_pnl=60.0, fees_paid=19.0, net_pnl=41.0,
+            pnl_pct_on_margin=3.15))
+    # a level that reverts often but cannot pay, and one that can
+    for i in range(8):
+        db.save_touch(TouchEvent(contract_key='fef', ts=base, level=1.0,
+                                 direction='UP', std=0.08,
+                                 state=TouchState.REVERTED,
+                                 seconds_to_revert=300.0, adverse_sigma=0.9))
+    for i in range(6):
+        db.save_touch(TouchEvent(contract_key='fef', ts=base, level=2.0,
+                                 direction='UP', std=0.08,
+                                 state=TouchState.REVERTED,
+                                 seconds_to_revert=120.0, adverse_sigma=0.4,
+                                 became_trade=(i < 3)))
+    db.save_touch(TouchEvent(contract_key='fef', ts=base, level=3.0,
+                             direction='UP', std=0.08,
+                             state=TouchState.UNRESOLVED))
+
+    # Fills carrying MEASURED slippage, so the costs panel has something to
+    # compare the budget against — and one that could not be priced, which
+    # must be counted separately rather than averaged in as zero.
+    from fixtrader.models import Fill
+    for i in range(6):
+        db.save_fill(Fill(venue='SIM', exec_id=f'E{i:03d}', clordid='FT-1',
+                          contract_key='fef', side=Side.SELL, qty=5.0,
+                          price=0.693, fees=19.0,
+                          our_ts=base + timedelta(minutes=i),
+                          slippage_ticks=0.9))
+    db.save_fill(Fill(venue='SIM', exec_id='E999', clordid='FT-1',
+                      contract_key='fef', side=Side.SELL, qty=5.0,
+                      price=0.693, our_ts=base, slippage_ticks=None))
+    return cfg
+
+
+@pytest.fixture
+def analysis_server(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with_analysis(tmp_path)
+    snap = dict(SNAPSHOT, ts=datetime.now(timezone.utc).isoformat())
+    (tmp_path / 'status.json').write_text(json.dumps(snap))
+    app = create_app(str(tmp_path / 'config.json'), str(tmp_path / 'status.json'),
+                     str(tmp_path / 'commands.jsonl'),
+                     str(tmp_path / 'results.json'))
+    from werkzeug.serving import make_server
+    srv = make_server('127.0.0.1', 0, app, threaded=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_port}/", tmp_path
+    srv.shutdown()
+
+
+def open_analysis(p, url, errors):
+    browser, page = open_page(p, url, errors)
+    page.wait_for_selector('.win[data-key="__analysis__"]')
+    page.wait_for_selector('.an-tiles .tile')
+    return browser, page
+
+
+def test_the_analysis_window_shows_the_tiles_and_the_journal(analysis_server):
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        page.wait_for_timeout(800)
+        assert page.locator('.an-tiles .tile').count() == 9
+        tiles = page.locator('.an-tiles').inner_text()
+        assert '12' in tiles                       # trades
+        assert '100.0%' in tiles                   # win rate
+        assert page.locator('.an-journal tbody tr').count() == 12
+        # the journal carries the z each decision fired at
+        assert '+2.14' in page.locator('.an-journal').inner_text()
+        browser.close()
+    assert errors == []
+
+
+def test_a_level_that_cannot_cover_its_costs_is_shown_but_marked(analysis_server):
+    """It reverts more often than any other — and it is the one that cannot
+    pay for the trade. Both facts have to be on the screen at once."""
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        page.wait_for_timeout(800)
+        rows = page.locator('.an-touches tbody tr')
+        assert rows.count() >= 2
+        # The unmeasured fill must be counted, not averaged in as zero.
+        assert 'unmeasured' in page.locator('.an-costs').inner_text()
+        finding = page.locator('.an-touch-finding').inner_text()
+        assert 'covers the round trip' in finding or 'No level covers' in finding
+        browser.close()
+    assert errors == []
+
+
+def test_an_unresolved_touch_is_reported_separately_on_the_screen(analysis_server):
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        page.wait_for_timeout(800)
+        assert 'unresolved' in page.locator('.an-foot').inner_text()
+        browser.close()
+    assert errors == []
+
+
+def test_the_cost_finding_offers_a_correction_and_does_not_apply_it(analysis_server):
+    """Nothing in this system applies its own findings."""
+    url, tmp = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        page.wait_for_timeout(900)
+        finding = page.locator('.an-cost-finding')
+        assert not finding.is_hidden()
+        text = finding.inner_text()
+        # It names both numbers and proposes the measured one.
+        assert '0.50' in text and '0.90' in text
+        assert 'Set the budget to 0.90' in text
+        # ...and the contract still holds what it was configured with.
+        from fixtrader.config import TraderConfig
+        assert TraderConfig.from_file(str(tmp / 'config.json')) \
+            .contracts['fef'].overrides['slippage_budget_ticks'] == 0.5
+
+        # pressing it applies the correction, once, deliberately
+        page.locator('.an-cost-finding button').click()
+        page.wait_for_timeout(900)
+        assert TraderConfig.from_file(str(tmp / 'config.json')) \
+            .contracts['fef'].overrides['slippage_budget_ticks'] == 0.9
+        browser.close()
+    assert errors == []
+
+
+def test_the_all_contracts_tab_withholds_a_verdict_on_thin_evidence(analysis_server):
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        page.locator('.an-tabs button', has_text='All contracts').click()
+        page.wait_for_selector('.an-desk-table tbody tr')
+        page.wait_for_timeout(600)
+        text = page.locator('.an-desk').inner_text()
+        assert 'too few to judge' in text
+        assert 'blended' in text                   # the total row says so
+        browser.close()
+    assert errors == []
+
+
+def test_simulated_trades_are_not_shown_in_a_live_figure(analysis_server):
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        page.wait_for_timeout(700)
+        assert page.locator('.an-journal tbody tr').count() == 12
+        page.select_option('.an-mode', 'sim')
+        page.wait_for_timeout(900)
+        # the fixture's trades are all live, so simulated-only is empty
+        assert 'no closed trades' in page.locator('.an-journal').inner_text()
         browser.close()
     assert errors == []

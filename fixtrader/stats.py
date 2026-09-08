@@ -79,6 +79,10 @@ class StatsWindow:
         #: CHANGE, which is what makes it one event per crossing.
         self._last_band: float = 0.0
         self._open_touches: List[TouchEvent] = []
+        #: The most recent touch, so the engine can mark the one an entry
+        #: actually acted on. The touch study's "traded" column is what says
+        #: whether the level the algo fires at is the level that reverts.
+        self.last_touch: Optional[TouchEvent] = None
 
     # -- configuration ----------------------------------------------------
 
@@ -116,6 +120,7 @@ class StatsWindow:
         self._warm_stats_done = False
         self._last_band = 0.0
         self._open_touches.clear()
+        self.last_touch = None
 
     # -- the window -------------------------------------------------------
 
@@ -360,6 +365,7 @@ class StatsWindow:
         touch._opened_at_sample = self._samples_seen     # type: ignore[attr-defined]
         touch._peak_z = self.z                           # type: ignore[attr-defined]
         self._open_touches.append(touch)
+        self.last_touch = touch
         return touch
 
     def _resolve_open_touches(self, ts: datetime) -> List[TouchEvent]:

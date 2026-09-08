@@ -475,6 +475,373 @@ function renderPositions(snap) {
     ? 'book and venue agree' : 'venue unreadable';
 }
 
+/* -- the Analysis window --------------------------------------------------
+ *
+ * The feedback loop. One contract at a time by default, because a win rate
+ * blended over eight of them cannot answer the only question it exists for.
+ * It fetches its own data on a slow timer — this is history, not a market,
+ * and re-reading it twice a second would be pointless work on the desk's
+ * critical path.
+ */
+
+const analysis = { key: null, period: 'all', mode: 'live', timer: null };
+
+function analysisWindow() {
+  let el = document.querySelector('.win[data-key="__analysis__"]');
+  if (el) return el;
+  const tpl = document.getElementById('analysis-template');
+  el = tpl.content.firstElementChild.cloneNode(true);
+  el.querySelector('.close').onclick = () => {
+    state.closed.add('__analysis__');
+    localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));
+    el.remove();
+    renderTabs();
+  };
+  el.querySelector('.an-period').onchange = (e) => {
+    analysis.period = e.target.value; loadAnalysis();
+  };
+  el.querySelector('.an-mode').onchange = (e) => {
+    analysis.mode = e.target.value; loadAnalysis();
+  };
+  makeDraggable(el, '__analysis__');
+  document.getElementById('desktop').appendChild(el);
+  const place = state.places['__analysis__'];
+  if (place) placeWindow(el, place.x, place.y);
+  return el;
+}
+
+function tile(k, v, sub, cls) {
+  return '<div class="tile"><div class="k">' + k + '</div>' +
+    '<div class="v ' + (cls || '') + '">' + v + '</div>' +
+    '<div class="s">' + (sub || '') + '</div></div>';
+}
+
+function minutes(m) {
+  if (m === null || m === undefined) return DASH;
+  if (m < 60) return Math.round(m) + 'm';
+  return Math.floor(m / 60) + 'h ' + Math.round(m % 60) + 'm';
+}
+
+function seconds(s) {
+  if (s === null || s === undefined) return DASH;
+  return s < 90 ? Math.round(s) + 's' : minutes(s / 60);
+}
+
+function pct(v, d) {
+  return (v === null || v === undefined) ? DASH : Number(v).toFixed(d || 1) + '%';
+}
+
+function bar(width, negative) {
+  return '<div class="cbar"><i class="' + (negative ? 'neg' : 'pos') +
+    '" style="width:' + Math.max(2, Math.min(100, width)) + '%"></i></div>';
+}
+
+function renderTiles(el, s) {
+  el.querySelector('.an-tiles').innerHTML =
+    tile('Trades', s.trades, s.won + ' won / ' + s.lost + ' lost' +
+      (s.unmeasured ? ' · ' + s.unmeasured + ' unmeasured' : '')) +
+    tile('Win rate', pct(s.win_rate), 'of ' + s.measured + ' measured') +
+    tile('Net P&L', money(s.net), s.fees === null ? 'costs not measured'
+      : 'after ' + money(s.fees).replace('+', '') + ' costs',
+      s.net > 0 ? 'up' : s.net < 0 ? 'dn' : '') +
+    tile('Avg / trade', money(s.avg),
+      'win ' + money(s.avg_win) + ' · loss ' + money(s.avg_loss),
+      s.avg > 0 ? 'up' : s.avg < 0 ? 'dn' : '') +
+    tile('Expectancy', money(s.expectancy), 'per trade, weighted',
+      s.expectancy > 0 ? 'up' : s.expectancy < 0 ? 'dn' : '') +
+    tile('On margin', pct(s.on_margin, 2),
+      s.on_margin === null ? 'margin not reported' : 'return on what was tied up',
+      s.on_margin > 0 ? 'up' : s.on_margin < 0 ? 'dn' : '') +
+    tile('Cost drag', pct(s.cost_drag), 'of gross') +
+    tile('Avg hold', minutes(s.avg_hold_min), '') +
+    tile('Worst run', money(s.worst_run), 'consecutive losses',
+      s.worst_run < 0 ? 'dn' : '');
+}
+
+function renderTouches(el, study, threshold) {
+  const body = el.querySelector('.an-touches tbody');
+  body.innerHTML = '';
+  const most = Math.max(1, ...study.levels.map((l) => l.touches));
+  study.levels.forEach((l) => {
+    const tr = document.createElement('tr');
+    const tag = Math.abs(l.level) >= (threshold || 2)
+      ? (l.level > 0 ? 't-sell' : 't-buy') : 't-cxl';
+    tr.innerHTML =
+      '<td><span class="tag ' + tag + '">' +
+        (l.level > 0 ? '+' : '') + l.level.toFixed(0) + ' SD</span></td>' +
+      '<td class="r">' + l.touches + '</td>' +
+      '<td>' + bar(100 * l.touches / most, l.level < 0) + '</td>' +
+      '<td class="r">' + pct(l.reverted_pct) + '</td>' +
+      '<td class="r">' + seconds(l.median_seconds) + '</td>' +
+      '<td class="r">' + (l.median_adverse_sigma === null ? DASH
+        : l.median_adverse_sigma.toFixed(1) + 'σ') + '</td>' +
+      '<td class="r">' + l.traded + '</td>' +
+      '<td class="r">' + (l.unresolved || DASH) + '</td>';
+    // A level whose move cannot cover the round trip is dimmed: it may
+    // revert beautifully and still lose money every time.
+    if (l.pays === false) tr.className = 'cannot-pay';
+    body.appendChild(tr);
+  });
+
+  const finding = el.querySelector('.an-touch-finding');
+  const tail = study.unresolved
+    ? ' ' + study.unresolved + ' touch(es) still running are counted ' +
+      'separately and left out of the percentages.' : '';
+  finding.classList.remove('hidden', 'warn');
+  if (study.best_level && study.best_reverted_pct !== null) {
+    finding.innerHTML = '<b>±' + study.best_level.toFixed(1) +
+      ' is the level to trade on this contract</b> — ' +
+      study.best_reverted_pct.toFixed(0) + '% of those touches reverted, and ' +
+      'the move back to the mean covers the round trip. The entry threshold ' +
+      'is currently ±' + (threshold || 2).toFixed(2) + '.' + tail;
+  } else if (study.nothing_pays) {
+    // Rather than falling back to the innermost band and calling it an answer.
+    finding.classList.add('warn');
+    finding.innerHTML = '<b>No level covers its own round trip on this ' +
+      'contract.</b> The inner bands revert more often, as they always do, ' +
+      'but the move back to the mean does not pay for the trade — this is a ' +
+      'costs problem or a contract to leave alone, not a threshold to lower.' +
+      tail;
+  } else {
+    finding.innerHTML = 'Not enough resolved touches yet to say which level ' +
+      'is worth trading.' + tail;
+  }
+}
+
+function renderExits(el, rows) {
+  const body = el.querySelector('.an-exits tbody');
+  body.innerHTML = '';
+  rows.forEach((r) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td class="txt">' + r.reason.toLowerCase().replace(/_/g, ' ') +
+      '</td><td class="r">' + r.count + '</td>' +
+      '<td class="r ' + (r.net > 0 ? 'up' : r.net < 0 ? 'dn' : '') + '">' +
+      money(r.net) + '</td>';
+    body.appendChild(tr);
+  });
+  if (!rows.length) {
+    body.innerHTML = '<tr><td class="txt" colspan="3">nothing closed yet</td></tr>';
+  }
+}
+
+function renderCosts(el, costs, key) {
+  const body = el.querySelector('.an-costs tbody');
+  body.innerHTML = '';
+  costs.lines.forEach((l) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td class="txt">' + l.item + '</td>' +
+      '<td class="r">' + money(l.budgeted) + '</td>' +
+      '<td class="r">' + money(l.actual) + '</td>' +
+      '<td class="r">' + (l.diff === null ? DASH : money(l.diff)) + '</td>';
+    body.appendChild(tr);
+  });
+  const total = document.createElement('tr');
+  total.innerHTML = '<td class="txt"><b>round trip</b></td>' +
+    '<td class="r">' + money(costs.total.budgeted) + '</td>' +
+    '<td class="r">' + money(costs.total.actual) + '</td>' +
+    '<td class="r">' + money(costs.total.diff) + '</td>';
+  body.appendChild(total);
+
+  const ticks = document.createElement('tr');
+  ticks.innerHTML = '<td class="txt">slippage, per side</td>' +
+    '<td class="r">' + (costs.budget_ticks === null ? DASH
+      : costs.budget_ticks.toFixed(2) + ' tk') + '</td>' +
+    '<td class="r">' + (costs.measured_ticks === null ? DASH
+      : costs.measured_ticks.toFixed(2) + ' tk') + '</td>' +
+    '<td class="r">' + (costs.unmeasured_fills
+      ? costs.unmeasured_fills + ' unmeasured' : '') + '</td>';
+  body.appendChild(ticks);
+
+  const finding = el.querySelector('.an-cost-finding');
+  finding.innerHTML = '';
+  if (!costs.finding) { finding.classList.add('hidden'); return; }
+  finding.classList.remove('hidden');
+  const text = document.createElement('span');
+  text.innerHTML = '<b>' + costs.finding.text + '</b>';
+  finding.appendChild(text);
+  const apply = document.createElement('button');
+  apply.className = 'btn sm';
+  apply.style.marginTop = '5px';
+  apply.textContent = 'Set the budget to ' +
+    costs.finding.suggest_ticks.toFixed(2);
+  // It PROPOSES. Nothing in this system applies its own findings.
+  apply.onclick = async () => {
+    const res = await fetch('/api/contracts/' + encodeURIComponent(key), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slippage_budget_ticks: costs.finding.suggest_ticks }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      toast('OPEN', 'APPLIED', 'Slippage budget set to ' +
+        costs.finding.suggest_ticks.toFixed(2) + ' ticks', key);
+      loadAnalysis();
+    } else {
+      toast('REJECT', 'NOT APPLIED', data.error || 'refused', key);
+    }
+  };
+  finding.appendChild(apply);
+}
+
+function renderJournal(el, rows, decimals) {
+  const body = el.querySelector('.an-journal tbody');
+  body.innerHTML = '';
+  const when = (iso) => iso ? new Date(iso).toLocaleString([],
+    { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+    : DASH;
+  rows.forEach((r) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + when(r.opened_at) + '</td><td>' + when(r.closed_at) + '</td>' +
+      '<td><span class="tag ' + (r.side === 'BUY' ? 't-buy' : 't-sell') + '">' +
+        (r.side === 'BUY' ? 'LONG' : 'SHORT') + '</span></td>' +
+      '<td class="r">' + r.qty + '</td>' +
+      '<td class="r">' + signed(r.entry_z, 2) + '</td>' +
+      '<td class="r">' + signed(r.exit_z, 2) + '</td>' +
+      '<td class="r">' + num(r.entry_price, decimals) + '</td>' +
+      '<td class="r">' + num(r.exit_price, decimals) + '</td>' +
+      '<td class="r">' + money(r.gross) + '</td>' +
+      '<td class="r">' + money(r.fees) + '</td>' +
+      '<td class="r ' + (r.net > 0 ? 'up' : r.net < 0 ? 'dn' : '') + '">' +
+        money(r.net) + '</td>' +
+      '<td class="r">' + pct(r.on_margin, 2) + '</td>' +
+      '<td class="r">' + minutes(r.held_min) + '</td>' +
+      '<td class="txt">' + (r.exit_reason || DASH).toLowerCase().replace(/_/g, ' ') +
+        (r.simulated ? ' <span class="tag t-cxl">sim</span>' : '') + '</td>';
+    body.appendChild(tr);
+  });
+  if (!rows.length) {
+    body.innerHTML = '<tr><td class="txt" colspan="14">no closed trades in ' +
+      'this period</td></tr>';
+  }
+}
+
+function renderDesk(el, report) {
+  const body = el.querySelector('.an-desk-table tbody');
+  body.innerHTML = '';
+  const best = Math.max(1, ...report.rows.map((r) => Math.abs(r.net || 0)));
+  report.rows.forEach((r) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="txt">' + r.name + '</td>' +
+      '<td class="r">' + r.trades + '</td>' +
+      '<td class="r">' + pct(r.win_rate) + '</td>' +
+      '<td>' + bar(100 * Math.abs(r.net || 0) / best, (r.net || 0) < 0) + '</td>' +
+      '<td class="r ' + (r.net > 0 ? 'up' : r.net < 0 ? 'dn' : '') + '">' +
+        money(r.net) + '</td>' +
+      '<td class="r">' + money(r.avg) + '</td>' +
+      '<td class="r">' + pct(r.on_margin, 2) + '</td>' +
+      '<td class="r">' + pct(r.cost_drag) + '</td>' +
+      '<td class="r">' + minutes(r.avg_hold_min) + '</td>' +
+      '<td class="r">' + (r.best_level ? '±' + r.best_level.toFixed(1) : DASH) + '</td>' +
+      '<td class="txt">' + r.verdict + '</td>';
+    body.appendChild(tr);
+  });
+  const t = report.total;
+  el.querySelector('.an-desk-total').innerHTML =
+    '<td class="txt"><b>All, blended</b></td><td class="r">' + t.trades +
+    '</td><td class="r">' + pct(t.win_rate) + '</td><td></td>' +
+    '<td class="r">' + money(t.net) + '</td><td class="r">' + money(t.avg) +
+    '</td><td class="r">' + pct(t.on_margin, 2) + '</td><td class="r">' +
+    pct(t.cost_drag) + '</td><td class="r">' + minutes(t.avg_hold_min) +
+    '</td><td></td><td></td>';
+  el.querySelector('.an-desk-note').innerHTML =
+    'A contract with fewer than <b>' + report.min_trades_for_a_verdict +
+    '</b> closed trades is marked <b>too few to judge</b> and is never given ' +
+    'a verdict on a win rate. No figure here is blended across contracts ' +
+    'except the last row, which says so.';
+}
+
+function renderAnalysisTabs(el, contracts) {
+  const host = el.querySelector('.an-tabs');
+  host.innerHTML = '';
+  const add = (key, label) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.className = (analysis.key === key) ? 'on' : '';
+    b.onclick = () => { analysis.key = key; loadAnalysis(); };
+    host.appendChild(b);
+  };
+  contracts.forEach((c) => add(c.key, c.name));
+  add(null, 'All contracts');
+}
+
+async function loadAnalysis() {
+  if (state.closed.has('__analysis__')) return;
+  const el = analysisWindow();
+  const contracts = (window.__lastSnapshot || {}).contracts || [];
+  if (analysis.key === undefined) analysis.key = null;
+  if (analysis.key === null && contracts.length && analysis.key !== null) { /* noop */ }
+  if (analysis.key === null && !el.dataset.touched) {
+    analysis.key = contracts.length ? contracts[0].key : null;
+    el.dataset.touched = '1';
+  }
+  renderAnalysisTabs(el, contracts);
+  el.querySelector('.an-period').value = analysis.period;
+  el.querySelector('.an-mode').value = analysis.mode;
+
+  const query = '?period=' + analysis.period + '&mode=' + analysis.mode;
+  const say = (text) => {
+    // Never silently render nothing: a window that has failed to load must
+    // look different from one with nothing to report.
+    el.querySelector('.an-foot').textContent = text;
+    el.querySelector('.an-note').textContent = text;
+  };
+  const desk = el.querySelector('.an-desk');
+  const perContract = el.querySelectorAll('.an-tiles, .an-two, .an-journal');
+
+  if (analysis.key === null) {
+    const report = await getAnalysis('/api/analysis' + query);
+    if (!report) { say('the analysis could not be read'); return; }
+    desk.classList.remove('hidden');
+    el.querySelectorAll('.an-tiles, .an-two').forEach((n) => n.classList.add('hidden'));
+    el.querySelector('.an-journal').closest('.card').classList.add('hidden');
+    renderDesk(el, report);
+    el.querySelector('.an-note').textContent = 'all contracts · closed trades only';
+    el.querySelector('.an-foot').textContent =
+      report.rows.length + ' contracts · ' + report.total.trades + ' closed trades';
+    el.querySelector('.an-csv').classList.add('hidden');
+  } else {
+    const report = await getAnalysis('/api/analysis/' +
+      encodeURIComponent(analysis.key) + query);
+    if (!report) {
+      say('no analysis for ' + analysis.key +
+          ' — it is on the screen but not in the configuration');
+      return;
+    }
+    desk.classList.add('hidden');
+    el.querySelectorAll('.an-tiles, .an-two').forEach((n) => n.classList.remove('hidden'));
+    el.querySelector('.an-journal').closest('.card').classList.remove('hidden');
+    renderTiles(el, report.summary);
+    renderTouches(el, report.touches, report.entry_threshold);
+    renderExits(el, report.exits);
+    renderCosts(el, report.costs, report.key);
+    renderJournal(el, report.journal, report.decimals);
+    el.querySelector('.an-note').textContent = report.symbol +
+      ' · closed trades only';
+    el.querySelector('.an-journal-note').textContent =
+      report.journal.length + ' closed, newest first';
+    el.querySelector('.an-foot').textContent =
+      report.summary.trades + ' closed · ' + report.open_positions +
+      ' open (excluded) · ' + report.touches.unresolved + ' touches unresolved';
+    const csv = el.querySelector('.an-csv');
+    csv.classList.remove('hidden');
+    csv.href = '/api/analysis/' + encodeURIComponent(analysis.key) +
+      '/trades.csv' + query;
+  }
+  el.querySelector('.an-updated').textContent =
+    'updated ' + new Date().toLocaleTimeString([], { hour12: false });
+}
+
+async function getAnalysis(url) {
+  try {
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) return null;
+    return res.json();
+  } catch (e) {
+    return null;
+  }
+}
+
 /* -- chrome --------------------------------------------------------------- */
 
 function renderTabs() {
@@ -557,9 +924,15 @@ async function tick() {
     const res = await fetch('/api/snapshot', { cache: 'no-store' });
     const snap = await res.json();
     renderChrome(snap);
-    const seen = new Set(['__positions__']);
+    window.__lastSnapshot = snap;
+    const seen = new Set(['__positions__', '__analysis__']);
     (snap.contracts || []).forEach((c) => { seen.add(c.key); renderContract(c); });
     renderPositions(snap);
+    if (!analysis.timer) {
+      // History, not a market: a slow timer, off the desk's critical path.
+      loadAnalysis();
+      analysis.timer = setInterval(loadAnalysis, 15000);
+    }
     document.querySelectorAll('.win').forEach((el) => {
       if (!seen.has(el.dataset.key)) el.remove();
     });
@@ -619,7 +992,8 @@ document.getElementById('add-panel').onclick = () => {
   }
   state.closed.forEach((key) => {
     const b = document.createElement('button');
-    b.textContent = key === '__positions__' ? 'Positions' : key;
+    b.textContent = key === '__positions__' ? 'Positions'
+      : key === '__analysis__' ? 'Analysis' : key;
     b.onclick = () => {
       state.closed.delete(key);
       localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));

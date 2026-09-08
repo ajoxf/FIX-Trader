@@ -471,3 +471,63 @@ tr.disagrees td { background: var(--warn-soft) !important; }
 
 .hint.sim-note { background: var(--warn-soft); border-left: 3px solid var(--warn);
                  color: #5e4204; padding: 5px 7px; margin: 4px 0; }
+
+
+/* -- the Analysis window --------------------------------------------------
+ * A table, so it spans the grid rather than sitting in one cell of it. */
+.subtabs { display: flex; gap: 0; background: var(--frame-2);
+           border-bottom: 1px solid var(--line); align-items: center; }
+.subtabs .an-tabs { display: flex; }
+.subtabs button {
+  font: 500 10.5px/1 var(--ui); padding: 6px 11px; border: 0;
+  border-right: 1px solid var(--line-soft); background: transparent;
+  color: #3f434a; cursor: pointer;
+}
+.subtabs button.on { background: var(--panel); font-weight: 600;
+                     box-shadow: inset 0 -2px 0 var(--bid); }
+.subtabs button:hover { background: var(--panel); }
+.subtabs .right { margin-left: auto; display: flex; align-items: center;
+                  gap: 6px; padding: 3px 6px; }
+.subtabs select { font: 500 10.5px/1 var(--mono); padding: 3px 4px;
+                  border: 1px solid #a4a4a4; background: var(--field); }
+.subtabs a.btn { text-decoration: none; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(116px, 1fr));
+         gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); }
+.tile { background: #fff; padding: 6px 8px; }
+.tile .k { font: 600 8.5px/1 var(--mono); letter-spacing: .12em;
+           color: var(--ink-faint); text-transform: uppercase; }
+.tile .v { font: 600 18px/1.2 var(--mono); font-variant-numeric: tabular-nums;
+           margin-top: 3px; }
+.tile .s { font: 400 9.5px/1.3 var(--mono); color: var(--ink-mute); margin-top: 1px; }
+.tile .v.up { color: var(--good); } .tile .v.dn { color: var(--ask); }
+
+.an-two { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+          gap: 8px; align-items: start; }
+@media (max-width: 900px) { .an-two { grid-template-columns: 1fr; } }
+.an-stack { display: flex; flex-direction: column; gap: 8px; }
+.tablewrap.tall { max-height: 300px; }
+
+/* A count you can compare at a glance, without a chart library. */
+.cbar { position: relative; height: 11px; background: #eee; border: 1px solid #ddd;
+        min-width: 48px; }
+.cbar i { position: absolute; left: 0; top: 0; bottom: 0; }
+.cbar i.pos { background: #8fc2e8; } .cbar i.neg { background: #e2a3a3; }
+
+.finding { background: #eef4fa; border: 1px solid #b8d3e8;
+           border-left: 3px solid var(--bid); padding: 6px 8px;
+           font-size: 11px; line-height: 1.5; color: #20364a; }
+.finding b { color: #12293d; }
+.finding.warn { background: var(--warn-soft); border-color: #dcc389;
+                border-left-color: var(--warn); color: #5e4204; }
+.finding.warn b { color: #3f2c02; }
+
+table.grid .tag.t-buy  { background: var(--bid-soft); color: #0f4f80; }
+table.grid .tag.t-sell { background: var(--ask-soft); color: #7a2020; }
+table.grid .tag.t-cxl  { background: #e6e6e6; color: #5c6066; }
+table.grid td.up { color: var(--good); } table.grid td.dn { color: var(--ask); }
+
+/* A level that reverts but cannot cover its round trip. Shown, because the
+ * contrast is the point — dimmed, because it is not a threshold to aim at. */
+table.grid tr.cannot-pay td { color: var(--ink-faint); }
+table.grid tr.cannot-pay .tag { opacity: .55; }

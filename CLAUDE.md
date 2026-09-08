@@ -66,6 +66,22 @@ the drawing wins.
 - **Statistics stay live until the window is warm.** The update interval holds
   the bands still for a trader to aim at; applied during warm-up it froze a
   sigma computed from two samples.
+- **A level that reverts is not a level that pays.** The inner bands always
+  revert more often — a spread one sigma from its mean comes back more
+  reliably than one at three — and they are also the ones whose move cannot
+  cover the round trip. Any "best level" must clear its costs, or the Analysis
+  window invites lowering the threshold onto something that reverts
+  beautifully and loses money every time.
+- **Slippage can be NEGATIVE** — the market moving our way between the price an
+  order was aimed at and the fill. That is a price improvement, not a cost, and
+  a budget is never negative: proposing one would have the edge filter pay the
+  desk to trade.
+- **`Position.qty` is what REMAINS; `opened_qty` is the size it was opened at.**
+  Closing decrements the first, so a journal reading the wrong one reports
+  every trade as size 0 — and every cost figure fed from it as unmeasured.
+- **Only one engine may run against a book.** Two trade the same signals on the
+  same account and each sees the other's fills as positions it cannot explain.
+  The runner refuses to start when the snapshot is being published already.
 - **Every test that asserts a guard withholds something needs a control** that
   turns the guard off and asserts the opposite.
 - **No native `alert()` / `confirm()` / `prompt()`.** One shared modal, and a

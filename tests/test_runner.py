@@ -60,3 +60,45 @@ def test_a_restart_never_replays_yesterdays_commands(tmp_path):
     old = bridge.submit('kill_all', '')
     run_once(tmp_path)                     # primes past it without running it
     assert bridge.result(old) is None
+
+
+def test_a_second_engine_refuses_to_start_against_a_live_book(tmp_path):
+    """Two engines against one book both trade the same signals on the same
+    account, and each sees the other's fills as positions it cannot explain.
+    An operator double-clicking the launcher is all it takes — and it happened
+    here during development, leaving a database written by two processes."""
+    import json
+    from datetime import datetime, timezone
+    a_config(tmp_path)
+    status = tmp_path / 'status.json'
+    status.write_text(json.dumps({
+        'ts': datetime.now(timezone.utc).isoformat(),
+        'engine': {'alive': True}, 'contracts': []}))
+
+    with pytest.raises(SystemExit) as e:
+        runner.run(config_path=str(tmp_path / 'config.json'),
+                   status_path=str(status),
+                   command_path=str(tmp_path / 'commands.jsonl'),
+                   result_path=str(tmp_path / 'results.json'),
+                   simulated=True)
+    assert 'Another engine' in str(e.value)
+    assert 'cannot explain' in str(e.value)        # it says why, not just no
+
+
+def test_a_stale_snapshot_is_not_a_running_engine(tmp_path):
+    """Refusing to start when nothing is running is the worse failure of the
+    two, so the check is deliberately generous."""
+    import json
+    from datetime import datetime, timedelta, timezone
+    status = tmp_path / 'status.json'
+    status.write_text(json.dumps({
+        'ts': (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat(),
+        'engine': {'alive': True}, 'contracts': []}))
+    assert runner.another_engine_is_running(str(status)) is None
+
+    a_config(tmp_path)
+    run_once(tmp_path)                             # starts without complaint
+
+
+def test_no_snapshot_at_all_is_not_a_running_engine(tmp_path):
+    assert runner.another_engine_is_running(str(tmp_path / 'nothing.json')) is None
