@@ -669,6 +669,7 @@ class Engine:
                     'edge_ratio': round(ratio, 2) if ratio is not None else None,
                     'edge_ok': (ratio >= min_mult) if ratio is not None else None,
                     'min_std_multiple': min_mult,
+                    'hurst_enabled': bool(settings.get('hurst_enabled')),
                     'hurst_threshold': settings.get('hurst_threshold'),
                     'blocked_by': rt.blocked_by,
                 },

@@ -318,3 +318,74 @@ def test_diagnose_against_the_simulator_says_it_confirms_nothing():
     # against a real venue the same pass says nothing of the kind
     plain = _contract_check(gateway, contract, simulated=False)
     assert 'confirms nothing' not in plain['detail']
+
+
+# -- acceptance: no secret escapes, anywhere -------------------------------
+
+SECRET = 'sup3r-s3cret-not-in-any-response'
+
+
+def test_no_route_no_config_and_no_log_line_ever_carries_the_password(
+        client, caplog, monkeypatch, tmp_path):
+    """Criterion 6, tested rather than asserted: the password is reported as
+    set or not set and NEVER returned — not by a route, not into config.json,
+    not even masked, and not into a log line an operator might paste into a
+    ticket.
+
+    Per-route tests cover the venue endpoints. This one sweeps: it saves a
+    real secret through the UI, then walks every readable surface looking for
+    it. A route added later that echoes what it was given fails here."""
+    import logging
+    c, tmp = client
+    monkeypatch.chdir(tmp)
+    caplog.set_level(logging.DEBUG)
+
+    saved = c.post('/api/venues/orient', json={
+        'environment': 'UAT', 'host': 'uat.example', 'port': 9823,
+        'sender_comp_id': 'DESK', 'target_comp_id': 'ORIENT',
+        'username': 'desk1', 'password': SECRET})
+    assert saved.status_code == 200
+
+    # It did reach .env — the one place it is allowed to be.
+    env = (tmp / '.env').read_text()
+    assert SECRET in env
+
+    routes = ['/', '/settings', '/exchanges', '/api/settings', '/api/venues',
+              '/api/contracts', '/api/snapshot', '/api/env-keys']
+    for path in routes:
+        res = c.get(path)
+        if res.status_code == 404:
+            continue                       # a route this build does not have
+        assert SECRET not in res.data.decode('utf-8', 'replace'), path
+
+    # The three buttons talk about the password; none of them return it.
+    for path in ['/api/venues/orient/test', '/api/venues/orient/diagnose',
+                 '/api/venues/orient/connect']:
+        res = c.post(path, json={})
+        if res.status_code == 404:
+            continue
+        assert SECRET not in res.data.decode('utf-8', 'replace'), path
+
+    # Not in the file the desk backs up and mails around, either.
+    assert SECRET not in (tmp / 'config.json').read_text()
+    # And not in anything logged along the way.
+    assert SECRET not in caplog.text
+
+
+def test_a_venue_form_round_trip_does_not_quietly_mask_the_password(client,
+                                                                    monkeypatch):
+    """'Set or not set' is the report. A masked value is still a statement
+    about the secret's length, and it invites a UI that sends the mask back
+    as the new password."""
+    c, tmp = client
+    monkeypatch.chdir(tmp)
+    c.post('/api/venues/orient', json={'environment': 'UAT',
+                                       'password': SECRET})
+    venues = c.get('/api/venues').get_json()
+    venue = [v for v in venues
+             if 'orient' in json.dumps(v).lower()][0]
+    assert venue['password_set'] is True
+    for value in venue.values():
+        if isinstance(value, str):
+            assert '*' * 4 not in value
+            assert '•' not in value

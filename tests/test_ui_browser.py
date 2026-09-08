@@ -435,9 +435,17 @@ def analysis_server(tmp_path, monkeypatch):
     srv.shutdown()
 
 
-def open_analysis(p, url, errors):
+def open_analysis(p, url, errors, mode='live'):
+    """The Analysis window, on a chosen mode.
+
+    The window OPENS on what the engine is — a desk running the simulator
+    shown "Live only" is shown an empty window for the session it just
+    watched. The fixture's rows are live, so these tests say so.
+    """
     browser, page = open_page(p, url, errors)
     page.wait_for_selector('.win[data-key="__analysis__"]')
+    page.select_option('.an-mode', mode)
+    page.wait_for_timeout(400)
     page.wait_for_selector('.an-tiles .tile')
     return browser, page
 
@@ -537,7 +545,7 @@ def test_simulated_trades_are_not_shown_in_a_live_figure(analysis_server):
         browser, page = open_analysis(p, url, errors)
         page.wait_for_timeout(700)
         assert page.locator('.an-journal tbody tr').count() == 12
-        page.select_option('.an-mode', 'sim')
+        page.select_option('.an-mode', 'sim')      # a chosen filter stands
         page.wait_for_timeout(900)
         # the fixture's trades are all live, so simulated-only is empty
         assert 'no closed trades' in page.locator('.an-journal').inner_text()

@@ -62,6 +62,13 @@ the drawing wins.
   the window when the fill lands. `Executor.decisions` exists for exactly this:
   by fill time the market has moved, and an entry logged at z −0.67 for a trade
   taken at −2.24 makes every Analysis figure the wrong one.
+- **`cancel` is a REQUEST, not a fact.** The resting order is still live at
+  the venue until the venue says otherwise, and it can fill in between. The
+  escalation from an unfilled limit is therefore ARMED on the timeout and
+  SENT on the CANCELLED event, for whatever is still outstanding then.
+  Sending the replacement alongside the cancel puts two orders out for one
+  position: on a close the second finds nothing to close (the simulator says
+  so in the venue's own words), and on an open it doubles the position.
 - **A gateway event carries a SNAPSHOT of the order, never the live object.**
   Aliasing made a queued ACK report the order's current state, the reader
   marked it done, and the fill that followed was applied as an open — doubling

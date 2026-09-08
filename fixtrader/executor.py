@@ -141,6 +141,16 @@ class Executor:
         #: the position instead of closing it. This is the one lookup that
         #: must not disappear when `working` is pruned.
         self.intents: Dict[str, Intent] = {}
+        #: Orders whose limit has timed out and whose cancel has been
+        #: REQUESTED — the market replacement is sent when the venue
+        #: confirms the cancel, never before. Keyed by ClOrdID, holding the
+        #: settings the escalation should use.
+        self.escalating: Dict[str, Dict[str, Any]] = {}
+        #: The last contract and book seen for each key, so an escalation
+        #: that fires on a venue event — not inside a pass — still has the
+        #: instrument it is about.
+        self.contracts: Dict[str, Any] = {}
+        self.books: Dict[str, Any] = {}
         #: The state the DECISION was made on — z, mean, sigma, half-life at
         #: the moment the signal fired. Kept per order and stamped onto the
         #: position when the fill lands, because by then the window has moved
@@ -228,6 +238,8 @@ class Executor:
         Returns a list of things that happened, in words, for the events feed.
         """
         said: List[str] = []
+        self.contracts[contract.key] = contract
+        self.books[contract.key] = book
         for wo in list(self.working.values()):
             if wo.contract_key != contract.key:
                 continue
@@ -243,20 +255,20 @@ class Executor:
                 if on_timeout == 'CROSS_AT_MARKET':
                     # Announced, never a silent change of order type. And on a
                     # CLOSE nothing may stand in the way of this.
+                    #
+                    # The market order is NOT sent here. `cancel` is a
+                    # REQUEST: the resting limit is still live at the venue
+                    # until the venue says otherwise, and it can fill in
+                    # between. Sending the replacement now means two orders
+                    # for one position — on a close, the second finds nothing
+                    # to close; on an open, it doubles the position. So the
+                    # escalation is armed, and it fires on the CANCELLED
+                    # event, for whatever is left THEN.
                     wo.escalated = True
+                    self.escalating[wo.clordid] = dict(settings)
                     self.gateway.cancel(wo.clordid)
                     said.append(f"{wo.intent.value.lower()} limit unfilled "
                                 f"after {timeout:.0f}s — crossing at market")
-                    self.place(contract, dict(settings,
-                                              **{f'{prefix}_order_type': 'MARKET'}),
-                               wo.side, wo.remaining, wo.intent, book, now,
-                               reason="escalated from an unfilled limit",
-                               open_qty=wo.remaining if wo.is_close else 0.0,
-                               position_id=wo.position_id,
-                               # the decision was made when the LIMIT was
-                               # sent; escalating does not re-decide it
-                               decision=self.decisions.get(wo.clordid),
-                               position=self.positions.get(wo.clordid))
                 else:
                     self.gateway.cancel(wo.clordid)
                     said.append(f"{wo.intent.value.lower()} limit unfilled "
@@ -318,6 +330,38 @@ class Executor:
         self._persist(wo, now)
         if wo.state.is_done:
             self.working.pop(wo.clordid, None)
+            self._escalate_if_armed(wo, now)
+
+    def _escalate_if_armed(self, wo: WorkingOrder, now: datetime) -> None:
+        """Send the market replacement for a limit whose cancel just landed.
+
+        Only for what is STILL outstanding. A limit that filled while the
+        cancel was in flight leaves nothing to escalate, and sending the
+        original quantity anyway is how one exit becomes two orders — the
+        second either finds nothing to close, or opens the other side.
+        """
+        settings = self.escalating.pop(wo.clordid, None)
+        if settings is None:
+            return
+        if wo.state is not OrderState.CANCELLED:
+            return                    # it filled, or the venue refused it
+        remaining = wo.remaining
+        if remaining <= 0:
+            return
+        contract = self.contracts.get(wo.contract_key)
+        if contract is None:
+            return
+        prefix = 'exit' if wo.is_close else 'entry'
+        book = self.books.get(wo.contract_key)
+        self.place(contract, dict(settings, **{f'{prefix}_order_type': 'MARKET'}),
+                   wo.side, remaining, wo.intent, book, now,
+                   reason="escalated from an unfilled limit",
+                   open_qty=remaining if wo.is_close else 0.0,
+                   position_id=wo.position_id,
+                   # the decision was made when the LIMIT was sent;
+                   # escalating does not re-decide it
+                   decision=self.decisions.get(wo.clordid),
+                   position=self.positions.get(wo.clordid))
 
     def decision_of(self, clordid: str) -> Dict[str, Any]:
         """The window's state when the signal fired, or an empty dict."""

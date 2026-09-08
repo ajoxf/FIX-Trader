@@ -126,13 +126,58 @@ function ask(title, body, confirmLabel) {
 
 /* -- talking to the engine ------------------------------------------------ */
 
+/* Send a command and WAIT for the engine's answer to it.
+ *
+ * Two reasons this does not just post and forget. A refusal has to be seen —
+ * an algo switch the engine declined must not sit on the screen looking
+ * armed. And a control has to feel immediate: without this the switch only
+ * moves when the next snapshot lands, which is up to a screen refresh after
+ * the engine has already acted.
+ *
+ * Resolves to the ENGINE's result, not the acknowledgement of the post.
+ */
 async function command(action, contract, args) {
   const res = await fetch('/api/command', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action, contract: contract || '', args: args || {} }),
   });
-  return res.json();
+  const posted = await res.json();
+  if (!posted.ok || !posted.id) {
+    toast('REJECT', 'NOT SENT', posted.error || 'the command was not accepted',
+      contract || '');
+    return posted;
+  }
+  const answer = await commandResult(posted.id);
+  if (answer === null) {
+    // No answer is NOT success. The engine may be down, and a switch that
+    // moved anyway would be a screen describing a system that is not there.
+    toast('REJECT', 'NO ANSWER',
+      'the engine did not answer ' + action + ' — it may not be running',
+      contract || '');
+    return { ok: false, error: 'no answer from the engine' };
+  }
+  if (answer.ok === false) {
+    toast('REJECT', 'REFUSED', answer.error || 'the engine refused it',
+      contract || '');
+  }
+  tick();                    // show the new state now, not at the next poll
+  return answer;
+}
+
+/* Poll for one command's result. Bounded: a click must not hang for ever on
+ * an engine that is not going to answer. */
+async function commandResult(id, timeoutMs) {
+  const deadline = Date.now() + (timeoutMs || 2000);
+  while (Date.now() < deadline) {
+    try {
+      const r = await (await fetch('/api/result/' + encodeURIComponent(id),
+        { cache: 'no-store' })).json();
+      if (!r.pending) return r;
+    } catch (e) { return null; }
+    await new Promise((done) => setTimeout(done, 30));
+  }
+  return null;
 }
 
 /* -- one window ----------------------------------------------------------- */
@@ -261,6 +306,15 @@ function renderContract(c) {
   q('.f-buyat').textContent = num(s.buy_at, d);
   q('.f-sellat').textContent = num(s.sell_at, d);
   q('.f-hurst').textContent = num(s.hurst, 2);
+  // An em dash always carries its reason. Hurst reads high on a coarsely
+  // quantised spread, so it ships OFF — and "off" and "could not be
+  // computed" are different statements about the same dash.
+  q('.f-hurst').title = (s.hurst !== null && s.hurst !== undefined)
+    ? 'Hurst on the increments; below ' +
+      num((c.filters || {}).hurst_threshold, 2) + ' is mean-reverting'
+    : ((c.filters || {}).hurst_enabled === false
+      ? 'the Hurst filter is off for this contract, so it is not computed'
+      : 'not enough of a window to estimate it yet');
   q('.f-hl').textContent = s.half_life === null ? DASH : num(s.half_life, 1);
 
   // the z strip, drawn between the two entry thresholds
@@ -494,7 +548,8 @@ function renderPositions(snap) {
  * critical path.
  */
 
-const analysis = { key: null, period: 'all', mode: 'live', timer: null };
+const analysis = { key: null, period: 'all', mode: 'live', timer: null,
+                   modeChosen: false };
 
 function analysisWindow() {
   let el = document.querySelector('.win[data-key="__analysis__"]');
@@ -511,7 +566,9 @@ function analysisWindow() {
     analysis.period = e.target.value; loadAnalysis();
   };
   el.querySelector('.an-mode').onchange = (e) => {
-    analysis.mode = e.target.value; loadAnalysis();
+    analysis.mode = e.target.value;
+    analysis.modeChosen = true;        // a chosen filter is never overridden
+    loadAnalysis();
   };
   el.onmousedown = () => raise(el);
   makeDraggable(el, '__analysis__');
@@ -786,6 +843,15 @@ async function loadAnalysis() {
     analysis.key = contracts.length ? contracts[0].key : null;
     el.dataset.touched = '1';
   }
+  // Simulated fills are never BLENDED into a live figure without being
+  // asked for — but a desk running the simulator opening on "Live only" is
+  // shown an empty window for the session it just watched. So the default
+  // follows what the engine actually is, until somebody chooses otherwise.
+  if (!analysis.modeChosen) {
+    const sim = (window.__lastSnapshot || {}).engine
+      && window.__lastSnapshot.engine.simulated;
+    analysis.mode = sim ? 'sim' : 'live';
+  }
   renderAnalysisTabs(el, contracts);
   el.querySelector('.an-period').value = analysis.period;
   el.querySelector('.an-mode').value = analysis.mode;
@@ -834,6 +900,9 @@ async function loadAnalysis() {
     el.querySelector('.an-foot').textContent =
       report.summary.trades + ' closed · ' + report.open_positions +
       ' open (excluded) · ' + report.touches.unresolved + ' touches unresolved';
+    // Zero under one filter and non-zero under another is a statement about
+    // the filter, not about the desk. Say which.
+    if (!report.summary.trades) elsewhereNote(el, query);
     const csv = el.querySelector('.an-csv');
     csv.classList.remove('hidden');
     csv.href = '/api/analysis/' + encodeURIComponent(analysis.key) +
@@ -841,6 +910,25 @@ async function loadAnalysis() {
   }
   el.querySelector('.an-updated').textContent =
     'updated ' + new Date().toLocaleTimeString([], { hour12: false });
+}
+
+/* Nothing here, but something under another filter? Say so. An empty
+ * Analysis window that reads as "you have not traded" when in fact the rows
+ * are one dropdown away is the window quietly lying. */
+async function elsewhereNote(el, query) {
+  const modes = { live: 'Live only', sim: 'Simulated only', both: 'Live + simulated' };
+  const others = Object.keys(modes).filter((m) => m !== analysis.mode);
+  for (const other of others) {
+    const alt = await getAnalysis('/api/analysis/' +
+      encodeURIComponent(analysis.key) +
+      query.replace('mode=' + analysis.mode, 'mode=' + other));
+    if (alt && alt.summary && alt.summary.trades) {
+      el.querySelector('.an-foot').textContent =
+        'nothing under ' + modes[analysis.mode] + ' — ' + alt.summary.trades +
+        ' closed trade(s) are under ' + modes[other];
+      return;
+    }
+  }
 }
 
 async function getAnalysis(url) {
@@ -871,7 +959,17 @@ function renderTabs() {
 function renderChrome(snap) {
   const engine = snap.engine || {};
   const badge = document.getElementById('env-badge');
-  badge.textContent = engine.environment || DASH;
+  // UAT and PROD are separate venues and the screen always says which — and
+  // a configured venue that nothing is connected to is NOT that venue. A
+  // badge reading a plain "UAT" while the simulator drives is a screen
+  // describing a session that does not exist.
+  badge.textContent = engine.simulated
+    ? (engine.environment && engine.environment !== 'SIMULATED'
+      ? engine.environment + ' · SIM' : 'SIMULATED')
+    : (engine.environment || DASH);
+  badge.title = engine.simulated
+    ? 'these prices come from the simulator, not from a venue'
+    : 'live venue session';
   badge.className = 'env' + (engine.environment === 'PROD' ? ' prod'
     : engine.simulated ? ' sim' : '');
 

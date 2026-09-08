@@ -489,3 +489,114 @@ def test_a_display_change_is_adopted_live(tmp_path):
     report = engine.apply_config(new)
     assert 'fef.name' in report['changed'] and 'fef.decimals' in report['changed']
     assert engine.snapshot(now=gw.now)['contracts'][0]['name'] == 'Iron ore Nov/Dec'
+
+
+# -- escalating an unfilled limit ------------------------------------------
+
+class SlowToCancel:
+    """A venue that takes its time. `cancel` is a REQUEST, and until it is
+    acted on the resting order is still live and can still fill."""
+
+    def __init__(self, gw):
+        self._gw = gw
+        self.pending = []
+
+    def __getattr__(self, name):
+        return getattr(self._gw, name)
+
+    def cancel(self, clordid):
+        self.pending.append(clordid)         # asked for, not done
+
+    def let_the_cancel_through(self):
+        for clordid in self.pending:
+            self._gw.cancel(clordid)
+        self.pending = []
+
+
+def a_position_with_a_working_limit_exit(tmp_path):
+    engine, gw, db, cfg = build(tmp_path, exit_order_type='LIMIT',
+                                exit_limit_offset_ticks=20,
+                                exit_limit_timeout_sec=1,
+                                exit_on_timeout='CROSS_AT_MARKET')
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    assert rt.position is not None
+    slow = SlowToCancel(gw)
+    engine.gateway = slow
+    engine.executor.gateway = slow
+    engine.close_now('fef')                  # crosses at market, so...
+    return engine, gw, slow, rt, cfg
+
+
+def test_an_escalation_waits_for_the_cancel_to_land(tmp_path):
+    """`cancel` is a REQUEST. The resting limit is still live at the venue
+    until the venue says otherwise, and it can fill in between — so the
+    market replacement must not be sent alongside it. Two orders for one
+    position means, on a close, a second order with nothing to close; on an
+    open, a doubled position."""
+    import datetime as dt
+    engine, gw, db, cfg = build(tmp_path, entry_order_type='LIMIT',
+                                entry_limit_offset_ticks=20,
+                                entry_limit_timeout_sec=1,
+                                entry_on_timeout='CROSS_AT_MARKET')
+    rt = warm_the_window(engine, gw)
+    slow = SlowToCancel(gw)
+    engine.gateway = slow
+    engine.executor.gateway = slow
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now)
+    assert engine.executor.working_for('fef'), 'a limit entry should be working'
+
+    sent = []
+    original = gw.send
+    gw.send = lambda req: (sent.append(req), original(req))[1]
+
+    later = gw.now + dt.timedelta(seconds=30)
+    engine.poll(now=later)                   # times out; the cancel is asked
+    assert slow.pending, 'the cancel was not requested'
+    assert sent == [], 'the replacement was sent before the cancel landed'
+
+    slow.let_the_cancel_through()
+    engine.poll(now=later)                   # the CANCELLED event is drained
+    assert len(sent) == 1                    # NOW it crosses
+    assert sent[0].order_type is OrderType.MARKET
+
+
+def test_a_limit_that_fills_while_the_cancel_is_in_flight_is_not_replaced(tmp_path):
+    """The race itself. The limit fills, so there is nothing left to
+    escalate — and the market order that would have gone out is the one the
+    venue answers with 'no position to close on that side'."""
+    import datetime as dt
+    engine, gw, db, cfg = build(tmp_path, entry_order_type='LIMIT',
+                                entry_limit_offset_ticks=20,
+                                entry_limit_timeout_sec=1,
+                                entry_on_timeout='CROSS_AT_MARKET')
+    rt = warm_the_window(engine, gw)
+    slow = SlowToCancel(gw)
+    engine.gateway = slow
+    engine.executor.gateway = slow
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now)
+    working = list(engine.executor.working)
+    assert working
+
+    later = gw.now + dt.timedelta(seconds=30)
+    engine.poll(now=later)                   # times out; cancel requested
+    sent = []
+    original = gw.send
+    gw.send = lambda req: (sent.append(req), original(req))[1]
+
+    vo = gw._orders[working[0]]               # ...and it fills anyway
+    gw._fill(vo, vo.remaining, vo.price or 0.5)
+    slow.let_the_cancel_through()            # the cancel arrives too late
+    engine.poll(now=later)
+
+    escalations = [r for r in sent if 'escalated' in (r.reason or '')]
+    assert escalations == [], \
+        'a replacement went out for an order that had already filled'
+    # The fill stands as one entry, not two. (The engine may legitimately
+    # send a CLOSE on the same pass — that is the position being managed,
+    # not the escalation being duplicated.)
+    assert rt.position is not None
+    assert rt.position.opened_qty == 5.0

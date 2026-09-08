@@ -958,6 +958,30 @@ trader, one desktop, one screen.
 
 ## 15. Acceptance
 
+**Run on 2026-09-08 against `FakeGateway`, eight contracts, 1920×1080.** All
+eight criteria pass. Four things it found, all now fixed and covered:
+
+1. The environment badge read a plain **UAT** while the simulator drove — a
+   configured venue nothing is connected to is not that venue. It reads
+   `UAT · SIM`.
+2. The algo switch took **773 ms** to move on the screen. `COMMAND_POLL_SEC`
+   was on the Settings page doing nothing: commands were drained once an
+   engine pass, and the snapshot then waited for the next screen tick.
+   Commands are drained through the wait, the snapshot is published on the
+   command, and the screen posts and waits for the engine's own answer.
+   Round trip is now ~100 ms, and a refusal raises a toast instead of being
+   swallowed.
+3. The **Analysis window opened on "Live only" while the engine was the
+   simulator**, showing an empty window for the session just watched. It
+   opens on what the engine is, and an empty window says which filter has
+   the rows.
+4. The venue refused a close with **"Close order with no position to close on
+   that side"** — the escalation from an unfilled limit sent its market
+   replacement alongside the cancel REQUEST, so a limit that filled in
+   between left two orders out for one position. Armed on the timeout, sent
+   on the CANCELLED event.
+
+
 The phase is done when, with `FixGateway` still stubbed and `FakeGateway`
 driving:
 

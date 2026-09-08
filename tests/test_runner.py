@@ -1,5 +1,6 @@
 """The engine loop must outlive anything that goes wrong around it."""
 import json
+import time
 
 import pytest
 
@@ -109,16 +110,19 @@ def test_an_edited_config_is_picked_up_while_the_loop_runs(tmp_path):
     nothing else. Without the engine reading it back, a saved setting sits on
     disk looking applied while the loop goes on trading the old one."""
     cfg = a_config(tmp_path)
-    passes = {'n': 0}
+    # `should_stop` is asked far more often than once a pass — commands are
+    # drained through the wait — so this counts time, not calls.
+    started = time.monotonic()
+    edited = {'done': False}
 
     def stop_after_a_few():
-        passes['n'] += 1
-        if passes['n'] == 2:
-            # Edited between one pass and the next, exactly as the web
-            # process would have written it.
+        if not edited['done'] and time.monotonic() - started > 0.15:
+            # Edited under the running loop, exactly as the web process
+            # would have written it.
             cfg.contracts['fef'].overrides['entry_threshold'] = 3.25
             cfg.save()
-        return passes['n'] > 6
+            edited['done'] = True
+        return edited['done'] and time.monotonic() - started > 0.6
 
     runner.run(config_path=str(tmp_path / 'config.json'),
                status_path=str(tmp_path / 'status.json'),
@@ -135,13 +139,14 @@ def test_an_edited_config_is_picked_up_while_the_loop_runs(tmp_path):
 def test_an_unreadable_config_does_not_stop_the_loop(tmp_path):
     """A half-written file is not a reason to stop managing live positions."""
     a_config(tmp_path)
-    passes = {'n': 0}
+    started = time.monotonic()
+    broken = {'done': False}
 
     def stop_after_a_few():
-        passes['n'] += 1
-        if passes['n'] == 2:
+        if not broken['done'] and time.monotonic() - started > 0.15:
             (tmp_path / 'config.json').write_text('{ this is not json')
-        return passes['n'] > 6
+            broken['done'] = True
+        return broken['done'] and time.monotonic() - started > 0.6
 
     runner.run(config_path=str(tmp_path / 'config.json'),
                status_path=str(tmp_path / 'status.json'),
@@ -153,3 +158,79 @@ def test_an_unreadable_config_does_not_stop_the_loop(tmp_path):
     assert snap['engine']['alive'] is True
     # the settings it already had are still the ones in force
     assert snap['contracts'][0]['settings']['entry_threshold'] is not None
+
+
+def test_a_switch_does_not_wait_for_an_engine_pass(tmp_path):
+    """`COMMAND_POLL_SEC` is on the Settings page saying a switch must not
+    wait for a price. Until commands were drained through the wait between
+    passes it did nothing, and pressing a toggle took a whole engine pass to
+    be answered — the same class of lie as a saved setting never read back."""
+    from fixtrader.commands import CommandBridge
+    cfg = a_config(tmp_path)
+    # A deliberately slow engine pass: if commands only drained once a pass,
+    # this answer could not arrive inside the window asserted below.
+    cfg.settings['ENGINE_POLL_SEC'] = 2.0
+    cfg.settings['COMMAND_POLL_SEC'] = 0.02
+    cfg.save()
+
+    bridge = CommandBridge(str(tmp_path / 'commands.jsonl'),
+                           str(tmp_path / 'results.json'))
+    started = time.monotonic()
+    sent = {'id': None}
+
+    def stop_when_answered():
+        if sent['id'] is None and time.monotonic() - started > 0.2:
+            sent['id'] = bridge.submit('algo_off', 'fef', {})
+        if sent['id'] is not None and bridge.result(sent['id']) is not None:
+            return True
+        return time.monotonic() - started > 1.5      # a bounded failure
+
+    runner.run(config_path=str(tmp_path / 'config.json'),
+               status_path=str(tmp_path / 'status.json'),
+               command_path=str(tmp_path / 'commands.jsonl'),
+               result_path=str(tmp_path / 'results.json'),
+               simulated=True, should_stop=stop_when_answered)
+
+    answered = bridge.result(sent['id'])
+    assert answered is not None and answered.get('ok') is True
+    # answered well inside one 2s engine pass
+    assert time.monotonic() - started < 1.5
+
+
+def test_a_command_publishes_the_snapshot_at_once(tmp_path):
+    """A switch that has already been obeyed but still reads the old way is
+    a switch the operator presses again. The snapshot goes out on the
+    command, not at the next screen tick."""
+    from fixtrader.commands import CommandBridge
+    cfg = a_config(tmp_path)
+    cfg.settings['ENGINE_POLL_SEC'] = 2.0        # a slow pass
+    cfg.settings['PRICE_REFRESH_SEC'] = 5.0      # and a slow screen
+    cfg.save()
+
+    bridge = CommandBridge(str(tmp_path / 'commands.jsonl'),
+                           str(tmp_path / 'results.json'))
+    started = time.monotonic()
+    sent = {'id': None}
+
+    def stop_when_the_screen_shows_it():
+        if sent['id'] is None and time.monotonic() - started > 0.2:
+            sent['id'] = bridge.submit('algo_off', 'fef', {})
+        if sent['id'] is not None and (tmp_path / 'status.json').exists():
+            try:
+                snap = json.loads((tmp_path / 'status.json').read_text())
+            except ValueError:
+                return False
+            if snap['contracts'] and snap['contracts'][0]['algo_on'] is False:
+                return True
+        return time.monotonic() - started > 2.0       # a bounded failure
+
+    runner.run(config_path=str(tmp_path / 'config.json'),
+               status_path=str(tmp_path / 'status.json'),
+               command_path=str(tmp_path / 'commands.jsonl'),
+               result_path=str(tmp_path / 'results.json'),
+               simulated=True, should_stop=stop_when_the_screen_shows_it)
+
+    snap = json.loads((tmp_path / 'status.json').read_text())
+    assert snap['contracts'][0]['algo_on'] is False
+    # well inside one 5s screen refresh, and one 2s engine pass
+    assert time.monotonic() - started < 2.0
