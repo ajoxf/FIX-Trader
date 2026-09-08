@@ -1,3 +1,5 @@
+# Python 3.9 or newer: typing.Protocol is 3.8, and Flask's @app.get
+# shortcut is Flask 2.0. Anaconda's `base` is commonly 3.7.
 flask>=3.0
 python-dotenv>=1.0
 # Tests

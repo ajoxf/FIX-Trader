@@ -46,6 +46,10 @@ environment is not `UAT`, and the suite flattens what it opened.
 
 ## Getting set up
 
+**Python 3.9 or newer, Flask 2.0 or newer.** `start.py` checks both and names
+the interpreter it found; a new terminal does not keep a conda activation, and
+Anaconda's `base` is commonly 3.7.
+
 ```bash
 python -m venv .venv && . .venv/bin/activate    # Windows: .venv\Scripts\activate
 pip install -r requirements.txt

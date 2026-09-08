@@ -19,9 +19,77 @@ import subprocess
 import sys
 import time
 import webbrowser
+from typing import Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+
+#: Below this, the imports fail rather than the program misbehaving:
+#: `typing.Protocol` is 3.8, and Flask's `@app.get` shortcut is Flask 2.0.
+#: Anaconda's `base` environment is commonly 3.7 and carries an old Flask, so
+#: the usual way to hit this is opening a new terminal and forgetting to
+#: activate the environment.
+MIN_PYTHON = (3, 9)
+MIN_FLASK = (2, 0)
+
+
+def flask_version() -> Optional[str]:
+    """Flask's version, or None when it cannot be read.
+
+    `flask.__version__` is deprecated and disappears in Flask 3.2, so the
+    packaging metadata is asked first. None means "cannot tell", and the
+    caller ALLOWS it: refusing to start because a version string could not be
+    read would block a perfectly good environment — the failure this check
+    exists to prevent, pointed the other way.
+    """
+    try:
+        from importlib.metadata import version as _version
+        return _version('flask')
+    except Exception:                                    # noqa: BLE001
+        pass
+    try:
+        import flask
+        return getattr(flask, '__version__', None)
+    except Exception:                                    # noqa: BLE001
+        return None
+
+
+def check_the_interpreter(say=print, version_of=flask_version) -> Optional[str]:
+    """The reason this cannot run here, in words, or None.
+
+    Checked BEFORE anything is started. Without it the children die on an
+    ImportError, the launcher restarts them, and the real message scrolls past
+    six times before anybody reads it — which is exactly what happened.
+    """
+    if sys.version_info < MIN_PYTHON:
+        want = '.'.join(str(n) for n in MIN_PYTHON)
+        have = '.'.join(str(n) for n in sys.version_info[:3])
+        return (
+            f"This needs Python {want} or newer and is running on {have}.\n"
+            f"    interpreter: {sys.executable}\n"
+            f"    If that path ends in Anaconda3\\python.exe you are in the "
+            f"`base` environment.\n"
+            f"    A new terminal does not keep the activation:\n"
+            f"        conda activate fixtrader")
+    try:
+        import flask
+    except ImportError:
+        return (f"Flask is not installed for this interpreter.\n"
+                f"    interpreter: {sys.executable}\n"
+                f"        pip install -r requirements.txt")
+    version = version_of()
+    if version is None:
+        return None                                      # cannot tell: allow
+    try:
+        parts = tuple(int(n) for n in version.split('.')[:2])
+    except (ValueError, AttributeError):
+        return None                                      # cannot tell: allow
+    if parts < MIN_FLASK:
+        want = '.'.join(str(n) for n in MIN_FLASK)
+        return (f"This needs Flask {want} or newer and found {version}.\n"
+                f"    interpreter: {sys.executable}\n"
+                f"        pip install -r requirements.txt")
+    return None
 
 from fixtrader import appwindow                      # noqa: E402
 from fixtrader.config import DEFAULT_SETTINGS, TraderConfig  # noqa: E402
@@ -99,6 +167,14 @@ def main(argv=None) -> int:
     parser.add_argument('--simulated', action='store_true', default=True)
     args = parser.parse_args(argv)
 
+    # Before anything is started, and before any file is written.
+    problem = check_the_interpreter()
+    if problem:
+        print("[start] cannot run here:\n    " + problem)
+        return 2
+    print(f"[start] python {'.'.join(str(n) for n in sys.version_info[:3])} "
+          f"at {sys.executable}")
+
     first_run(args.config, '.env')
     url = f"http://{args.host}:{args.port}/"
     python = sys.executable
@@ -122,18 +198,41 @@ def main(argv=None) -> int:
     print(f"[start] terminal at {url}")
 
     backoff = {'web': 1.0, 'engine': 1.0}
+    #: A child that dies IMMEDIATELY, over and over, is not going to be fixed
+    #: by waiting: it is a bad interpreter, a missing package, a port already
+    #: taken. Restarting it forever scrolls the one message that explains it
+    #: off the screen, which is worse than stopping.
+    instant_failures = {'web': 0, 'engine': 0}
+    started_at = {name: time.monotonic() for name in children}
+    GIVE_UP_AFTER = 3
+    ALIVE_LONG_ENOUGH = 15.0
+
     try:
         while True:
             time.sleep(1.0)
             for name, proc in list(children.items()):
                 if proc.poll() is None:
                     backoff[name] = 1.0
+                    if time.monotonic() - started_at[name] > ALIVE_LONG_ENOUGH:
+                        instant_failures[name] = 0
                     continue
+
+                lived = time.monotonic() - started_at[name]
+                if lived < ALIVE_LONG_ENOUGH:
+                    instant_failures[name] += 1
+                if instant_failures[name] >= GIVE_UP_AFTER:
+                    print(f"\n[start] {name} has died {instant_failures[name]} "
+                          f"times in a row within {lived:.0f}s of starting. "
+                          f"That is not something restarting will fix — read "
+                          f"the error above this line. Stopping.")
+                    return 1
+
                 wait = backoff[name]
-                print(f"[start] {name} exited ({proc.returncode}); "
-                      f"restarting in {wait:.0f}s")
+                print(f"[start] {name} exited ({proc.returncode}) after "
+                      f"{lived:.0f}s; restarting in {wait:.0f}s")
                 time.sleep(wait)
                 backoff[name] = min(30.0, wait * 2)
+                started_at[name] = time.monotonic()
                 if name == 'web':
                     children[name] = spawn(
                         [python, '-m', 'fixtrader.webapp'] + common +

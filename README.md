@@ -54,6 +54,20 @@ for Orient.
 python start.py
 ```
 
+**Python 3.9 or newer, and Flask 2.0 or newer.** `start.py` checks both before
+it starts anything and names the interpreter it is running on, because the
+usual way to get this wrong is a new terminal that has forgotten the
+environment:
+
+```
+conda activate fixtrader      # a new terminal does not keep it
+python start.py
+```
+
+Anaconda's `base` is commonly Python 3.7 with an old Flask, and on it the
+imports fail rather than the program misbehaving — `typing.Protocol` is 3.8,
+and `@app.get` is Flask 2.0.
+
 On a first run it writes `config.json` and `.env`, brings the **web UI up
 first** (the venues are entered on that screen, so it has to be reachable
 before there are any), starts the engine, opens the terminal in a window of
