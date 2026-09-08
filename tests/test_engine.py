@@ -352,3 +352,222 @@ def test_an_escalated_close_is_still_a_close(tmp_path):
     engine.poll(now=later)
     for req in sent:
         assert req.position_effect.is_close
+
+
+# -- manual trading --------------------------------------------------------
+
+def manual_on(cfg):
+    cfg.settings['MANUAL_TRADING_ENABLED'] = True
+
+
+def test_manual_trading_is_off_until_it_is_turned_on(tmp_path):
+    """This system was built without manual order entry, so turning it on is
+    a deliberate act rather than something a desk discovers by clicking."""
+    engine, gw, db, cfg = build(tmp_path)
+    warm_the_window(engine, gw)
+    refused = engine.manual_order('fef', 'BUY', 2, order_type='MARKET', now=gw.now)
+    assert refused['ok'] is False and 'off' in refused['error']
+
+    manual_on(cfg)                                  # the control
+    assert engine.manual_order('fef', 'BUY', 2, order_type='MARKET', now=gw.now)['ok']
+
+
+def test_a_hand_order_stands_the_algo_down(tmp_path):
+    """Otherwise they fight: the trader puts a position on and the algo
+    closes it at its own target, or the trader gets flat and the algo
+    re-enters on the next pass."""
+    engine, gw, db, cfg = build(tmp_path)
+    manual_on(cfg)
+    warm_the_window(engine, gw)
+    assert cfg.contracts['fef'].algo_on is True
+    result = engine.manual_order('fef', 'BUY', 2, order_type='MARKET', now=gw.now)
+    assert result['algo_stood_down'] is True
+    assert cfg.contracts['fef'].algo_on is False
+
+
+def test_a_hand_order_opposite_a_position_closes_it_with_the_close_flag(tmp_path):
+    from fixtrader.models import PositionEffect
+    engine, gw, db, cfg = build(tmp_path)
+    manual_on(cfg)
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    assert rt.position.side is Side.SELL and rt.position.qty == 5
+
+    sent = []
+    original = gw.send
+    gw.send = lambda req: (sent.append(req), original(req))[1]
+    result = engine.manual_order('fef', 'BUY', 5, order_type='MARKET', now=gw.now)
+
+    assert result['closing'] is True
+    assert sent[0].position_effect is PositionEffect.CLOSE
+    assert sent[0].manual is True
+    assert sent[0].close_tickets == rt.position.tickets
+    engine.poll(now=gw.now)
+    assert rt.position is None
+    assert gw.positions() == []
+
+
+def test_a_hand_order_bigger_than_the_position_does_not_reverse_it(tmp_path):
+    """One click quietly doing two opposite things is the failure this
+    whole close path exists to prevent. Reversing takes a second click."""
+    engine, gw, db, cfg = build(tmp_path)
+    manual_on(cfg)
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+
+    result = engine.manual_order('fef', 'BUY', 12, order_type='MARKET', now=gw.now)
+    assert result['qty'] == 5                       # capped at what is open
+    assert result['refused_excess'] == 7
+    assert 'NOT sent' in result['note']
+    engine.poll(now=gw.now)
+    assert rt.position is None
+    assert gw.positions() == []                     # flat, not reversed
+
+
+def test_a_stale_quote_withholds_a_hand_OPEN_but_never_a_hand_CLOSE(tmp_path):
+    engine, gw, db, cfg = build(tmp_path)
+    manual_on(cfg)
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    assert rt.position is not None
+
+    later = gw.now + __import__('datetime').timedelta(seconds=120)
+    engine.poll(now=later)                          # the quote goes stale
+
+    opening = engine.manual_order('fef', 'SELL', 1, order_type='MARKET',
+                                  now=later)
+    assert opening['ok'] is False and 'stale' in opening['error']
+
+    closing = engine.manual_order('fef', 'BUY', 5, order_type='MARKET',
+                                  now=later)
+    assert closing['ok'] is True and closing['closing'] is True
+
+
+def test_a_hand_limit_rests_at_the_price_that_was_clicked(tmp_path):
+    """A trader who clicked a row meant that row — the algo's offset is the
+    ALGO's way of choosing a price."""
+    engine, gw, db, cfg = build(tmp_path)
+    manual_on(cfg)
+    warm_the_window(engine, gw)
+    result = engine.manual_order('fef', 'BUY', 2, price=0.1234,
+                                 order_type='LIMIT', now=gw.now)
+    assert result['ok'] is True
+    working = engine.executor.working_for('fef')
+    assert working and working[0].price == pytest.approx(0.12)   # on the tick
+    assert working[0].manual is True
+
+
+def test_the_position_limit_applies_to_a_hand_order_too(tmp_path):
+    engine, gw, db, cfg = build(tmp_path, max_position=5.0)
+    manual_on(cfg)
+    warm_the_window(engine, gw)
+    refused = engine.manual_order('fef', 'BUY', 9, order_type='MARKET', now=gw.now)
+    assert refused['ok'] is False and 'position limit' in refused['error']
+
+
+def test_kill_all_stops_hand_orders_too(tmp_path):
+    engine, gw, db, cfg = build(tmp_path)
+    manual_on(cfg)
+    warm_the_window(engine, gw)
+    engine.kill_all()
+    refused = engine.manual_order('fef', 'BUY', 1, order_type='MARKET', now=gw.now)
+    assert refused['ok'] is False and 'KILL ALL' in refused['error']
+
+
+def test_one_of_our_orders_can_be_pulled_by_its_own_id(tmp_path):
+    engine, gw, db, cfg = build(tmp_path)
+    manual_on(cfg)
+    warm_the_window(engine, gw)
+    engine.manual_order('fef', 'BUY', 2, price=0.10, order_type='LIMIT',
+                        now=gw.now)
+    clordid = engine.executor.working_for('fef')[0].clordid
+    assert engine.cancel_order(clordid)['ok'] is True
+    engine.poll(now=gw.now)
+    assert engine.executor.working_for('fef') == []
+    # ...and an id that is not ours is refused rather than passed on
+    assert engine.cancel_order('SOMEBODY-ELSES-1')['ok'] is False
+
+
+def test_a_hand_trade_is_marked_as_one_all_the_way_to_the_journal(tmp_path):
+    """A hand trade and an algo trade in the same statistics is a win rate
+    that describes neither."""
+    engine, gw, db, cfg = build(tmp_path)
+    manual_on(cfg)
+    warm_the_window(engine, gw)
+    engine.manual_order('fef', 'BUY', 2, order_type='MARKET', now=gw.now)
+    engine.poll(now=gw.now)
+    rows = db.orders('fef')
+    assert rows and any(r['clordid'] for r in rows)
+    assert engine.runtimes['fef'].position is not None
+
+
+def test_the_ladder_block_carries_our_own_prints(tmp_path):
+    """There is no spread tape, so our fills are all the LTQ column has."""
+    engine, gw, db, cfg = build(tmp_path)
+    manual_on(cfg)
+    warm_the_window(engine, gw)
+    engine.manual_order('fef', 'BUY', 2, order_type='MARKET', now=gw.now)
+    engine.poll(now=gw.now)
+    ladder = engine.snapshot(now=gw.now)['contracts'][0]['ladder']
+    assert ladder['manual'] is True
+    assert ladder['prints'] and ladder['prints'][-1]['qty'] == 2
+    assert ladder['increment'] == 0.01
+
+
+def test_a_prod_venue_refuses_hand_orders_however_the_setting_reads(tmp_path):
+    """The ladder is a TEST tool. An algo and a hand disagree in ways that
+    cost money, and the setting alone must not be what stands between a
+    click and a live account."""
+    from fixtrader.config import VenueConfig
+    engine, gw, db, cfg = build(tmp_path)
+    warm_the_window(engine, gw)
+    manual_on(cfg)
+    assert engine.manual_order('fef', 'BUY', 2, order_type='MARKET',
+                               now=gw.now)['ok']                # the control
+
+    cfg.venues['live'] = VenueConfig('live', environment='PROD')
+    cfg.venues['live'].enabled = True
+    assert cfg.environment_label == 'PROD'
+    refused = engine.manual_order('fef', 'SELL', 2, order_type='MARKET',
+                                  now=gw.now)
+    assert refused['ok'] is False
+    assert 'PROD' in refused['error'] and 'TEST' in refused['error']
+
+
+def test_prod_also_refuses_pulling_an_order_by_hand(tmp_path):
+    """On a live venue the order a ladder right-click would pull is the
+    algo's, and the algo still believes it is working."""
+    from fixtrader.config import VenueConfig
+    engine, gw, db, cfg = build(tmp_path, entry_order_type='LIMIT')
+    warm_the_window(engine, gw)
+    manual_on(cfg)
+    r = engine.manual_order('fef', 'BUY', 2, price=0.40,
+                            order_type='LIMIT', now=gw.now)
+    assert r['ok']
+    clordid = next(iter(engine.executor.working))
+    cfg.venues['live'] = VenueConfig('live', environment='PROD')
+    cfg.venues['live'].enabled = True
+    refused = engine.cancel_order(clordid)
+    assert refused['ok'] is False and 'PROD' in refused['error']
+
+
+def test_the_snapshot_says_why_the_ladder_is_unavailable(tmp_path):
+    """The screen never says 'check the log'. The ladder button carries the
+    reason it is off."""
+    from fixtrader.config import VenueConfig
+    engine, gw, db, cfg = build(tmp_path)
+    warm_the_window(engine, gw)
+    lad = engine.snapshot(now=gw.now)['contracts'][0]['ladder']
+    assert lad['manual'] is False and 'Settings' in lad['blocked']
+
+    manual_on(cfg)
+    lad = engine.snapshot(now=gw.now)['contracts'][0]['ladder']
+    assert lad['manual'] is True and lad['blocked'] is None   # the control
+
+    cfg.venues['live'] = VenueConfig('live', environment='PROD')
+    cfg.venues['live'].enabled = True
+    lad = engine.snapshot(now=gw.now)['contracts'][0]['ladder']
+    assert lad['manual'] is False and 'PROD' in lad['blocked']

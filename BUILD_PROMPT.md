@@ -16,7 +16,13 @@ runs one mean-reversion algo per contract, and executes over FIX**.
 It is one page of small windows. One window per contract. Each window is
 numbers only — mean, standard deviation, z-score, the edge filter, position,
 P&L — with an **ALGO ON/OFF** switch and a **gear** that opens that contract's
-own settings. No ladders. No charts. No manual click-to-trade.
+own settings. No charts. The trading screen has no click-to-trade: the only
+controls that send are the algo switch, `CLOSE NOW` and `KILL ALL`.
+
+There is one ladder, and it is a **test instrument** (§14.1). It opens from a
+button beside the gear, it is off until a desk turns it on, and a PROD venue
+refuses every order it sends. It exists to prove the order path by hand in
+UAT before an algo is trusted with it.
 
 Three things make this different from a general trading terminal, and every
 design decision below follows from them:
@@ -855,8 +861,13 @@ Put these in `CLAUDE.md` as the first thing the next session reads:
   "flat" / "no orders". Unmeasured is not zero: return `None`, render `—`.
 - **A guard may withhold an ORDER. A guard must never prevent a close.**
 - **A refusal carries the venue's own words.**
-- **No manual order entry.** The only controls that send are the algo toggle,
-  `CLOSE NOW` and `KILL ALL`. Discretionary trading is TT's job.
+- **No manual order entry on a live venue.** The only controls that send on
+  PROD are the algo toggle, `CLOSE NOW` and `KILL ALL`. Discretionary trading
+  is TT's job. The test ladder (§14.1) is gated by `Engine.manual_blocked()`,
+  which refuses on PROD however the setting reads.
+- **A hand order stands that contract's algo down**, and opposite an open
+  position it CLOSES, capped at what is open. One of them trades a contract,
+  not both.
 - **UAT and PROD are separate venues** and the screen always says which.
 - **Every test that asserts a guard withholds something needs a control** that
   turns the guard off and asserts the opposite.
@@ -940,12 +951,51 @@ replay over recorded snapshots.
 
 ## 14. Not in scope
 
-No ladders. No depth grid. No charts of any kind. No manual order entry, no
-click-to-trade, no keyboard order keys. No two-leg execution, no hedge ratio,
+No depth grid — the ladder shows top of book only. No charts of any kind. No
+manual order entry on a live venue (§14.1). No two-leg execution, no hedge ratio,
 no synthetic spread built from outrights. No portfolio optimiser, no pair
 scanner, and **no auto-tuning**: the Analysis window proposes a corrected
 number and a person presses the button. Nothing applies its own findings. No cloud, no login, no multi-user — one
 trader, one desktop, one screen.
+
+### 14.1 The test ladder
+
+Manual trading was added after the first build, deliberately scoped so that it
+cannot become a second way of trading the desk's money.
+
+**What it is for.** Proving the order path end to end by hand, in UAT, before
+an algo is trusted with it: that a click becomes a `NewOrderSingle`, that the
+ACK comes back, that a reject shows the venue's own words, that a close
+carries an explicit `PositionEffect` and the position's tickets, that our
+working orders are pulled by their own `ClOrdID`.
+
+**Where it is refused.** `Engine.manual_blocked()` is the one gate, and both
+of its answers are hard:
+
+1. `MANUAL_TRADING_ENABLED` is off until a desk turns it on.
+2. `config.environment_label == 'PROD'` refuses it whatever the setting says.
+
+`manual_order`, `cancel_order` and `cancel_all` all pass through it. The
+snapshot carries the reason (`ladder.blocked`) so the window shows the refusal
+on its own face rather than looking like a ladder that will not click.
+
+**The conflicts it is scoped around.** An algo and a hand on the same contract
+disagree in ways that cost money, so:
+
+- A hand order **stands that contract's algo down**. Otherwise the trader puts
+  a position on and the algo closes it at its own target, or the trader gets
+  flat and the algo re-enters a tenth of a second later.
+- A hand order opposite an open position **CLOSES it**, capped at what is
+  open, with the close flag and that position's tickets. The excess is not
+  sent: reversing takes a second, deliberate click.
+- A hand OPEN is withheld by the stale-quote and position-limit guards. A
+  close never is.
+- KILL ALL blocks hand orders like everything else.
+
+**What it shows.** Top of book only, on the spread's own price: our working
+orders in the Work column, the touch quoted on its own side, and our own fills
+in LTQ — there is no spread tape, and the header says so rather than implying
+a market print.
 
 ---
 

@@ -544,3 +544,81 @@ table.grid td.up { color: var(--good); } table.grid td.dn { color: var(--ask); }
  * contrast is the point — dimmed, because it is not a threshold to aim at. */
 table.grid tr.cannot-pay td { color: var(--ink-faint); }
 table.grid tr.cannot-pay .tag { opacity: .55; }
+
+/* -- the ladder -----------------------------------------------------------
+ * A TEST instrument, not a trading screen: it exists so a desk can prove
+ * the order path by hand in UAT before an algo is trusted with it. It is
+ * refused on a PROD venue, and it says so on its own face rather than
+ * looking like a ladder that merely will not click. */
+.ladderwin { width: 328px; }
+.ladderwin .lad-state { background: #2b2f36; color: #fff; }
+.ladderwin .lad-warn { color: var(--warn); font-weight: 600; }
+.ladderwin.blocked .lad-state { background: var(--ask); }
+.ladderwin.blocked .grid { opacity: .45; pointer-events: none; }
+
+.lad-body { display: grid; grid-template-columns: 88px minmax(0, 1fr);
+            background: var(--line-soft); gap: 1px; }
+.lad-body .rail { background: var(--panel); padding: 5px;
+                  display: flex; flex-direction: column; gap: 4px; }
+.lad-body .grid { background: #fff; overflow: hidden; }
+
+.rail .quick { font: 700 10.5px/1 var(--ui); padding: 6px 0; border: 1px solid;
+               cursor: pointer; letter-spacing: .06em; }
+.rail .buy-touch  { background: var(--bid-soft); border-color: var(--bid);
+                    color: #0f4f80; }
+.rail .sell-touch { background: var(--ask-soft); border-color: var(--ask);
+                    color: #7a2020; }
+.rail .flatten    { background: #2b2f36; border-color: #14171b; color: #fff; }
+.rail .quick:disabled { opacity: .4; cursor: not-allowed; }
+.rail .inline-field { display: flex; align-items: center; gap: 4px;
+                      font: 600 9px/1 var(--mono); letter-spacing: .1em;
+                      color: var(--ink-faint); text-transform: uppercase; }
+.rail .lad-qty { width: 100%; font: 600 12px/1 var(--mono); padding: 3px 4px;
+                 border: 1px solid #a4a4a4; background: var(--field);
+                 text-align: right; }
+.rail .keypad { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
+.rail .keypad .qty { font: 600 10px/1 var(--mono); padding: 4px 0;
+                     border: 1px solid #b9b9b9; background: #f1f1f1;
+                     cursor: pointer; }
+.rail .keypad .qty.on { background: var(--bid); border-color: var(--bid);
+                        color: #fff; }
+.rail .rail-label { font: 600 8.5px/1 var(--mono); letter-spacing: .12em;
+                    color: var(--ink-faint); text-transform: uppercase;
+                    margin-top: 3px; }
+.rail .cxl { width: 100%; font: 600 10px/1 var(--ui); padding: 5px 0;
+             border: 1px solid #b9b9b9; background: #f1f1f1; cursor: pointer; }
+.rail .cxl sup { font-size: 8.5px; color: var(--ask); }
+.rail .check { font: 500 10px/1 var(--ui); display: flex; gap: 4px;
+               align-items: center; }
+.rail .lad-pos { font: 600 11px/1.3 var(--mono); padding: 3px 0; }
+.rail .lad-pos.flatline { color: var(--ink-faint); }
+.rail .lad-pos.long  { color: var(--bid); }
+.rail .lad-pos.short { color: var(--ask); }
+
+.lad-body .grid table { width: 100%; border-collapse: collapse;
+                        table-layout: fixed; }
+.lad-body .grid th { font: 600 8.5px/1 var(--mono); letter-spacing: .1em;
+                     text-transform: uppercase; color: var(--ink-faint);
+                     background: var(--frame-2); padding: 3px 4px;
+                     border-bottom: 1px solid var(--line); }
+.lad-body .grid td { font: 600 11px/1 var(--mono); font-variant-numeric: tabular-nums;
+                     height: var(--row-h, 17px); padding: 0 4px;
+                     border-bottom: 1px solid #f0f0f0; text-align: right; }
+.lad-body .grid .c-price, .lad-body .grid td.c-price {
+  text-align: center; background: var(--frame-2); font-weight: 700;
+  border-left: 1px solid var(--line-soft); border-right: 1px solid var(--line-soft); }
+.lad-body .grid td.c-bid, .lad-body .grid td.c-ask { cursor: pointer; }
+.lad-body .grid td.c-bid.q  { background: var(--bid-soft); color: #0f4f80; }
+.lad-body .grid td.c-ask.q  { background: var(--ask-soft); color: #7a2020; }
+.lad-body .grid td.c-bid:hover, .lad-body .grid td.c-ask:hover {
+  outline: 1px solid #2b2f36; outline-offset: -1px; }
+.lad-body .grid td.c-work { color: #0f4f80; background: #f6f9fc;
+                            cursor: pointer; }
+.lad-body .grid td.c-work.cl { color: #7a2020; }
+.lad-body .grid td.c-ltq { color: var(--ink-mute); }
+/* The market's own line. Without it the eye cannot find the touch. */
+.lad-body .grid tr.inside td { border-bottom: 1px solid #2b2f36; }
+.lad-body .grid tr.at-mid td.c-price { background: #e7edf3; }
+
+.ladderwin .wfoot .lad-touch { font: 600 10.5px/1 var(--mono); }
+.ladderwin .wfoot .lad-note { color: var(--ink-mute); }

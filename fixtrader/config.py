@@ -61,6 +61,45 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     #: missed once.
     'ALGO_MASTER_ENABLED': True,
     'CONFIRM_CLOSE': True,
+
+    # --- manual trading ---------------------------------------------------
+    #: OFF by default, and a TEST tool when it is on. This system was built
+    #: without manual order entry, on the reasoning that discretionary
+    #: trading belongs in TT. The ladder exists so a desk can prove the order
+    #: path end to end by hand — that a click becomes a NewOrderSingle, that
+    #: the ACK comes back, that a close carries its tickets — before an algo
+    #: is trusted with it.
+    #:
+    #: It is refused on a PROD venue whatever this says. An algo and a hand
+    #: on the same contract disagree in ways that cost money (see
+    #: `Engine.manual_order`), and the guards that make them safe together
+    #: are worth proving in UAT rather than discovering live.
+    'MANUAL_TRADING_ENABLED': False,
+    #: Which COLUMN buys. 'TOUCH' is the hit/lift reading: clicking the ASKS
+    #: column lifts the offer and buys. 'TT' is the price-ladder convention
+    #: every desk arrives with: clicking BIDS joins the bid, which is a
+    #: resting BUY. It changes NOTHING but which column sends which side —
+    #: the price, the sizing and the execution are identical either way, and
+    #: the BUY and SELL buttons name their side outright.
+    'CLICK_CONVENTION': 'TOUCH',
+    #: A click AWAY from the touch rests as a working order instead of being
+    #: refused. A buy under the offer cannot cross at any price, and "rest it
+    #: here" is what a trader means by clicking there.
+    'CLICK_AWAY_RESTS': True,
+    #: One click is one order — that is the product, so it is the default and
+    #: it is fast. The arming carries the weight instead: the mode badge and
+    #: the tinted click columns. A desk that wants the extra gesture turns
+    #: this on.
+    'CONFIRM_MARKET_CLICKS': False,
+    #: How far through the clicked price a MARKET click may fill before it is
+    #: refused, in ladder increments.
+    'MARKET_PROTECTION_TICKS': 3.0,
+    'LADDER_ROWS': 21,
+    'LADDER_ROW_HEIGHT_PX': 17,
+    #: How often the ladder re-centres on the mid. 0 = only when the market
+    #: leaves the window. A ladder that re-centres under a click is how a
+    #: trader clicks the wrong price.
+    'RECENTRE_SEC': 5.0,
     'SOUND_ENABLED': True,
     #: 'ask' / 'always' / 'never'. An unanswered prompt means NO.
     'SHUTDOWN_CLOSE_POSITIONS': 'ask',
