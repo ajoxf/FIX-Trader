@@ -81,6 +81,8 @@
 
   <section class="card wide">
     <h5>Defaults for a new contract <span class="note">a blank box on a contract falls back here</span></h5>
+
+    <div class="subhead">Signal <span>when it enters, when it leaves, and when it gives up</span></div>
     <div class="cb cb-grid">
       <label class="f"><span>Lookback <small>samples</small></span>
         <input type="number" step="10" min="10" data-key="DEFAULT_LOOKBACK"></label>
@@ -88,31 +90,55 @@
         <input type="number" step="10" min="0" data-key="DEFAULT_STATS_UPDATE_INTERVAL_SEC"></label>
       <label class="f"><span>Entry threshold <small>|z|</small></span>
         <input type="number" step="0.1" data-key="DEFAULT_ENTRY_THRESHOLD"></label>
-      <label class="f"><span>Exit threshold <small>|z|, for the z modes</small></span>
-        <input type="number" step="0.1" data-key="DEFAULT_EXIT_THRESHOLD"></label>
-      <label class="f"><span>Stop-loss <small>|z| — always a z, in every mode</small></span>
-        <input type="number" step="0.1" data-key="DEFAULT_STOP_LOSS_Z"></label>
       <label class="f"><span>Exit mode</span>
         <select data-key="DEFAULT_EXIT_SIGNAL_MODE">
           <option value="profit">Profit target</option>
           <option value="zscore">Z-score</option>
           <option value="hybrid">Either, first to fire</option>
         </select></label>
+      <label class="f"><span>Exit threshold <small>|z|, for the z modes</small></span>
+        <input type="number" step="0.1" data-key="DEFAULT_EXIT_THRESHOLD"></label>
+      <label class="f"><span>Stop-loss <small>|z| — always a z, in every mode</small></span>
+        <input type="number" step="0.1" data-key="DEFAULT_STOP_LOSS_Z"></label>
       <label class="f"><span>Time stop <small>minutes; 0 = none</small></span>
         <input type="number" step="1" min="0" data-key="DEFAULT_MAX_HOLD_MINUTES"></label>
+    </div>
+    <div class="cb"><div class="hint">Leave <b>Exit mode</b> on <b>Profit
+      target</b> unless you have a reason: it is the one exit that knows what
+      the trade cost. The <b>stop-loss is a z in every mode</b> and is not
+      optional — it is the only exit that fires when the spread keeps going.
+      Lower the <b>entry threshold</b> only against the replay in Analysis: an
+      inner band reverts more often and its move often cannot cover the round
+      trip.</div></div>
+
+    <div class="subhead">Filters <span>these WITHHOLD entries — none of them ever stops a close</span></div>
+    <div class="cb cb-grid">
+      <label class="f"><span>Edge filter <small>sigma against the round trip</small></span>
+        <input type="checkbox" class="chk" data-key="DEFAULT_EDGE_FILTER_ENABLED"></label>
+      <label class="f"><span>Minimum edge multiple</span>
+        <input type="number" step="0.1" data-key="DEFAULT_MIN_STD_MULTIPLE"></label>
       <label class="f"><span>Hurst filter
           <small>an estimate — read it for a few sessions before arming it</small></span>
         <input type="checkbox" class="chk" data-key="DEFAULT_HURST_ENABLED"></label>
       <label class="f"><span>Hurst threshold</span>
         <input type="number" step="0.05" data-key="DEFAULT_HURST_THRESHOLD"></label>
-      <label class="f"><span>Edge filter <small>sigma against the round trip</small></span>
-        <input type="checkbox" class="chk" data-key="DEFAULT_EDGE_FILTER_ENABLED"></label>
-      <label class="f"><span>Minimum edge multiple</span>
-        <input type="number" step="0.1" data-key="DEFAULT_MIN_STD_MULTIPLE"></label>
       <label class="f"><span>Half-life filter</span>
         <input type="checkbox" class="chk" data-key="DEFAULT_HALF_LIFE_ENABLED"></label>
       <label class="f"><span>Maximum half-life <small>periods</small></span>
         <input type="number" step="5" data-key="DEFAULT_MAX_HALF_LIFE"></label>
+    </div>
+    <div class="cb"><div class="hint"><b>Leave the edge filter ON.</b> It is
+      the one that refuses a trade whose expected move cannot pay for itself.
+      <b>Hurst ships OFF and should stay off until you have watched it</b> —
+      it is an estimate, and on a coarsely quantised spread it reads high, so
+      arming it can withhold every entry on a contract for ever. The
+      <b>half-life filter is off</b> for the same reason. Both are visible on
+      each window whether they are armed or not: read them first, arm them
+      later. A filter that withholds everything says so on the window, in the
+      words of the number that failed.</div></div>
+
+    <div class="subhead">Size &amp; risk <span>the ceilings — the only settings here that can stop a bad day getting worse</span></div>
+    <div class="cb cb-grid">
       <label class="f"><span>Quantity per entry <small>contracts</small></span>
         <input type="number" step="1" min="0" data-key="DEFAULT_QUANTITY"></label>
       <label class="f"><span>Maximum position <small>0 = none</small></span>
@@ -123,6 +149,16 @@
         <input type="number" step="100" min="0" data-key="DEFAULT_DAILY_MAX_LOSS"></label>
       <label class="f"><span>Cooldown after a trade <small>seconds</small></span>
         <input type="number" step="5" min="0" data-key="DEFAULT_ENTRY_COOLDOWN_SECONDS"></label>
+    </div>
+    <div class="cb"><div class="hint"><b>0 means no limit</b> on every one of
+      these, which is why they are worth setting even when they feel
+      generous. A <b>daily loss limit</b> turns that contract's algo off and
+      says so on the window — it does not close what is open. The
+      <b>cooldown</b> is what stops a contract sitting on its threshold and
+      re-entering on every pass.</div></div>
+
+    <div class="subhead">Execution <span>how an order is sent, and what happens when it is not filled</span></div>
+    <div class="cb cb-grid">
       <label class="f"><span>Entry order</span>
         <select data-key="DEFAULT_ENTRY_ORDER_TYPE">
           <option value="LIMIT">Limit</option><option value="MARKET">Market</option>
@@ -166,6 +202,19 @@
           <option value="CLOSE_YESTERDAY">Close yesterday</option>
           <option value="AUTO">Auto, from the day it opened</option>
         </select></label>
+    </div>
+    <div class="cb"><div class="hint"><b>Entry limit, exit market</b> is the
+      pairing to keep: patience going in costs you a trade you did not take,
+      impatience coming out costs you a position you still hold. Leave
+      <b>on an entry</b> at <b>Cancel</b> and <b>on an exit</b> at <b>Cross at
+      market</b> for the same reason. The <b>close flag</b> is the one setting
+      here that can put a position ON: on a venue that keeps long and short
+      apart, a closing order sent with the wrong flag opens the other side.
+      Change it only when the broker has told you which one that contract
+      wants.</div></div>
+
+    <div class="subhead">Costs <span>every one of these feeds the edge filter AND the profit target</span></div>
+    <div class="cb cb-grid">
       <label class="f"><span>Commission <small>per contract per side</small></span>
         <input type="number" step="0.05" min="0" data-key="DEFAULT_COMMISSION_PER_CONTRACT"></label>
       <label class="f"><span>Exchange fee <small>per contract per side</small></span>
@@ -184,6 +233,15 @@
           <option value="ENTRY_SIGMA">Sigma at entry</option>
         </select></label>
     </div>
+    <div class="cb"><div class="hint"><b>Get these right before you arm
+      anything.</b> They are not reporting — the edge filter refuses trades
+      against them and the profit target is measured from them, so a
+      commission left at 0 makes every spread look worth trading and sets a
+      target that does not cover the round trip. The <b>slippage budget</b>
+      is a guess to start with: Analysis shows what was actually measured
+      beside it, and proposes a corrected number. <b>Initial margin</b> is the
+      target basis to use; where the broker does not report margin the target
+      renders as <b>—</b> rather than a figure nothing stands behind.</div></div>
   </section>
 
   <section class="card">

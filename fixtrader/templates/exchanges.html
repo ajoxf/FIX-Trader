@@ -58,8 +58,26 @@
         <input type="text" id="v-target_comp_id"></label>
       <label class="f"><span>SenderSubID <small>optional</small></span>
         <input type="text" id="v-sender_sub_id" placeholder="none"></label>
-      <label class="f"><span>OnBehalfOfCompID <small>optional</small></span>
+      <label class="f"><span>OnBehalfOfCompID <small>tag 115, optional</small></span>
         <input type="text" id="v-on_behalf_of_comp_id" placeholder="none"></label>
+      <label class="f"><span>OnBehalfOfSubID <small>tag 116, optional</small></span>
+        <input type="text" id="v-on_behalf_of_sub_id" placeholder="none"></label>
+      <label class="f"><span>Market data SenderCompID
+          <small>blank = the order session's</small></span>
+        <input type="text" id="v-md_sender_comp_id" placeholder="same"></label>
+      <label class="f"><span>Market data TargetCompID
+          <small>blank = the order session's</small></span>
+        <input type="text" id="v-md_target_comp_id" placeholder="same"></label>
+      <label class="f"><span>Drop copy host
+          <small>read-only feed of the whole account</small></span>
+        <input type="text" id="v-dc_host" placeholder="not configured"></label>
+      <label class="f"><span>Drop copy port</span>
+        <input type="number" id="v-dc_port" placeholder="none"></label>
+      <label class="f"><span>Drop copy SenderCompID
+          <small>blank = the order session's</small></span>
+        <input type="text" id="v-dc_sender_comp_id" placeholder="same"></label>
+      <label class="f"><span>Drop copy TargetCompID</span>
+        <input type="text" id="v-dc_target_comp_id" placeholder="none"></label>
       <label class="f"><span>Username</span>
         <input type="text" id="v-username"></label>
 
