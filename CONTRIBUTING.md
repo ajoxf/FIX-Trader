@@ -119,7 +119,8 @@ day.
 
 ## Branches, commits and PRs
 
-- Branch from `main`: `fix/<what-it-does>`, e.g. `fix/logon-and-heartbeat`.
+- Branch from the repository's **default branch** (`git clone` checks it out
+  for you): `fix/<what-it-does>`, e.g. `fix/logon-and-heartbeat`.
 - **One work package per PR** — see `docs/WORK_FIX_GATEWAY.md`. Six small PRs
   land; one big one does not get reviewed properly.
 - Commit messages say *why*, not *what*. The diff already says what.

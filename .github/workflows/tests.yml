@@ -2,11 +2,13 @@ name: tests
 
 # The suite is the gate. A red branch is not ready for review, and a PROD
 # venue is never run without it.
+# Deliberately unfiltered: this repository's default branch is not called
+# `main`, and a filter naming a branch that does not exist would leave every
+# pull request with no checks at all — which looks exactly like passing.
 on:
   push:
     branches: ['**']
   pull_request:
-    branches: [main]
 
 jobs:
   suite:
