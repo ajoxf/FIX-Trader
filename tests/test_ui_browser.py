@@ -543,3 +543,84 @@ def test_simulated_trades_are_not_shown_in_a_live_figure(analysis_server):
         assert 'no closed trades' in page.locator('.an-journal').inner_text()
         browser.close()
     assert errors == []
+
+
+# -- windows that overlap --------------------------------------------------
+
+def overlap_the_windows(page):
+    """Put Analysis squarely on top of Positions, as a desk ends up after a
+    few drags."""
+    page.evaluate("""() => {
+      document.getElementById('desktop').classList.add('free');
+      const place = (k, x, y) => {
+        const e = document.querySelector('.win[data-key="' + k + '"]');
+        if (!e) return;
+        e.classList.add('placed'); e.style.left = x + 'px'; e.style.top = y + 'px';
+      };
+      place('__positions__', 0, 0);
+      place('__analysis__', 430, 0);
+      document.querySelectorAll('.win.contractwin').forEach((e) => {
+        e.classList.add('placed'); e.style.left = '0px'; e.style.top = '900px';
+      });
+    }""")
+    page.wait_for_timeout(400)
+
+
+def test_a_sticky_table_header_does_not_punch_through_the_window_above_it(analysis_server):
+    """A child with a z-index is placed against the whole page unless its
+    window is its own stacking context. The Positions column headers were
+    painting straight across the middle of the Analysis window."""
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        overlap_the_windows(page)
+        covered = page.evaluate("""() => {
+          const pos = document.querySelector('.win[data-key="__positions__"]');
+          const an = document.querySelector('.win[data-key="__analysis__"]');
+          const anR = an.getBoundingClientRect();
+          // a header cell that genuinely lies underneath the Analysis window
+          const cell = Array.from(pos.querySelectorAll('table.grid th'))
+            .map((t) => ({t, r: t.getBoundingClientRect()}))
+            .find((o) => o.r.x > anR.x + 20 && o.r.y > anR.y && o.r.bottom < anR.bottom);
+          if (!cell) return {found: false};
+          const top = document.elementFromPoint(
+            Math.round(cell.r.x + cell.r.width / 2),
+            Math.round(cell.r.y + cell.r.height / 2));
+          return {found: true, punchesThrough: pos.contains(top),
+                  coveredByAnalysis: an.contains(top)};
+        }""")
+        assert covered['found'], "the windows did not overlap; nothing was tested"
+        assert covered['punchesThrough'] is False
+        assert covered['coveredByAnalysis'] is True
+        browser.close()
+    assert errors == []
+
+
+def test_clicking_a_window_brings_it_to_the_front(analysis_server):
+    """A desk of draggable windows with a fixed paint order has one you can
+    never read."""
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        overlap_the_windows(page)
+        point = page.evaluate("""() => {
+          const bar = document.querySelector('.win[data-key="__positions__"] .titlebar')
+            .getBoundingClientRect();
+          return [Math.round(bar.x + 30), Math.round(bar.y + 7)];
+        }""")
+        page.mouse.click(point[0], point[1])
+        page.wait_for_timeout(300)
+        after = page.evaluate("""() => {
+          const pos = document.querySelector('.win[data-key="__positions__"]');
+          const r = pos.getBoundingClientRect();
+          const top = document.elementFromPoint(Math.round(r.right - 100),
+                                                Math.round(r.y + 50));
+          return {raised: pos.classList.contains('raised'),
+                  onTop: pos.contains(top)};
+        }""")
+        assert after['raised'] is True
+        assert after['onTop'] is True
+        browser.close()
+    assert errors == []

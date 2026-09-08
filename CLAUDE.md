@@ -88,3 +88,8 @@ the drawing wins.
   test fails the build if they come back.
 - **The page polls twice a second, so `networkidle` never fires.** In browser
   tests wait for `domcontentloaded` and then for the thing you care about.
+- **Every window is its own stacking context.** A child with a `z-index` — the
+  sticky table header in Positions and Analysis — is otherwise placed against
+  the whole page and paints straight through any window drawn over it. And a
+  desk of draggable windows needs click-to-raise, or one of them can never be
+  read.

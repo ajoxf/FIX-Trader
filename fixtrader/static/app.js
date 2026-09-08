@@ -167,13 +167,25 @@ function windowFor(key) {
     toast('GUARD', 'NOT YET', 'The settings panel is the next build step.',
       key);
   };
-  el.onmousedown = () => { state.focused = key; };
+  el.onmousedown = () => { state.focused = key; raise(el); };
   makeDraggable(el, key);
   document.getElementById('desktop').appendChild(el);
 
   const place = state.places[key];
   if (place) placeWindow(el, place.x, place.y);
   return el;
+}
+
+/* Bring a window to the front. The desk paints in DOM order otherwise, so a
+ * window underneath another could never be read — and one of them is the
+ * Positions window. */
+let topZ = 5;
+function raise(el) {
+  document.querySelectorAll('.win.raised').forEach((w) => {
+    if (w !== el) { w.classList.remove('raised'); w.style.zIndex = ''; }
+  });
+  el.classList.add('raised');
+  el.style.zIndex = String(++topZ);
 }
 
 function placeWindow(el, x, y) {
@@ -370,6 +382,7 @@ function positionsWindow() {
     el.remove();
     renderTabs();
   };
+  el.onmousedown = () => raise(el);
   makeDraggable(el, '__positions__');
   document.getElementById('desktop').prepend(el);
   const place = state.places['__positions__'];
@@ -503,6 +516,7 @@ function analysisWindow() {
   el.querySelector('.an-mode').onchange = (e) => {
     analysis.mode = e.target.value; loadAnalysis();
   };
+  el.onmousedown = () => raise(el);
   makeDraggable(el, '__analysis__');
   document.getElementById('desktop').appendChild(el);
   const place = state.places['__analysis__'];
