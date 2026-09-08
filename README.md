@@ -24,6 +24,17 @@ Orient lists the spread itself as a single tradeable contract. There is no leg
 A and leg B, no hedge ratio, no matched clip, no naked-leg window and no
 orphan-leg recovery — a spread is bought and sold like an outright.
 
+## Contributing
+
+**[`CONTRIBUTING.md`](CONTRIBUTING.md)** is the brief for anyone joining, and
+**[`docs/WORK_FIX_GATEWAY.md`](docs/WORK_FIX_GATEWAY.md)** breaks the FIX and
+order-execution work into six packages, one PR each.
+
+The handover is a test file. `tests/test_gateway_contract.py` runs against the
+simulator the whole system is built on, and it is the same suite a real
+`FixGateway` has to pass against Orient's UAT. A gateway that passes it drops
+in with no change above `fixtrader/gateway.py`.
+
 ## The build specification
 
 **[`BUILD_PROMPT.md`](BUILD_PROMPT.md)** is the brief: the screen, the
