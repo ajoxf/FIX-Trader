@@ -575,3 +575,68 @@ table.grid tr.cannot-pay .tag { opacity: .55; }
 table.grid tr.pays td { background: #eef6f0; }
 table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700; }
 .an-replay-assumptions { line-height: 1.5; }
+
+/* -- marking a position on the window itself -------------------------------
+ *
+ * A trader watching eight windows should not have to read eight of them to
+ * find the one that just did something. So: BLUE while a position is open —
+ * a state, not an event, and therefore still right after a page reload — and
+ * a flash of GREEN or RED when one closes.
+ *
+ * The flash does not stay. A window left red says "this is losing", which is
+ * a different statement from "the last trade lost", and a desk back from
+ * lunch to eight coloured windows learns nothing from any of them.
+ *
+ * WHERE the colour goes matters. It tints the window's FRAME, its titlebar
+ * and its border — never a layer over the figures. An overlay above the
+ * content would put every price, z and P&L behind a wash, and a tint that
+ * makes a number harder to read has cost more than it gave. The panels
+ * carrying the numbers stay exactly as they were.
+ */
+.win.contractwin {
+  transition: background-color .25s linear, border-color .25s linear;
+}
+.win.contractwin > .titlebar { transition: background-color .25s linear; }
+
+/* In a position. Held for as long as the position is. */
+.win.contractwin.in-position { background: #dbe9f6; border-color: #3f7cb0; }
+.win.contractwin.in-position > .titlebar { background: linear-gradient(#cfe1f4, #b5d3ee); }
+
+/* Closed, in profit. */
+.win.contractwin.closed-up { background: #cfe9d8; border-color: #2f8a52; }
+.win.contractwin.closed-up > .titlebar { background: linear-gradient(#c3e5cf, #a6d6b7); }
+
+/* Closed, at a loss. */
+.win.contractwin.closed-down { background: #f4d3d3; border-color: #b13a3a; }
+.win.contractwin.closed-down > .titlebar { background: linear-gradient(#f2c8c8, #e6b0b0); }
+
+/* Closed at break-even, or closed with a net nothing could measure. Neither
+ * green nor red: a P&L of nothing is not a win, and an unmeasured one is not
+ * a loss — colouring it red would state a loss the system never measured. */
+.win.contractwin.closed-flat { background: #e2e4e7; border-color: #7c8087; }
+.win.contractwin.closed-flat > .titlebar { background: linear-gradient(#dcdfe3, #ccd0d5); }
+
+/* The flash going out. Slow enough to be seen leaving, so the eye is not
+ * pulled back to a window that has finished saying something. */
+.win.contractwin.closed-up.fading,
+.win.contractwin.closed-down.fading,
+.win.contractwin.closed-flat.fading {
+  transition: background-color 1.5s ease-out, border-color 1.5s ease-out;
+  background: var(--frame); border-color: #7d838b;
+}
+.win.contractwin.closed-up.fading > .titlebar,
+.win.contractwin.closed-down.fading > .titlebar,
+.win.contractwin.closed-flat.fading > .titlebar {
+  transition: background-color 1.5s ease-out;
+  background: linear-gradient(#d9d9d9, #c6c6c6);
+}
+/* A window that is still IN a position keeps its blue as the flash leaves —
+ * a part fill closes some of a position and leaves the rest on. */
+.win.contractwin.in-position.fading { background: #dbe9f6; border-color: #3f7cb0; }
+.win.contractwin.in-position.fading > .titlebar {
+  background: linear-gradient(#cfe1f4, #b5d3ee);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .win.contractwin, .win.contractwin > .titlebar { transition: none; }
+}

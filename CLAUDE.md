@@ -51,6 +51,17 @@ the drawing wins.
 - **`orders()` and `positions()` return `None` for "unknown"**, which is NOT
   "no orders" / "flat". Code that treats the first as the second reports a
   clean account while the money sits at the venue.
+- **The window marks its own position.** Blue while a position is open — a
+  STATE read off the snapshot, so it survives a reload and cannot stick on a
+  contract that is flat — and a green or red FLASH on the close, which fades.
+  A window left red says "this is losing", which is a different statement
+  from "the last trade lost". The close is read from `last_close.seq`, never
+  from the wording of `last_event`: a highlight driven by a regex over a
+  sentence stops working, silently, the day somebody rewords the sentence.
+  A net of exactly 0 is not a win and a net of `None` is not a loss — both
+  get the neutral mark. And the colour goes on the FRAME, the titlebar and
+  the border, never on a layer over the figures: a tint that makes a price
+  harder to read has cost more than it gave.
 - **Unmeasured is not zero.** Return `None` and render `—`. A target of 0.00
   reads as "get out at break-even", which is a different instruction; a
   net P&L that quietly means gross makes a losing system look profitable.

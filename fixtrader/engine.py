@@ -53,6 +53,11 @@ class ContractRuntime:
         self.book = None
         self.blocked_by: Optional[str] = None
         self.last_event: str = ""
+        #: The most recent close on this contract, and how many there have
+        #: been. The screen marks a close off the COUNT changing, not off
+        #: the wording of an event line.
+        self.closes: int = 0
+        self.last_close = None
         self.last_trade_at: Optional[datetime] = None
         self.trades_today: int = 0
         self.pnl_today: float = 0.0
@@ -418,6 +423,21 @@ class Engine:
         if pos.net_pnl is not None:
             rt.pnl_today += pos.net_pnl
         money = f"{pos.net_pnl:+,.0f}" if pos.net_pnl is not None else "—"
+        # Published so the screen can mark the close WITHOUT reading a
+        # sentence: a highlight driven by a regex over `last_event` turns a
+        # reworded message into a window that quietly stops reporting. `net`
+        # may be None, and None is not a loss — it is unmeasured, and the
+        # screen colours it neither way.
+        rt.closes += 1
+        rt.last_close = {
+            'seq': rt.closes,
+            'net': pos.net_pnl,
+            'side': pos.side.value,
+            'qty': fill.qty,
+            'price': fill.price,
+            'reason': pos.exit_reason.value if pos.exit_reason else None,
+            'ts': now.isoformat(),
+        }
         self._say(rt, "CLOSED",
                   f"{pos.side.value} {fill.qty:g} out at {fill.price:g} · {money}")
         self.notify("CLOSED", contract.key,
@@ -689,6 +709,7 @@ class Engine:
                 'position': self._position_dict(pos, open_pnl),
                 'orders': [w.to_dict() for w in
                            self.executor.working_for(key)],
+                'last_close': rt.last_close,
                 'pnl_today': round(rt.pnl_today, 2),
                 'trades_today': rt.trades_today,
                 'last_event': rt.last_event,

@@ -68,7 +68,7 @@ SNAPSHOT = {
                      'stop': 0.18, 'margin_locked': 1300.0,
                      'opened_at': datetime.now(timezone.utc).isoformat(),
                      'open_pnl': -20.0},
-        'orders': [], 'pnl_today': 0.0, 'trades_today': 0,
+        'orders': [], 'pnl_today': 0.0, 'trades_today': 0, 'last_close': None,
         'last_event': 'BUY 5 @ 0.48', 'target_missing': None,
     }],
     'portfolio': {
@@ -789,5 +789,125 @@ def test_a_replay_with_nothing_recorded_says_so_rather_than_showing_zeros(
         finding = page.locator('.an-replay-finding').inner_text()
         assert 'Nothing to replay' in finding
         assert page.locator('.an-replay tbody tr').count() == 0
+        browser.close()
+    assert errors == []
+
+
+# -- marking the window ----------------------------------------------------
+
+def set_snapshot(tmp, change):
+    """Rewrite status.json with one change applied to the first contract."""
+    snap = json.loads((tmp / 'status.json').read_text())
+    change(snap['contracts'][0])
+    snap['ts'] = datetime.now(timezone.utc).isoformat()
+    (tmp / 'status.json').write_text(json.dumps(snap))
+
+
+def test_an_open_position_holds_the_window_blue(server):
+    """A STATE, read off the snapshot — so it is still right after a reload
+    and it cannot get stuck on a contract that is flat."""
+    url, tmp = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        win = page.locator('.contractwin')
+        page.wait_for_selector('.contractwin.in-position')
+
+        set_snapshot(tmp, lambda c: c.update(position=None))   # the control
+        page.wait_for_function(
+            "() => !document.querySelector('.contractwin')"
+            ".classList.contains('in-position')")
+        assert 'in-position' not in (win.get_attribute('class') or '')
+        browser.close()
+    assert errors == []
+
+
+def test_a_close_in_profit_flashes_green_and_a_loss_flashes_red(server):
+    url, tmp = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        win = page.locator('.contractwin')
+        page.wait_for_timeout(700)          # the first snapshot is not an event
+
+        set_snapshot(tmp, lambda c: c.update(
+            position=None,
+            last_close={'seq': 1, 'net': 41.0, 'side': 'BUY', 'qty': 5,
+                        'price': 0.52, 'reason': 'TARGET', 'ts': None}))
+        page.wait_for_selector('.contractwin.closed-up')
+
+        set_snapshot(tmp, lambda c: c.update(
+            position=None,
+            last_close={'seq': 2, 'net': -60.0, 'side': 'BUY', 'qty': 5,
+                        'price': 0.44, 'reason': 'STOP_LOSS', 'ts': None}))
+        page.wait_for_selector('.contractwin.closed-down')
+        assert 'closed-up' not in (win.get_attribute('class') or '')
+        browser.close()
+    assert errors == []
+
+
+def test_a_close_that_made_nothing_measurable_is_neither_green_nor_red(server):
+    """Unmeasured is not zero, and it is certainly not a loss. Colouring a
+    null red would state a loss the system never measured — and a net of
+    exactly zero is not a win."""
+    url, tmp = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_timeout(700)
+        for seq, net in ((1, None), (2, 0.0)):
+            set_snapshot(tmp, lambda c, s=seq, n=net: c.update(
+                position=None,
+                last_close={'seq': s, 'net': n, 'side': 'BUY', 'qty': 5,
+                            'price': 0.5, 'reason': 'TARGET', 'ts': None}))
+            page.wait_for_selector('.contractwin.closed-flat')
+            cls = page.locator('.contractwin').get_attribute('class') or ''
+            assert 'closed-up' not in cls and 'closed-down' not in cls
+            page.wait_for_function(
+                "() => !document.querySelector('.contractwin')"
+                ".classList.contains('closed-flat')", timeout=15000)
+        browser.close()
+    assert errors == []
+
+
+def test_opening_the_page_does_not_flash_a_trade_that_already_happened(server):
+    """Otherwise a desk that reloads after lunch gets eight windows flashing
+    at once for closes nobody was watching."""
+    url, tmp = server
+    set_snapshot(tmp, lambda c: c.update(
+        position=None,
+        last_close={'seq': 7, 'net': -60.0, 'side': 'BUY', 'qty': 5,
+                    'price': 0.44, 'reason': 'STOP_LOSS', 'ts': None}))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_timeout(1500)
+        cls = page.locator('.contractwin').get_attribute('class') or ''
+        assert 'closed-down' not in cls and 'closed-up' not in cls
+        # the control: the NEXT close does flash
+        set_snapshot(tmp, lambda c: c.update(
+            last_close={'seq': 8, 'net': -60.0, 'side': 'BUY', 'qty': 5,
+                        'price': 0.44, 'reason': 'STOP_LOSS', 'ts': None}))
+        page.wait_for_selector('.contractwin.closed-down')
+        browser.close()
+    assert errors == []
+
+
+def test_the_flash_fades_rather_than_leaving_the_window_coloured(server):
+    """A window left red says "this is losing", which is a different
+    statement from "the last trade lost"."""
+    url, tmp = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_timeout(700)
+        set_snapshot(tmp, lambda c: c.update(
+            position=None,
+            last_close={'seq': 3, 'net': 41.0, 'side': 'BUY', 'qty': 5,
+                        'price': 0.52, 'reason': 'TARGET', 'ts': None}))
+        page.wait_for_selector('.contractwin.closed-up')
+        page.wait_for_function(
+            "() => !document.querySelector('.contractwin')"
+            ".classList.contains('closed-up')", timeout=15000)
         browser.close()
     assert errors == []

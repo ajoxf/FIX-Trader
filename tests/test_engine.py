@@ -600,3 +600,59 @@ def test_a_limit_that_fills_while_the_cancel_is_in_flight_is_not_replaced(tmp_pa
     # not the escalation being duplicated.)
     assert rt.position is not None
     assert rt.position.opened_qty == 5.0
+
+
+# -- marking a close on the window -----------------------------------------
+
+def test_a_close_is_published_as_a_fact_not_as_a_sentence(tmp_path):
+    """The screen highlights a close green or red. Reading that off the
+    wording of the event line would mean a reworded message silently stops
+    the window reporting, so the close is published as its own block with
+    the net beside it."""
+    engine, gw, db, cfg = build(tmp_path)
+    rt = warm_the_window(engine, gw)
+    assert engine.snapshot(now=gw.now)['contracts'][0]['last_close'] is None
+
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    assert rt.position is not None
+    engine.close_now('fef')
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+
+    close = engine.snapshot(now=gw.now)['contracts'][0]['last_close']
+    assert close is not None
+    assert close['seq'] == 1
+    assert close['side'] in ('BUY', 'SELL')
+    assert close['reason'] == 'CLOSE_NOW'
+    assert 'net' in close                    # may be None; the key is there
+
+
+def test_every_close_gets_its_own_sequence_so_two_in_a_row_both_show(tmp_path):
+    """The screen marks a close off the COUNT changing. Two trades that
+    happen to make the same money must not look like one."""
+    engine, gw, db, cfg = build(tmp_path)
+    rt = warm_the_window(engine, gw)
+    seqs = []
+    for _ in range(2):
+        put_book_at_z(engine, gw, 2.5)
+        engine.poll(now=gw.now); engine.poll(now=gw.now)
+        assert rt.position is not None
+        engine.close_now('fef')
+        engine.poll(now=gw.now); engine.poll(now=gw.now)
+        seqs.append(rt.last_close['seq'])
+        engine.set_algo('fef', True)          # close_now stands it down
+    assert seqs == [1, 2]
+
+
+def test_an_unmeasured_net_is_published_as_none_never_as_zero(tmp_path):
+    """None is what the screen needs to colour the flash neither green nor
+    red. A zero here would state a break-even the system never measured."""
+    engine, gw, db, cfg = build(tmp_path)
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    # Make the fees unmeasurable, which is what makes the net unmeasurable.
+    engine._fees_for = lambda *a, **k: None
+    engine.close_now('fef')
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    assert rt.last_close['net'] is None

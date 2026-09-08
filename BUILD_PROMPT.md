@@ -205,6 +205,32 @@ still outstanding; and today's realised beside it.
 - **Events** — the log the banners are drawn from, filterable by contract.
 - **Analysis** — §2.6. Its own window, one contract at a time.
 
+### 2.3a The window marks its own position
+
+A trader watching eight windows should not have to read eight of them to find
+the one that just did something.
+
+- **In a position → the window is BLUE.** A state, not an event: it is read
+  straight off the snapshot, so it is still right after a page reload and it
+  can never stick on a contract that is flat.
+- **Closed in profit → a GREEN flash. Closed at a loss → a RED flash.** Both
+  fade after a couple of seconds. A window left red says "this is losing",
+  which is a different statement from "the last trade lost".
+- **Break-even, or a net nothing could measure → NEITHER.** A P&L of zero is
+  not a win, and an unmeasured one is not a loss; colouring it red would
+  state a loss the system never measured. Both get a neutral grey mark.
+
+The close arrives in the snapshot as `last_close = {seq, net, side, qty,
+price, reason, ts}`, and the screen marks off `seq` changing — never off the
+wording of `last_event`. A highlight driven by a regex over a sentence stops
+working, silently, the day somebody rewords the sentence.
+
+The colour tints the window's frame, titlebar and border. It is never a layer
+over the content: every price, z and P&L keeps the panel and the contrast it
+had, because a tint that makes a number harder to read has cost more than it
+gave. First sight of a contract never flashes, or reloading after a session
+would flash every window at once for trades nobody was watching.
+
 ### 2.4 Notifications
 
 Every one of these fires a **toast** and a **sound**, and lands in the events

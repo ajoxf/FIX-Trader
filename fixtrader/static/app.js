@@ -394,6 +394,8 @@ function renderContract(c) {
   foot.className = 'wfoot' + (c.feed && c.feed.stale ? ' bad'
     : c.state === 'WARMING' ? ' warnf' : '');
 
+  markPosition(el, c);
+
   // A change of last_event is a thing that happened: say it once, and only
   // if the operator asked to hear about that kind. Order traffic is off by
   // default — every send and every fill on eight contracts buries the screen
@@ -412,6 +414,75 @@ function renderContract(c) {
     }
     state.lastEvent[c.key] = c.last_event;
   }
+}
+
+/* -- marking the window ---------------------------------------------------
+ *
+ * BLUE while a position is open, and a flash of GREEN or RED when one
+ * closes. Two different kinds of thing, marked differently on purpose: the
+ * blue is a STATE read straight off the snapshot, so it is still there after
+ * a page reload and it cannot get stuck on a contract that is flat. The
+ * flash is an EVENT, so it fades — a window left red says "this is losing",
+ * which is a different statement from "the last trade lost".
+ *
+ * The close is read from `last_close.seq`, not from the wording of the event
+ * line. A highlight driven by a regex over a sentence stops working the day
+ * somebody rewords the sentence, and stops working silently.
+ */
+const HIGHLIGHT_HOLD_MS = 2600;
+const marks = {};        // key -> { seq, timer }
+
+function markPosition(el, c) {
+  const open = !!(c.position && c.position.qty);
+  el.classList.toggle('in-position', open);
+
+  const close = c.last_close;
+  const seq = (close && close.seq) || 0;
+  const seen = marks[c.key];
+
+  // First sight of a contract is not an event. Whatever it had closed
+  // before this page loaded is history — without this, reloading after a
+  // session flashes every window at once for trades nobody was watching.
+  // Note it is recorded even when there is NO close yet: "watched, and it
+  // had not closed anything" and "never seen" are different, and confusing
+  // them swallows the first close of the session.
+  if (seen === undefined) {
+    marks[c.key] = { seq: seq, timer: null };
+    return;
+  }
+  if (seq === seen.seq) return;                    // already marked this one
+  seen.seq = seq;
+  if (!seq) return;                                // nothing to mark
+  flash(el, closeColour(close.net));
+}
+
+/* Green for a profit, red for a loss — and NEITHER for the two cases that
+ * are not either. A net of exactly zero is not a win. A net of null is
+ * UNMEASURED, and colouring it red would state a loss the system never
+ * measured. Both get the neutral mark. */
+function closeColour(net) {
+  if (net === null || net === undefined) return 'closed-flat';
+  if (net > 0) return 'closed-up';
+  if (net < 0) return 'closed-down';
+  return 'closed-flat';
+}
+
+function flash(el, cls) {
+  const key = el.dataset.key;
+  const mark = marks[key] || (marks[key] = {});
+  if (mark.timer) clearTimeout(mark.timer);
+  el.classList.remove('closed-up', 'closed-down', 'closed-flat', 'fading');
+  // Forces the browser to notice the class went away before it comes back,
+  // so two closes in a row flash twice rather than once.
+  void el.offsetWidth;
+  el.classList.add(cls);
+  mark.timer = setTimeout(() => {
+    el.classList.add('fading');
+    mark.timer = setTimeout(() => {
+      el.classList.remove('closed-up', 'closed-down', 'closed-flat', 'fading');
+      mark.timer = null;
+    }, 1700);
+  }, HIGHLIGHT_HOLD_MS);
 }
 
 /* -- the Positions window -------------------------------------------------
