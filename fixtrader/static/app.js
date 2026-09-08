@@ -1160,6 +1160,19 @@ function renderChrome(snap) {
   badge.title = engine.simulated
     ? 'these prices come from the simulator, not from a venue'
     : 'live venue session';
+
+  // Whose money this is, beside which environment it is. On a desk that
+  // gives the algo its own sub-account the two questions are the same class
+  // of question, and neither should be left to memory. An em dash where no
+  // account is configured: blank is not "the default account".
+  const acct = document.getElementById('account-badge');
+  if (acct) {
+    acct.textContent = engine.account || DASH;
+    acct.title = engine.account
+      ? 'every order this system sends is stamped with this account'
+      : 'no account configured — orders go out without one (tag 1 empty)';
+    acct.classList.toggle('unset', !engine.account);
+  }
   badge.className = 'env' + (engine.environment === 'PROD' ? ' prod'
     : engine.simulated ? ' sim' : '');
 

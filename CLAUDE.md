@@ -45,6 +45,17 @@ the drawing wins.
   on has not moved, so an algo left armed re-enters on the next pass — a
   tenth of a second after the trader pressed the button to get out.
 - **UAT and PROD are separate venues** and the screen always says which.
+- **The algo trades its OWN account** (a sub-account on this desk), and the
+  screen says which — "whose money is this" is the same class of question as
+  UAT or PROD. Tag 1 is stamped on every order rather than left for the
+  session to imply, and the reconciler is scoped by it: a position the venue
+  reports on ANOTHER account is not an anomaly, it is somebody else's work,
+  and reporting it as UNCLAIMED every second trains the operator to ignore
+  the one line that matters. A position with NO account stated is still
+  reconciled — unknown is not "not ours", nothing is auto-closed on the
+  strength of it, and the safe error is to report a position we may not own
+  rather than ignore one we do. No account configured sends an EMPTY tag 1,
+  never a guess at a default.
 
 ## Conventions that are easy to lose in a refactor
 

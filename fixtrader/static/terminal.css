@@ -657,3 +657,14 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 }
 .card .subhead + .cb-grid { padding-top: 8px; }
 .card .cb .hint { line-height: 1.55; }
+
+/* Whose money this is, beside which environment it is. On a desk that gives
+ * the algo its own sub-account, "which account" is the same class of
+ * question as "UAT or PROD" — and an unset one says so rather than looking
+ * like a default. */
+.acct {
+  font: 600 10px/1 var(--mono); letter-spacing: .08em;
+  padding: 3px 6px; border: 1px solid #6f757d; border-radius: 2px;
+  background: #2b2f36; color: #e7e9ec;
+}
+.acct.unset { background: transparent; color: #9aa0a7; border-style: dashed; }

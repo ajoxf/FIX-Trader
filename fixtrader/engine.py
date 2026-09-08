@@ -86,6 +86,9 @@ class Engine:
         self.simulated = simulated
         self.executor = Executor(gateway, db=db, notify=notify,
                                  simulated=simulated)
+        # The executor stamps tag 1 on every order but does not read
+        # configuration: the engine is what knows a contract's venue.
+        self.executor.account_resolver = self.account_for
         self.runtimes: Dict[str, ContractRuntime] = {}
         self.master_algo: bool = bool(config.settings.get('ALGO_MASTER_ENABLED', True))
         self.killed: bool = False
@@ -152,6 +155,55 @@ class Engine:
             elif contract.spec_source.get(field) != 'operator':
                 contract.spec_source.setdefault(field, 'venue')
 
+    def trading_accounts(self) -> Optional[str]:
+        """The account, or accounts, this desk is trading — for the screen.
+
+        None where nothing is configured, which renders as an em dash: a
+        blank account is not "the default account", it is a question nobody
+        has answered.
+        """
+        seen = []
+        for key in self.runtimes:
+            account = self.account_for(key)
+            if account and account not in seen:
+                seen.append(account)
+        return ' · '.join(seen) if seen else None
+
+    def account_for(self, contract_key: str) -> str:
+        """The account this contract is traded on, or "" where none is set.
+
+        A desk that gives the algo its own sub-account is drawing the line
+        between what this system did and what a person did by hand, so the
+        account is read from the contract's own venue rather than assumed.
+        """
+        rt = self.runtimes.get(contract_key)
+        contract = rt.contract if rt else self.config.contracts.get(contract_key)
+        venue = self.config.venues.get(getattr(contract, 'venue', '') or '')
+        return getattr(venue, 'account', '') or ''
+
+    def is_ours(self, contract_key: str, account: str) -> bool:
+        """Whether a position the venue reports is this system's business.
+
+        Three cases, and the middle one is the point of the whole exercise:
+
+        - We trade no particular account (none configured): everything the
+          session can see is ours to reconcile. That is the old behaviour and
+          it is right when there is one account.
+        - The venue names an account and it is NOT ours: skip it. On a desk
+          where a person trades by hand in the broker's own UI, those
+          positions are not anomalies — they are somebody else's work, and
+          reporting them as UNCLAIMED every second trains the operator to
+          ignore the one line that matters.
+        - The venue names NO account: reconcile it anyway. Unknown is not
+          "not ours", and nothing is ever auto-closed on the strength of
+          this — so the safe error is to report a position we may not own,
+          never to ignore one we do.
+        """
+        mine = self.account_for(contract_key)
+        if not mine or not account:
+            return True
+        return str(account) == str(mine)
+
     def recover(self) -> None:
         """Rebuild the book from the database, then compare it to the venue.
 
@@ -175,14 +227,19 @@ class Engine:
 
         self.unclaimed = []
         for vp in venue_positions:
+            if not self.is_ours(vp.contract_key, vp.account):
+                continue
             rt = self.runtimes.get(vp.contract_key)
             ours = rt.position.signed_qty if (rt and rt.position) else 0.0
             if abs(vp.qty - ours) > 1e-9:
+                whose = (f" on account {vp.account}" if vp.account else
+                         " (the venue did not say which account)")
                 self.unclaimed.append({
                     'contract_key': vp.contract_key,
+                    'account': vp.account,
                     'venue_qty': vp.qty, 'our_qty': ours,
                     'text': (f"the venue reports {vp.qty:+g} on "
-                             f"{vp.contract_key}; this book explains "
+                             f"{vp.contract_key}{whose}; this book explains "
                              f"{ours:+g}. Nothing has been closed."),
                 })
         self.book_complete = True
@@ -732,6 +789,10 @@ class Engine:
                 'master_algo': self.master_algo,
                 'killed': self.killed,
                 'environment': self.config.environment_label,
+                #: Which account the algo is trading. On a desk that gives it
+                #: a sub-account this is as load-bearing as UAT/PROD: the
+                #: screen must never leave "whose money is this" to memory.
+                'account': self.trading_accounts(),
                 'simulated': self.simulated,
                 'book_complete': self.book_complete,
                 'unclaimed': self.unclaimed,
@@ -776,7 +837,12 @@ class Engine:
         by_key = {}
         if venue_positions is not None:
             for vp in venue_positions:
-                by_key[vp.contract_key] = vp
+                # The Positions window puts OUR book beside THE VENUE's. A
+                # position on somebody else's account in that column would
+                # read as this system's, and the two disagreeing is the
+                # whole point of the column.
+                if self.is_ours(vp.contract_key, vp.account):
+                    by_key[vp.contract_key] = vp
 
         rows: List[Dict[str, Any]] = []
         for c in contracts:

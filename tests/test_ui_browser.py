@@ -43,6 +43,7 @@ SNAPSHOT = {
     'engine': {
         'alive': True, 'loop_ms': 4.2, 'master_algo': True, 'killed': False,
         'environment': 'SIMULATED', 'simulated': True, 'book_complete': True,
+        'account': 'ALGO-SUB',
         'unclaimed': [], 'refresh_sec': 0.5, 'sound': False,
         'confirm_close': True,
         'session': {'state': 'LOGGED_ON', 'text': 'simulator'},
@@ -909,5 +910,31 @@ def test_the_flash_fades_rather_than_leaving_the_window_coloured(server):
         page.wait_for_function(
             "() => !document.querySelector('.contractwin')"
             ".classList.contains('closed-up')", timeout=15000)
+        browser.close()
+    assert errors == []
+
+
+def test_the_screen_says_which_account_it_trades(server):
+    """On a desk that gives the algo its own sub-account, "whose money is
+    this" is the same class of question as UAT or PROD, and neither should
+    be left to memory."""
+    url, tmp = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        badge = page.locator('#account-badge')
+        assert badge.inner_text() == 'ALGO-SUB'
+        assert 'unset' not in (badge.get_attribute('class') or '')
+
+        # No account configured is an em dash and says so — never a blank
+        # that reads as "the default account".
+        snap = json.loads((tmp / 'status.json').read_text())
+        snap['engine']['account'] = None
+        (tmp / 'status.json').write_text(json.dumps(snap))
+        page.wait_for_function(
+            "() => document.getElementById('account-badge')"
+            ".classList.contains('unset')")
+        assert badge.inner_text() == '—'
+        assert 'tag 1 empty' in (badge.get_attribute('title') or '')
         browser.close()
     assert errors == []

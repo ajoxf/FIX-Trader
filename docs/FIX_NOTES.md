@@ -58,6 +58,36 @@ whether it is set.
 6. **The recovery sessions**: whether we are expected to use them, or whether
    a resend request on the main session is enough.
 
+### The algo trades its own sub-account
+
+The desk's decision: **the algo gets its own sub-account** and trades from
+that, while a person trading by hand in TT's UI is on a different one. This
+is the cleanest possible answer to the problem drop copy raises, and the code
+now leans on it:
+
+- **Tag 1 is stamped on every order** from the venue's `account`, never left
+  for the session to imply.
+- **The reconciler is scoped by account.** A position on another account is
+  skipped — not "unclaimed". Before this, every hand trade the session could
+  see would have shown up as an unexplained position, every second, until
+  nobody read the line.
+- **A position with no account stated is still reconciled.** Unknown is not
+  "not ours"; nothing is auto-closed on the strength of it either way.
+- **The screen shows the account** beside UAT/PROD, and an unconfigured one
+  renders as an em dash rather than a blank that reads like a default.
+
+Still to confirm with TT:
+
+- **Does the order-routing session report positions for the sub-account
+  only, or for everything it can see?** The scoping above is written for the
+  second case, which is the safe assumption either way.
+- **What exactly goes in tag 1** for a sub-account — the sub-account name
+  alone, or a parent/child form.
+- **Is a second `SenderCompID` or `OnBehalfOfSubID` needed** to trade the
+  sub-account, or is tag 1 the whole of it?
+- **Does the sub-account need its own market-data entitlements**, or does
+  the parent's cover it?
+
 ### Drop copy — a design decision, not a detail
 
 Drop copy reports **everything on the account**, including trades a person
