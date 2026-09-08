@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Nexus FIX</title>
+<!-- Everything is self-hosted. A blocked CDN has taken a trading UI down
+     before, and the dialog that reports "could not save" has to work when the
+     network is what failed. -->
+<link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}?v={{ asset_version }}">
+</head>
+<body>
+
+<div id="brand">
+  <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="6.5" y="10.9" width="11" height="2.2" fill="#1c1c1c"></rect>
+    <circle cx="7" cy="12" r="3.4" fill="#1f7ac2"></circle>
+    <circle cx="17" cy="12" r="3.4" fill="#b83232"></circle>
+  </svg>
+  <span class="brand-name">NEXUS FIX</span>
+  <span class="brand-note">spread terminal</span>
+  <span id="env-badge" class="env">&mdash;</span>
+</div>
+
+<!-- A dead engine must never be mistaken for a quiet market. -->
+<div id="engine-banner" class="banner hidden" role="status"></div>
+<!-- Positions at the venue this book cannot explain. Never closed
+     automatically; put here for a person to decide. -->
+<div id="unclaimed-banner" class="banner critical hidden" role="alert"></div>
+
+<div id="desktop"></div>
+<div id="toasts" aria-live="polite"></div>
+
+<div id="taskbar">
+  <button id="add-panel" class="tk" title="Open a window">+</button>
+  <div id="add-menu" class="menu hidden"></div>
+  <div id="tabs"></div>
+  <div class="taskbar-right">
+    <span id="link-badge" class="link unknown" title="The venue session, and whether prices are arriving">checking&hellip;</span>
+    <button id="master-toggle" class="tk" title="The one switch that stands every contract's algo down at once">Master: &mdash;</button>
+    <button id="sound-toggle" class="tk" title="A blip when an order is sent, two rising notes on a fill, a low note on a reject">Sound: on</button>
+    <button id="tidy" class="tk" title="Put every window back in a row">Tidy</button>
+    <span id="loop-stat" class="stat" title="The engine's achieved loop, and how old this snapshot is">&mdash;</span>
+    <button id="kill" class="kill" title="Stand every algo down and cancel our working orders">KILL ALL</button>
+  </div>
+</div>
+
+<!-- One shared modal. No native confirm() / alert() / prompt(), ever — a test
+     fails the build if they come back. -->
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+  <div class="modal-box">
+    <h2 id="modal-title"></h2>
+    <p id="modal-body"></p>
+    <div class="modal-actions">
+      <button id="modal-cancel" class="btn">Cancel</button>
+      <button id="modal-confirm" class="btn danger"></button>
+    </div>
+  </div>
+</div>
+
+<template id="contract-template">
+  <section class="win">
+    <div class="titlebar">
+      <span class="swatch"></span>
+      <span class="title"></span>
+      <span class="venue"></span>
+      <span class="winbtns"><button class="winbtn cog" title="This contract's settings">&#9881;</button><button class="winbtn close" title="Close this window">&times;</button></span>
+    </div>
+    <div class="badgebar">
+      <span class="state">&mdash;</span>
+      <span class="algo"><span class="lb">ALGO</span><button class="sw" title="Arm or stand down this contract's algo"><i></i><span>OFF</span></button></span>
+    </div>
+    <div class="wbody">
+      <div class="touch">
+        <div class="bidc"><div class="k">BID</div><div class="v">&mdash;</div><div class="sz">&mdash;</div></div>
+        <div class="askc"><div class="k">ASK</div><div class="v">&mdash;</div><div class="sz">&mdash;</div></div>
+      </div>
+      <div class="midrow"><span class="k">MID</span><span class="v mid">&mdash;</span></div>
+
+      <div class="sect">
+        <div class="grid2">
+          <div class="kv"><span class="k">MEAN</span><span class="v f-mean">&mdash;</span></div>
+          <div class="kv"><span class="k">SIGMA</span><span class="v f-std">&mdash;</span></div>
+          <div class="kv"><span class="k">Z</span><span class="v em f-z">&mdash;</span></div>
+          <div class="kv"><span class="k">N</span><span class="v f-n">&mdash;</span></div>
+        </div>
+        <div class="zstrip" title="Where z sits between the two entry thresholds">
+          <div class="zone entry left"></div><div class="zone entry right"></div>
+          <div class="tick thr t-lo"></div><div class="tick mid"></div><div class="tick thr t-hi"></div>
+          <div class="mk"></div>
+          <span class="lbl lbl-lo"></span><span class="lbl lbl-hi"></span>
+        </div>
+        <div class="grid2 bands">
+          <!-- The thresholds as PRICES, and named by the side each fires:
+               a trader checks a level against the book, not against a z. -->
+          <div class="kv"><span class="k">BUY @</span><span class="v f-buyat">&mdash;</span></div>
+          <div class="kv"><span class="k">SELL @</span><span class="v f-sellat">&mdash;</span></div>
+        </div>
+        <div class="bar warmbar"><i></i></div>
+        <div class="kv warmrow"><span class="k">WARM</span><span class="v f-warm">&mdash;</span></div>
+      </div>
+
+      <div class="sect">
+        <div class="kv"><span class="k">EDGE</span><span class="v f-edge">&mdash;</span></div>
+        <div class="grid2">
+          <div class="kv"><span class="k">H</span><span class="v f-hurst">&mdash;</span></div>
+          <div class="kv"><span class="k">HL</span><span class="v f-hl">&mdash;</span></div>
+        </div>
+        <div class="hint f-blocked hidden"></div>
+      </div>
+
+      <div class="sect">
+        <div class="posline hidden">
+          <span class="side"></span><span class="q"></span><span class="at"></span>
+          <span class="pnl">&mdash;</span>
+        </div>
+        <div class="flatline">&mdash;</div>
+        <div class="grid2 posgrid hidden">
+          <div class="kv"><span class="k">Z IN</span><span class="v p-zin">&mdash;</span></div>
+          <div class="kv"><span class="k">B/E</span><span class="v p-be">&mdash;</span></div>
+          <div class="kv"><span class="k">TGT</span><span class="v p-tgt">&mdash;</span></div>
+          <div class="kv"><span class="k">STOP</span><span class="v p-stop">&mdash;</span></div>
+          <div class="kv"><span class="k">HELD</span><span class="v p-held">&mdash;</span></div>
+          <div class="kv"><span class="k">MARGIN</span><span class="v p-margin">&mdash;</span></div>
+        </div>
+        <div class="hint p-missing hidden"></div>
+      </div>
+
+      <button class="btn wide danger close-now" disabled>CLOSE NOW</button>
+    </div>
+    <div class="wfoot">
+      <span class="age">&mdash;</span>
+      <span class="grow last-event"></span>
+    </div>
+  </section>
+</template>
+
+<script src="{{ url_for('static', filename='app.js') }}?v={{ asset_version }}"></script>
+</body>
+</html>

@@ -12,3 +12,4 @@ commands.jsonl
 logs/
 store/
 .pytest_cache/
+nohup.out

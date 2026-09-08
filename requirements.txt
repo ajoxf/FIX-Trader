@@ -1,0 +1,10 @@
+flask>=3.0
+python-dotenv>=1.0
+# Tests
+pytest>=8.0
+# The UI suite, optional: it skips cleanly where no browser is installed.
+# playwright>=1.40
+#
+# The FIX session, for the wiring phase. Not imported by anything yet — see
+# fixtrader/gateway.py and docs/FIX_NOTES.md.
+# quickfix>=1.15.1

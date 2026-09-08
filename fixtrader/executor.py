@@ -1,0 +1,290 @@
+"""Sending, re-pricing, escalating and closing. One path for entries and exits.
+
+The operator chose MARKET or LIMIT **independently for entries and exits**, so
+every combination has to work — limit-in / limit-out included. That is why
+there is one `place` here taking an `Intent` rather than a `send_entry` and a
+`send_exit` that would drift apart.
+
+The rules that make the limit path safe, and the reasons they exist:
+
+- **Amend by cancel-replace, never cancel-then-new.** The second gives up the
+  queue AND opens a window in which the order does not exist at all — a window
+  a fast market walks straight through.
+- **Re-price only outside the dead band.** Every amend loses queue position,
+  so re-pricing on every pass guarantees you are never at the front of a
+  queue, which defeats quoting entirely.
+- **A closing order is capped at the open position and carries reduce-only.**
+  An exit that overfills opens the opposite side of a spread the desk thought
+  it had left.
+- **Nothing withholds the escalation on a CLOSE.** If an exit limit times out
+  and the contract escalates, it escalates — through a stale quote, through a
+  settling jump, through any filter.
+"""
+
+import logging
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from . import sizing
+from .models import (Intent, OrderRequest, OrderState, OrderType, Side,
+                     TimeInForce)
+
+logger = logging.getLogger(__name__)
+
+
+class WorkingOrder:
+    """One of our orders, and everything needed to manage it over its life."""
+
+    def __init__(self, clordid: str, contract_key: str, side: Side, qty: float,
+                 order_type: OrderType, intent: Intent, price: Optional[float],
+                 sent_at: datetime, sent_at_touch: Optional[float],
+                 reason: str = "", position_id: Optional[int] = None):
+        self.clordid = clordid
+        self.contract_key = contract_key
+        self.side = side
+        self.qty = qty
+        self.filled_qty = 0.0
+        self.order_type = order_type
+        self.intent = intent
+        self.price = price
+        self.sent_at = sent_at
+        #: The touch the order was sent at — the anchor slippage is measured
+        #: against. Without it a fill cannot be priced and is reported as
+        #: UNMEASURED rather than as zero slippage.
+        self.sent_at_touch = sent_at_touch
+        self.reason = reason
+        self.position_id = position_id
+        self.state = OrderState.PENDING
+        self.text = ""
+        self.escalated = False
+
+    @property
+    def remaining(self) -> float:
+        return max(0.0, self.qty - self.filled_qty)
+
+    @property
+    def is_close(self) -> bool:
+        return self.intent is Intent.CLOSE
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'clordid': self.clordid, 'contract_key': self.contract_key,
+            'side': self.side.value, 'qty': self.qty,
+            'filled_qty': self.filled_qty, 'price': self.price,
+            'order_type': self.order_type.value, 'intent': self.intent.value,
+            'state': self.state.value, 'text': self.text,
+            'reason': self.reason, 'position_id': self.position_id,
+            'sent_at': self.sent_at.isoformat() if self.sent_at else None,
+            'sent_at_touch': self.sent_at_touch, 'escalated': self.escalated,
+        }
+
+
+def limit_price(book, side: Side, offset_ticks: float,
+                tick_size: Optional[float]) -> Optional[float]:
+    """Where a resting order goes: behind its own touch, by the offset.
+
+    A BUY rests at or below the bid and a SELL at or above the ask — pricing a
+    limit through the touch makes it a market order wearing a limit's name.
+    Rounded AWAY from the market so the rounding cannot cross it either.
+    """
+    if book is None or tick_size is None:
+        return None
+    anchor = book.bid if side is Side.BUY else book.ask
+    if anchor is None:
+        return None
+    raw = anchor - offset_ticks * tick_size if side is Side.BUY \
+        else anchor + offset_ticks * tick_size
+    return sizing.round_to_tick(raw, tick_size,
+                                'down' if side is Side.BUY else 'up')
+
+
+class Executor:
+    """Owns every order this system has live at a venue."""
+
+    def __init__(self, gateway, db=None, notify=None, simulated: bool = False):
+        self.gateway = gateway
+        self.db = db
+        self.notify = notify
+        self.simulated = simulated
+        self.working: Dict[str, WorkingOrder] = {}
+        #: What each order was FOR, kept after the order itself is done. A
+        #: fill can arrive after the state that completed the order — out of
+        #: order, or resent — and an exit fill mistaken for an entry doubles
+        #: the position instead of closing it. This is the one lookup that
+        #: must not disappear when `working` is pruned.
+        self.intents: Dict[str, Intent] = {}
+        #: The state the DECISION was made on — z, mean, sigma, half-life at
+        #: the moment the signal fired. Kept per order and stamped onto the
+        #: position when the fill lands, because by then the window has moved
+        #: on: reading it at fill time recorded an entry at z -0.67 for a
+        #: trade the algo took at -2.24, and the whole touch study and trade
+        #: journal are built on the z each decision was actually made at.
+        self.decisions: Dict[str, Dict[str, Any]] = {}
+
+    # -- sending ----------------------------------------------------------
+
+    def place(self, contract, settings: Dict[str, Any], side: Side, qty: float,
+              intent: Intent, book, now: datetime, reason: str = "",
+              open_qty: float = 0.0, position_id: Optional[int] = None,
+              decision: Optional[Dict[str, Any]] = None) -> Optional[WorkingOrder]:
+        """Send one order. Returns None when there is nothing safe to send."""
+        prefix = 'exit' if intent is Intent.CLOSE else 'entry'
+        order_type = OrderType(settings.get(f'{prefix}_order_type',
+                                            OrderType.MARKET.value))
+
+        qty = sizing.clamp_qty(qty, contract.min_qty, contract.qty_step,
+                               contract.max_qty)
+        if intent is Intent.CLOSE:
+            # Cap at what is actually open. A close can only ever reduce.
+            qty = min(qty, abs(open_qty)) if open_qty else 0.0
+        if qty <= 0:
+            return None
+
+        price = None
+        if order_type is OrderType.LIMIT:
+            price = limit_price(book, side,
+                                float(settings.get(f'{prefix}_limit_offset_ticks',
+                                                   1.0) or 0.0),
+                                contract.tick_size)
+            if price is None:
+                # No book to price a limit against. Crossing instead would
+                # send a market order the operator did not ask for.
+                return None
+
+        req = OrderRequest(
+            contract_key=contract.key, side=side, qty=qty,
+            order_type=order_type, intent=intent, price=price,
+            tif=TimeInForce(settings.get('time_in_force', 'DAY')),
+            reduce_only=(intent is Intent.CLOSE), reason=reason)
+
+        touch = book.executable(side) if book is not None else None
+        clordid = self.gateway.send(req)
+        wo = WorkingOrder(clordid, contract.key, side, qty, order_type, intent,
+                          price, now, touch, reason, position_id)
+        self.working[clordid] = wo
+        self.intents[clordid] = intent
+        if decision is not None:
+            self.decisions[clordid] = dict(decision)
+        self._persist(wo, now)
+        return wo
+
+    # -- managing a resting limit ------------------------------------------
+
+    def manage(self, contract, settings: Dict[str, Any], book,
+               now: datetime) -> List[str]:
+        """Re-price and escalate this contract's working limits.
+
+        Returns a list of things that happened, in words, for the events feed.
+        """
+        said: List[str] = []
+        for wo in list(self.working.values()):
+            if wo.contract_key != contract.key:
+                continue
+            if wo.state.is_done or wo.order_type is not OrderType.LIMIT:
+                continue
+
+            prefix = 'exit' if wo.is_close else 'entry'
+            timeout = float(settings.get(f'{prefix}_limit_timeout_sec', 0) or 0)
+            waited = (now - wo.sent_at).total_seconds()
+
+            if timeout and waited >= timeout and not wo.escalated:
+                on_timeout = str(settings.get(f'{prefix}_on_timeout', 'CANCEL'))
+                if on_timeout == 'CROSS_AT_MARKET':
+                    # Announced, never a silent change of order type. And on a
+                    # CLOSE nothing may stand in the way of this.
+                    wo.escalated = True
+                    self.gateway.cancel(wo.clordid)
+                    said.append(f"{wo.intent.value.lower()} limit unfilled "
+                                f"after {timeout:.0f}s — crossing at market")
+                    self.place(contract, dict(settings,
+                                              **{f'{prefix}_order_type': 'MARKET'}),
+                               wo.side, wo.remaining, wo.intent, book, now,
+                               reason="escalated from an unfilled limit",
+                               open_qty=wo.remaining if wo.is_close else 0.0,
+                               position_id=wo.position_id,
+                               # the decision was made when the LIMIT was
+                               # sent; escalating does not re-decide it
+                               decision=self.decisions.get(wo.clordid))
+                else:
+                    self.gateway.cancel(wo.clordid)
+                    said.append(f"{wo.intent.value.lower()} limit unfilled "
+                                f"after {timeout:.0f}s — cancelled")
+                continue
+
+            # Re-peg, but only outside the dead band.
+            offset = float(settings.get(f'{prefix}_limit_offset_ticks', 1.0) or 0)
+            wanted = limit_price(book, wo.side, offset, contract.tick_size)
+            if wanted is None or wo.price is None or not contract.tick_size:
+                continue
+            band = float(settings.get('repeg_dead_band_ticks', 1.0) or 0.0)
+            moved_ticks = abs(wanted - wo.price) / contract.tick_size
+            if band and moved_ticks < band:
+                continue                  # inside the band: keep the queue
+            if moved_ticks <= 0:
+                continue
+            self.gateway.amend(wo.clordid, price=wanted)
+            wo.price = wanted
+            self._persist(wo, now)
+        return said
+
+    def cancel_all(self, contract_key: Optional[str] = None) -> int:
+        """Cancel OUR working orders, scoped by ClOrdID. Never touches an
+        order this system did not send — a hand order in TT is not ours."""
+        n = 0
+        for wo in list(self.working.values()):
+            if contract_key and wo.contract_key != contract_key:
+                continue
+            if wo.state.is_done:
+                continue
+            self.gateway.cancel(wo.clordid)
+            n += 1
+        return n
+
+    # -- events from the venue ---------------------------------------------
+
+    def apply_event(self, event, tick_size: Optional[float],
+                    now: datetime) -> None:
+        """Fold one gateway event into our own order record."""
+        wo = self.working.get(event.clordid)
+        if wo is None:
+            return
+        vo = event.order
+        if vo is not None:
+            wo.state = vo.state
+            wo.filled_qty = vo.filled_qty
+            wo.text = vo.text or wo.text
+
+        if event.fill is not None and tick_size:
+            # Slippage against the touch the order was SENT at. None where
+            # that anchor is missing: unmeasured, never averaged in as zero.
+            if wo.sent_at_touch is not None:
+                worse = (event.fill.price - wo.sent_at_touch) * wo.side.sign
+                event.fill.slippage_ticks = round(worse / tick_size, 4)
+            if self.db is not None:
+                self.db.save_fill(event.fill)
+
+        self._persist(wo, now)
+        if wo.state.is_done:
+            self.working.pop(wo.clordid, None)
+
+    def decision_of(self, clordid: str) -> Dict[str, Any]:
+        """The window's state when the signal fired, or an empty dict."""
+        return self.decisions.get(clordid, {})
+
+    def intent_of(self, clordid: str) -> Intent:
+        """What an order was for. Defaults to OPEN only for an order this
+        system never sent — one of ours is always recorded."""
+        return self.intents.get(clordid, Intent.OPEN)
+
+    def working_for(self, contract_key: str) -> List[WorkingOrder]:
+        return [w for w in self.working.values()
+                if w.contract_key == contract_key and not w.state.is_done]
+
+    def _persist(self, wo: WorkingOrder, now: datetime) -> None:
+        if self.db is None:
+            return
+        row = wo.to_dict()
+        row['updated_at'] = now.isoformat()
+        row['venue_id'] = None
+        row['is_simulated'] = int(self.simulated)
+        self.db.save_order(row)

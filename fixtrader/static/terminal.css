@@ -1,0 +1,317 @@
+/* The screen, in CSS.
+ *
+ * Colours, grid and every load-bearing rule are defined HERE and served from
+ * this process — no CDN, no web font. A blocked CDN has taken a trading UI
+ * down before, and the dialog that reports "could not save" has to work when
+ * the network is what failed.
+ *
+ * The convention is global:  BID = blue   ASK = red   GREEN = filled / up.
+ * A price must not change colour depending on which panel it sits in.
+ */
+
+:root {
+  --desk: #8d97a5;
+  --frame: #cfcfcf;
+  --frame-2: #c4c4c4;
+  --line: #9d9d9d;
+  --line-soft: #b9b9b9;
+  --panel: #f0f0f0;
+  --field: #fbfbfb;
+  --ink: #1c1c1c;
+  --ink-mute: #5c6066;
+  --ink-faint: #84898f;
+
+  --bid: #1f7ac2;
+  --bid-soft: #dceffb;
+  --ask: #b83232;
+  --ask-soft: #f7dcdc;
+  --good: #3f8b52;
+  --good-soft: #dcefe0;
+  --warn: #a8730a;
+  --warn-soft: #f6ecd4;
+
+  --row-h: 17px;
+  --ui: -apple-system, "Segoe UI", Tahoma, "DejaVu Sans", sans-serif;
+  --mono: "Consolas", "DejaVu Sans Mono", "Menlo", monospace;
+}
+
+* { box-sizing: border-box; }
+
+/* The page is a column: the desk, then the taskbar. No fixed number for the
+ * taskbar's height — it takes what it needs and the desk takes the rest, so a
+ * button that grows can never sit over the bottom of a window. */
+body {
+  margin: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--desk);
+  color: var(--ink);
+  font: 12px/1.35 var(--ui);
+  overflow: hidden;
+}
+
+.hidden { display: none !important; }
+
+/* -- the name, top left --------------------------------------------------- */
+#brand {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  background: var(--frame);
+  border-bottom: 1px solid var(--line);
+}
+.brand-mark { width: 15px; height: 15px; flex: none; }
+.brand-name { font-weight: 600; letter-spacing: .09em; }
+.brand-note { font-size: 10.5px; color: var(--ink-faint); }
+.env {
+  margin-left: auto;
+  font: 600 10px/1 var(--mono);
+  letter-spacing: .12em;
+  padding: 4px 8px;
+  border-radius: 2px;
+  background: #8a6d10;
+  color: #fff;
+}
+/* A live screen must never be mistakable for a test one, or the reverse. */
+.env.prod { background: #a3161d; }
+.env.sim  { background: #5c6066; }
+
+/* -- banners -------------------------------------------------------------- */
+.banner {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  font-size: 11.5px;
+  border-bottom: 1px solid var(--line);
+  background: var(--warn-soft);
+  color: #5e4204;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.banner.critical { background: #f4d5d5; color: #6d1f1f; border-bottom-color: #c98d8d; }
+
+/* -- the desk ------------------------------------------------------------- */
+#desktop {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: auto;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+/* A window the trader has moved leaves the grid and stays where it was put. */
+#desktop.free { display: block; }
+.win.placed { position: absolute; width: 272px; }
+
+.win {
+  background: var(--frame);
+  border: 1px solid #7d838b;
+  box-shadow: 1px 1px 0 rgba(0,0,0,.22);
+  align-self: start;
+}
+.win.focused { box-shadow: 0 0 0 2px var(--bid), 1px 1px 0 rgba(0,0,0,.22); }
+
+.titlebar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 4px 3px 6px;
+  background: linear-gradient(#d9d9d9, #c6c6c6);
+  border-bottom: 1px solid var(--line);
+  cursor: move;
+  user-select: none;
+}
+.titlebar .swatch { width: 7px; height: 7px; flex: none; border: 1px solid rgba(0,0,0,.35); }
+.titlebar .title { font-weight: 600; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.titlebar .venue { font: 400 9.5px/1 var(--mono); color: var(--ink-faint); letter-spacing: .05em; }
+.winbtns { margin-left: auto; display: flex; gap: 2px; }
+.winbtn {
+  width: 16px; height: 15px; padding: 0;
+  border: 1px solid #8d8d8d; background: #dcdcdc;
+  font: 400 11px/13px var(--ui); color: #333; cursor: pointer;
+}
+.winbtn:hover { background: #eee; }
+
+.badgebar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 6px;
+  background: var(--frame-2);
+  border-bottom: 1px solid var(--line-soft);
+}
+.state {
+  font: 600 9.5px/1 var(--mono); letter-spacing: .1em;
+  padding: 3px 6px; border-radius: 2px; border: 1px solid transparent;
+  background: #e2e2e2; color: var(--ink-faint); border-color: #c6c6c6;
+}
+.state.s-IN      { background: var(--good-soft); color: #245c33; border-color: #9dc6a9; }
+.state.s-ARMED   { background: var(--bid-soft);  color: #0f4f80; border-color: #9cc9e8; }
+.state.s-WORKING { background: var(--bid-soft);  color: #0f4f80; border-color: #9cc9e8; }
+.state.s-WARMING { background: var(--warn-soft); color: #7d5606; border-color: #dcc389; }
+.state.s-BLOCKED { background: #e2e2e2; color: #5c6066; border-color: #bcbcbc; }
+.state.s-HALTED  { background: var(--ask-soft);  color: #7a2020; border-color: #d29a9a; }
+
+.algo { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+.algo .lb { font: 600 9.5px/1 var(--mono); letter-spacing: .1em; color: var(--ink-mute); }
+.sw {
+  width: 38px; height: 16px; padding: 0; position: relative;
+  border: 1px solid #8a8a8a; background: #dcdcdc; border-radius: 2px; cursor: pointer;
+}
+.sw i { position: absolute; top: 1px; left: 1px; width: 16px; height: 12px;
+        background: #f6f6f6; border: 1px solid #9a9a9a; border-radius: 1px; }
+.sw span { position: absolute; right: 4px; top: 2px;
+           font: 600 8px/12px var(--mono); color: #7a7a7a; letter-spacing: .06em; }
+.sw.on { background: var(--good); border-color: #2c6b3c; }
+.sw.on i { left: auto; right: 1px; }
+.sw.on span { right: auto; left: 5px; color: #fff; }
+
+.wbody { background: var(--panel); padding: 5px 6px 6px; display: flex; flex-direction: column; gap: 5px; }
+
+/* -- the two touches ------------------------------------------------------ */
+.touch { display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
+         background: var(--line-soft); border: 1px solid var(--line-soft); }
+.touch > div { background: #fff; padding: 3px 6px; }
+.touch .k { font: 600 8.5px/1 var(--mono); letter-spacing: .12em; color: var(--ink-faint); }
+.touch .v { font: 600 17px/1.15 var(--mono); font-variant-numeric: tabular-nums; }
+.touch .sz { font: 400 9.5px/1 var(--mono); color: var(--ink-faint); }
+.touch .bidc .v { color: var(--bid); }
+.touch .askc .v { color: var(--ask); }
+/* A stale quote is greyed everywhere, so a price that is not live cannot be
+ * read as one that is. */
+.win.stale .touch .v, .win.stale .midrow .v { color: #9a9a9a !important; }
+
+.midrow { display: flex; align-items: baseline; gap: 6px; padding: 2px 2px 0; }
+.midrow .k { font: 600 8.5px/1 var(--mono); letter-spacing: .12em; color: var(--ink-faint); }
+.midrow .v { font: 600 13px/1 var(--mono); font-variant-numeric: tabular-nums; margin-left: auto; }
+
+.kv { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+.kv .k { font: 600 8.5px/1.4 var(--mono); letter-spacing: .11em; color: var(--ink-faint); min-width: 38px; }
+.kv .v { font: 500 11.5px/1.4 var(--mono); font-variant-numeric: tabular-nums; margin-left: auto; }
+.kv .v.em { font-weight: 600; font-size: 12.5px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; }
+
+.sect { border-top: 1px solid var(--line-soft); padding-top: 4px; }
+
+/* The z strip: state at a glance, and the only non-numeric thing here. */
+.zstrip { position: relative; height: 15px; background: #fff;
+          border: 1px solid var(--line-soft); margin: 4px 0; }
+.zstrip .zone { position: absolute; top: 0; bottom: 0; background: #f3f3f3; }
+.zstrip .zone.left { left: 0; width: 20%; }
+.zstrip .zone.right { right: 0; width: 20%; }
+.zstrip .tick { position: absolute; top: 0; bottom: 0; width: 1px; background: #c9c9c9; }
+.zstrip .tick.mid { left: 50%; background: #8a8a8a; }
+.zstrip .tick.t-lo { left: 20%; background: var(--warn); }
+.zstrip .tick.t-hi { left: 80%; background: var(--warn); }
+.zstrip .mk { position: absolute; top: -1px; bottom: -1px; width: 3px; background: var(--ink); }
+.zstrip .mk.b { background: var(--bid); }
+.zstrip .mk.s { background: var(--ask); }
+.zstrip .lbl { position: absolute; top: 1px; font: 400 8px/1 var(--mono); color: var(--ink-faint); }
+.zstrip .lbl-lo { left: 3px; }
+.zstrip .lbl-hi { right: 3px; }
+.bands .k { color: var(--bid); }
+.bands .kv:last-child .k { color: var(--ask); }
+
+.bar { height: 5px; background: #dcdcdc; border: 1px solid var(--line-soft); position: relative; }
+.bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--warn); width: 0; }
+.bar.full i { background: var(--good); }
+
+.pill { font: 600 9px/1 var(--mono); letter-spacing: .08em; padding: 2px 5px; border-radius: 2px; }
+.p-pass  { background: var(--good-soft); color: #245c33; }
+.p-block { background: var(--ask-soft);  color: #7a2020; }
+.p-na    { background: #e6e6e6; color: var(--ink-faint); }
+
+.hint { font-size: 10.5px; color: var(--ink-mute); line-height: 1.4; }
+.hint b { color: #2c3036; }
+
+.posline { background: #fff; border: 1px solid var(--line-soft); padding: 3px 6px;
+           display: flex; align-items: baseline; gap: 8px; }
+.posline .side { font: 600 10px/1 var(--mono); letter-spacing: .1em; padding: 2px 5px; border-radius: 2px; }
+.posline .side.SELL { background: var(--ask-soft); color: #7a2020; }
+.posline .side.BUY  { background: var(--bid-soft); color: #0f4f80; }
+.posline .q { font: 600 12px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.posline .at { font: 400 10px/1 var(--mono); color: var(--ink-faint); }
+.posline .pnl { margin-left: auto; font: 600 13px/1 var(--mono); font-variant-numeric: tabular-nums; }
+.pnl.up { color: var(--good); }
+.pnl.dn { color: var(--ask); }
+.flatline { background: #fff; border: 1px solid var(--line-soft); padding: 3px 6px;
+            color: var(--ink-faint); font: 400 11px/1.4 var(--mono); }
+
+.wfoot { display: flex; align-items: center; gap: 6px; padding: 3px 6px;
+         background: var(--frame-2); border-top: 1px solid var(--line);
+         font: 400 9.5px/1.3 var(--mono); color: var(--ink-mute); }
+.wfoot .grow { margin-left: auto; text-align: right; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+.wfoot.bad { background: var(--ask-soft); color: #7a2020; }
+.wfoot.warnf { background: var(--warn-soft); color: #7d5606; }
+
+.btn {
+  font: 600 10px/1 var(--ui); letter-spacing: .06em; padding: 5px 8px;
+  border: 1px solid #8d8d8d; background: linear-gradient(#f2f2f2, #dedede);
+  color: var(--ink); cursor: pointer; border-radius: 2px;
+}
+.btn:hover:not(:disabled) { background: linear-gradient(#fff, #e8e8e8); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.danger { border-color: #8d3a3a; color: #7a2020; background: linear-gradient(#f6e2e2, #eccccc); }
+.btn.wide { width: 100%; }
+.btn:focus-visible, .winbtn:focus-visible, .sw:focus-visible, .tk:focus-visible {
+  outline: 2px solid var(--bid); outline-offset: 1px;
+}
+
+/* -- toasts --------------------------------------------------------------- */
+/* Bottom right, above the taskbar. Windows fill the desk from the top left,
+ * so this is the corner least likely to be sitting over a price — a
+ * notification that hides the market it is reporting on is a bad trade. */
+#toasts { position: fixed; right: 14px; bottom: 42px; width: 258px;
+          display: flex; flex-direction: column-reverse; gap: 6px; z-index: 40; }
+.toast { background: #fbfbfb; border: 1px solid var(--line); border-left-width: 4px;
+         padding: 6px 8px; box-shadow: 0 2px 6px rgba(0,0,0,.3); font-size: 11px; }
+.toast .hd { display: flex; gap: 6px; align-items: baseline; }
+.toast .kind { font: 600 9px/1 var(--mono); letter-spacing: .12em; }
+.toast .tm { margin-left: auto; font: 400 9px/1 var(--mono); color: var(--ink-faint); }
+.toast .msg { font: 500 11.5px/1.35 var(--mono); margin-top: 3px; word-break: break-word; }
+.toast .sub { font-size: 10px; color: var(--ink-mute); margin-top: 2px; }
+.toast .x { margin-left: 6px; color: var(--ink-faint); cursor: pointer; }
+.toast.FILL   { border-left-color: var(--good); } .toast.FILL .kind   { color: #245c33; }
+.toast.OPEN   { border-left-color: var(--bid);  } .toast.OPEN .kind   { color: #0f4f80; }
+.toast.CLOSED { border-left-color: var(--good); } .toast.CLOSED .kind { color: #245c33; }
+.toast.REJECT { border-left-color: var(--ask);  } .toast.REJECT .kind { color: #7a2020; }
+.toast.GUARD  { border-left-color: var(--warn); } .toast.GUARD .kind  { color: #7d5606; }
+
+/* -- taskbar -------------------------------------------------------------- */
+#taskbar { flex: 0 0 auto; display: flex; align-items: center; gap: 5px;
+           padding: 4px 6px; background: var(--frame); border-top: 1px solid var(--line);
+           flex-wrap: wrap; }
+#tabs { display: flex; gap: 5px; flex-wrap: wrap; }
+.tk { font: 500 10.5px/1 var(--ui); padding: 5px 8px; border: 1px solid #9a9a9a;
+      background: linear-gradient(#e8e8e8, #d6d6d6); border-radius: 2px; cursor: pointer; }
+.tk.act { background: linear-gradient(#fff, #ececec); border-color: #6f6f6f; font-weight: 600; }
+.tk:hover { background: linear-gradient(#f6f6f6, #e2e2e2); }
+.taskbar-right { margin-left: auto; display: flex; align-items: center; gap: 5px; }
+.link { font: 600 9.5px/1 var(--mono); letter-spacing: .06em; padding: 5px 7px; border-radius: 2px;
+        background: #e2e2e2; color: var(--ink-mute); }
+.link.ok   { background: var(--good-soft); color: #245c33; }
+.link.part { background: var(--warn-soft); color: #7d5606; }
+.link.bad  { background: var(--ask-soft);  color: #7a2020; }
+.stat { font: 400 9.5px/1 var(--mono); color: var(--ink-mute); padding: 0 4px; }
+.kill { font: 700 10px/1 var(--ui); letter-spacing: .1em; padding: 5px 10px;
+        border: 1px solid #7a1c1c; background: linear-gradient(#c04141, #a32828);
+        color: #fff; border-radius: 2px; cursor: pointer; }
+.menu { position: absolute; bottom: 34px; left: 6px; background: var(--panel);
+        border: 1px solid var(--line); box-shadow: 0 -2px 8px rgba(0,0,0,.3);
+        z-index: 50; min-width: 190px; }
+.menu button { display: block; width: 100%; text-align: left; padding: 5px 9px;
+               border: 0; background: transparent; font: 400 11px/1.3 var(--ui); cursor: pointer; }
+.menu button:hover { background: var(--bid-soft); }
+
+/* -- the one modal -------------------------------------------------------- */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.45);
+         display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal-box { background: var(--panel); border: 1px solid #6f6f6f; padding: 14px 16px;
+             min-width: 300px; max-width: 420px; box-shadow: 0 10px 26px rgba(0,0,0,.45); }
+.modal-box h2 { margin: 0 0 8px; font-size: 14px; }
+.modal-box p { margin: 0 0 14px; font-size: 12px; line-height: 1.5; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

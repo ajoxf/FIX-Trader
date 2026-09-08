@@ -37,6 +37,55 @@ test and the pre-credentials desk, and `FixGateway` is stubbed behind the same
 interface. See `docs/FIX_NOTES.md` for the message set and the open questions
 for Orient.
 
+## Running it — one file
+
+```
+python start.py
+```
+
+On a first run it writes `config.json` and `.env`, brings the **web UI up
+first** (the venues are entered on that screen, so it has to be reachable
+before there are any), starts the engine, opens the terminal in a window of
+its own, and restarts a crashed child with backoff. It ships with three
+example contracts against the simulator, so there is something on the screen
+before a venue exists — and the taskbar says **SIMULATED** in the place a
+**PROD** badge would go.
+
+```
+pytest tests/ -q
+```
+
+128 tests, everything faked: no venue, no network, no clock. The browser suite
+drives the real UI under Playwright and reads `pageerror`, because a
+temporal-dead-zone `ReferenceError` that aborts a script block and silently
+unregisters a handler is invisible to a Python test — and is exactly what
+happened in the system this is ported from. They skip cleanly where no browser
+is installed.
+
+## What is built
+
+| Module | What it does |
+|---|---|
+| `fixtrader/config.py` | Venues, contracts, settings; atomic saves; `.env` keys; blank-versus-zero |
+| `fixtrader/sizing.py` | `money = points × tick_value / tick_size × qty` — the one conversion |
+| `fixtrader/costs.py` | The round trip, break-even, and the target as a percentage of margin |
+| `fixtrader/stats.py` | Rolling mean, sigma and z; Hurst; half-life; and the SD touches |
+| `fixtrader/signals.py` | The algo: entry with its filters, exit with none |
+| `fixtrader/gateway.py` | The venue seam — **the only module that may import FIX** |
+| `fixtrader/fake_gateway.py` | A real book, a real fill model, a real reject |
+| `fixtrader/marketdata.py` | The staleness and jump guards, and the session clock |
+| `fixtrader/executor.py` | One order path for entries and exits, market or limit |
+| `fixtrader/engine.py` | The loop, the book, recovery, and one snapshot per pass |
+| `fixtrader/database.py` | SQLite (WAL): positions, orders, fills, touches, events |
+| `fixtrader/webapp.py` | The Flask process: it renders and it asks; it never trades |
+| `fixtrader/static/`, `templates/` | The terminal — self-hosted, no CDN, no framework |
+
+Still to come, in this order: the **Settings** page, the **Exchanges** page,
+and the **Analysis** window. All three are drawn in `docs/screens.html`.
+
 ## Status
 
-Specification only. Nothing is built yet.
+The main terminal runs end to end against the simulator: contracts warm,
+arm, enter, manage their positions and close on their targets, with the
+notifications, the guards and restart recovery working. FIX is provisioned and
+not wired — see `docs/FIX_NOTES.md`.
