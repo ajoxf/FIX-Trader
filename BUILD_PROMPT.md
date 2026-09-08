@@ -44,7 +44,7 @@ now so that dropping the real session in later touches exactly one module.
 
 ## 0.1 The screens, and what the operator has already settled
 
-**[`docs/screens.html`](docs/screens.html) is the design reference.** All five
+**[`docs/screens.html`](docs/screens.html) is the design reference.** All six
 screens are drawn there at desk scale, in the terminal's real visual language,
 with every window state the system can be in. Open it before writing any
 markup: where this document and that file disagree about layout, the file wins.
@@ -203,6 +203,7 @@ still outstanding; and today's realised beside it.
 - **Positions** — one row per contract plus a total: position, average price,
   open P&L, realised today, and the account's margin where the venue reports it.
 - **Events** — the log the banners are drawn from, filterable by contract.
+- **Analysis** — §2.6. Its own window, one contract at a time.
 
 ### 2.4 Notifications
 
@@ -240,6 +241,91 @@ operator misses.
   failed.
 - **No native `alert()` / `confirm()` / `prompt()`, ever.** One shared modal.
   Write a test that fails the build if they come back.
+
+### 2.6 Analysis — the feedback loop, per contract
+
+Ported from the Stat-Arb system's **Analysis** tab, and scoped where that one
+was not: **one contract at a time**. A single blended win rate across eight
+contracts tells you nothing about which one to turn off, which is the only
+question this window exists to answer. It opens from the window's own menu or
+the taskbar **+**, floats like everything else, and has two sub-tabs — the
+named contract, and **All contracts**.
+
+Filters across the top, applying to everything below: **period** (since
+inception / 30d / 7d / today) and **live, simulated, or both** — simulated
+fills from `FakeGateway` must never be blended into a live P&L figure without
+being asked for.
+
+**Closed trades only.** An open position is named in the footer and excluded
+from every statistic; a system that counts an open winner is a system that
+flatters itself.
+
+**1. The tiles.** Trades (won / lost), win rate, net P&L after costs, average
+per trade with the average win and average loss beside it, expectancy, **return
+on margin** (the same base the profit target uses, §6.4), cost drag as a
+percentage of gross, average hold with the half-life beside it, and the worst
+losing run.
+
+**2. The standard-deviation touch study.** The original recorded touches and
+counted them. That is not enough to act on, so this one records what happened
+*after* each touch, per level (±1, ±2, ±3):
+
+| Column | Meaning |
+|---|---|
+| Touches | crossings, **counted once per crossing**, not once per tick |
+| Reverted | share that reached the rolling mean within **2× the half-life** |
+| Median | median time from the touch to the mean |
+| Adverse | median further adverse move before it turned, in σ |
+| Traded | how many became an entry (the rest were blocked, or the algo was off) |
+
+That table is what says whether ±2.00 is the right threshold **for this
+contract** — a level that reverts 86% of the time in 24 minutes is a different
+instrument from one that reverts 57% of the time in 44 minutes having gone 1.2σ
+further against you first.
+
+**A touch still open at the end of the window is `unresolved`, not a failure.**
+Count it separately, exclude it from the percentage, and say how many there
+were. Rolling an unfinished touch into the denominator as a miss understates
+every level, and understates the widest levels most, because those are the ones
+still running.
+
+**3. How they ended.** Count and net money by exit reason: profit target,
+stop-loss, session flat, time stop, CLOSE NOW, KILL ALL.
+
+**4. Costs — budget against measurement.** Commission, exchange and clearing
+fees as charged, and **the slippage budget beside the slippage actually
+measured**, per side and per round trip, in money and in ticks. This closes the
+loop that the settings page opens: the edge filter (§6.3) refuses entries using
+the *budget*, so a budget that is too generous silently refuses trades that
+would have paid. Where the two differ, say so in words and offer the measured
+figure as a one-click correction — **never apply it silently**.
+
+**5. The trade journal**, this contract only: entry and exit time, side,
+quantity, **z at entry and at exit**, price in and out, gross, costs, net,
+return on margin, hold time, exit reason. Every column is **what was recorded at
+the time**, never recomputed now — the z at entry is the z the decision was
+actually made on, and a later change to the lookback must not rewrite history.
+Empty cells where nothing was measured, never zeros. CSV export.
+
+**6. All contracts.** One row per contract — trades, win rate, net, average,
+return on margin, cost drag, average hold, the level that reverts best — plus a
+labelled total row. **A contract with fewer than ten closed trades is marked
+`too few to judge` and given no verdict.** Six losing trades is not evidence,
+and a page that says so is worth more than one that ranks noise.
+
+**What this requires of the rest of the build**, and it is the reason this
+section sits in phase 1 rather than being bolted on later:
+
+- `stats.py` must **emit a touch event on every crossing** of ±1/±2/±3 and
+  record the state at that instant (level, direction, mid, z, mean, σ,
+  half-life, whether the algo was armed). Resolution — reverted, unresolved, or
+  timed out — is written later against the same row.
+- Every trade row must carry **entry z, exit z, entry mean and σ, margin locked,
+  fees actually charged and slippage actually measured**. None of these can be
+  reconstructed after the fact, so they are written when the fill arrives or
+  they do not exist.
+- The **exit reason is a stored field on the position**, set by whatever closed
+  it, not inferred from prices afterwards.
 
 ---
 
@@ -654,6 +740,12 @@ SQLite, WAL, 30 s busy timeout:
 - `positions` — crash-safe, with open/close prices and net P&L
 - `stats_samples` — enough of the rolling series to warm up again after a
   restart without waiting for a fresh window
+- `sd_touches` — one row per crossing of ±1/±2/±3 (§2.6): contract, time, level,
+  direction, mid, z, mean, σ, half-life, and whether the algo was armed at the
+  time. A second write resolves it — `REVERTED` with the time and the peak
+  adverse excursion, `TIMED_OUT`, or left `UNRESOLVED` — and the row records
+  which. **Never delete an unresolved touch to tidy the table**; it is the
+  honest denominator
 - `events` — the audit trail behind the banners and the events window
 
 CSV export for fills, orders and positions, with **empty cells rather than
@@ -725,6 +817,14 @@ invents a tag is a bug with a long fuse.
 | GET | `/api/venues/<name>/connect` , `/test` , `/diagnose` | the three buttons |
 | GET | `/api/orders` , `/api/fills` , `/api/positions` (+`.csv`) | the blotter |
 | GET | `/api/events` | since a cursor |
+| GET | `/api/analysis/<key>` | one contract: tiles, touch study, exit reasons, costs |
+| GET | `/api/analysis` | the All-contracts roll-up |
+| GET | `/api/analysis/<key>/trades` (+`.csv`) | that contract's trade journal |
+| GET | `/api/analysis/<key>/touches` (+`.csv`) | the raw touch rows behind the study |
+
+Every analysis route takes `period`, `mode` (`live` / `sim` / `both`) and
+honours them identically; a route that silently blends simulated fills into a
+live figure is a bug, not a convenience.
 
 Commands: `algo_on` / `algo_off` / `close_now` / `cancel_all` / `kill_all` /
 `master_algo`. Every command is idempotent by id and **primed at startup** so a
@@ -794,6 +894,13 @@ Put these in `CLAUDE.md` as the first thing the next session reads:
   closing nothing; UNCLAIMED never auto-closed
 - **guards** — stale, jump, session, limits; each with a control; and the rule
   that none of them blocks a close
+- **analysis** — a touch counted once per crossing and not once per tick; an
+  unresolved touch excluded from the reverted percentage rather than counted as
+  a miss, **with a control** that resolves it and asserts the percentage moves;
+  an open position excluded from every statistic; simulated fills excluded from
+  a `live` request and present in a `both` one; a contract under ten closed
+  trades getting no verdict; the costs panel reporting budget and measurement
+  separately and never overwriting the budget on its own
 - **config** — atomic save under a concurrent read; blank vs `0`; secrets never
   round-tripping through an API response
 - **webapp** — every route; the snapshot shape; `None` rendering as `—`
@@ -814,6 +921,10 @@ this order is building toward.
 4. `book.py`, `database.py`, `engine.py`, `commands.py` — the loop and the snapshot
 5. `webapp.py` + the **main page**: windows, the fields of §2.2, the 0.5 s
    refresh, toasts and sound, the taskbar
+5a. `analysis.py` + the **Analysis window** (§2.6). It is phase 1 because what
+   it reads — touch rows, entry and exit z, margin locked, measured slippage,
+   the stored exit reason — can only be written as it happens. Build the
+   recording with the engine, or the window has nothing to show for weeks
 6. The **Exchanges page**: venues with FIX session fields, UAT/PROD, the three
    buttons, contracts with **Read from venue**
 7. The **Settings page**: desk-wide, and the per-contract ⚙
@@ -832,7 +943,8 @@ replay over recorded snapshots.
 No ladders. No depth grid. No charts of any kind. No manual order entry, no
 click-to-trade, no keyboard order keys. No two-leg execution, no hedge ratio,
 no synthetic spread built from outrights. No portfolio optimiser, no pair
-scanner, no auto-tuning of parameters. No cloud, no login, no multi-user — one
+scanner, and **no auto-tuning**: the Analysis window proposes a corrected
+number and a person presses the button. Nothing applies its own findings. No cloud, no login, no multi-user — one
 trader, one desktop, one screen.
 
 ---
@@ -856,5 +968,9 @@ driving:
 6. A UAT venue and a PROD venue coexist with separate credentials, the screen
    says which is which at all times, and no secret appears in any API response,
    log line or config file.
-7. `pytest tests/ -q` passes, including the Playwright suite where a browser is
+7. The Analysis window opens per contract, and after a session against
+   `FakeGateway` it shows real touch counts with their resolutions, a trade
+   journal carrying the z each decision was made on, and a slippage measurement
+   beside the budget.
+8. `pytest tests/ -q` passes, including the Playwright suite where a browser is
    installed, and every guard test has its control.

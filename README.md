@@ -12,6 +12,12 @@ No ladders, no charts, no manual order entry: discretionary trading is done in
 TT's own front end. This screen runs the algo and shows why it is or is not
 trading.
 
+Beside the live windows there is an **Analysis** window, one contract at a
+time: what the standard-deviation touches at each level actually did next, how
+the trades ended, and what the costs really were against what was budgeted for
+them. That is the loop that tells you whether a contract's entry threshold is
+right, or whether it should be switched off.
+
 ## Why it is simpler than a two-leg spread system
 
 Orient lists the spread itself as a single tradeable contract. There is no leg
