@@ -17,6 +17,8 @@ Order of a pass, and it matters:
 """
 
 import logging
+import os
+import socket
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -278,7 +280,13 @@ class Engine:
                     self.db.save_touch(touch)
             if self.db is not None and self.config.settings.get(
                     'PERSIST_STATS_SAMPLES', True):
-                self.db.save_samples(contract.key, [(now, book.mid)])
+                # The BOOK, not just its mid. An exit reads the executable
+                # side, so a replay given only mids has to assume a spread —
+                # and that assumption cannot be corrected afterwards. This is
+                # the one thing here that gets harder the longer it waits.
+                self.db.save_samples(contract.key, [(
+                    now, book.mid, book.bid, book.ask,
+                    book.bid_size, book.ask_size)])
 
         said = self.executor.manage(contract, settings, book, now)
         for line in said:
@@ -787,6 +795,11 @@ class Engine:
                 'alive': True,
                 'loop_ms': round(self.loop_ms, 1),
                 'master_algo': self.master_algo,
+                #: Who is publishing this. A restart after a crash has to be
+                #: able to tell a LIVE engine from the last file a dead one
+                #: left behind — see `runner.another_engine_is_running`.
+                'pid': os.getpid(),
+                'host': socket.gethostname(),
                 'killed': self.killed,
                 'environment': self.config.environment_label,
                 #: Which account the algo is trading. On a desk that gives it

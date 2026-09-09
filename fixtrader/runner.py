@@ -10,6 +10,7 @@ import argparse
 import logging
 import os
 import signal
+import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -80,7 +81,63 @@ def another_engine_is_running(status_path: str,
                - _dt.fromisoformat(raw['ts'])).total_seconds()
     except Exception:                                    # noqa: BLE001
         return None
-    return age if 0 <= age <= within else None
+    if not (0 <= age <= within):
+        return None
+
+    # The heartbeat says the file is FRESH. It does not say the process that
+    # wrote it is alive — and an engine that has just crashed leaves a file
+    # seconds old. Refusing then costs the launcher its restarts on a guard
+    # rather than on the fault, which is what happened to a desk whose
+    # database needed migrating: three strikes, two of them spent here.
+    engine = raw.get('engine') or {}
+    pid, host = engine.get('pid'), engine.get('host')
+    if pid and host == socket.gethostname() and not _process_is_alive(pid):
+        return None                     # a dead engine's last words
+    return age
+
+
+def _process_is_alive(pid: int) -> bool:
+    """Whether a process id is still running on THIS machine.
+
+    Returns True when it cannot tell. Being wrong towards "alive" refuses a
+    start; being wrong the other way runs two engines against one book, and
+    only one of those is recoverable.
+
+    NOT `os.kill(pid, 0)`. That is the usual answer and it is correct on
+    POSIX, but on Windows CPython maps any signal other than CTRL_C_EVENT /
+    CTRL_BREAK_EVENT onto TerminateProcess — so the "harmless liveness
+    probe" kills the very engine it was asking about.
+    """
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+    if os.name == 'nt':
+        try:
+            import ctypes
+            SYNCHRONIZE = 0x00100000
+            WAIT_TIMEOUT = 0x00000102
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            if not handle:
+                return False            # gone, or not ours to look at
+            try:
+                return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:                                # noqa: BLE001
+            return True                 # cannot tell — assume it is alive
+    try:
+        os.kill(pid, 0)                 # POSIX: signal 0 really is a probe
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True                     # somebody else's process, so alive
+    except OSError:
+        return True
+    return True
 
 
 def run(config_path: str = "config.json", status_path: str = "status.json",

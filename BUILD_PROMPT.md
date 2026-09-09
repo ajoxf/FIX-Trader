@@ -371,9 +371,14 @@ replay says on the same commit.
 **What it is honest about, on the page, under every table:**
 
 - **It is a SIGNAL replay, not a fill simulator.** The card says so.
-- **The book was not recorded** — only the mid. The spread is an ASSUMPTION,
-  one tick by default, and it is not cosmetic: an exit reads the executable
-  side, so a replay run on the mid would flatter every exit by half a spread.
+- **The book is recorded from the pass it was seen on** — `bid`, `ask` and
+  both sizes, beside the mid. Rows written before that carry only a mid and
+  fall back to a stated ASSUMPTION, one tick by default. Not cosmetic: an
+  exit reads the executable side, so a replay run on a mid flatters every
+  exit by half a spread. The card reports how many samples carried a real
+  book and how many needed the guess, and a desk that upgraded mid-recording
+  sees both numbers rather than a figure that is two thirds measured and
+  reads as measured.
 - **Costs are BUDGETED.** `slippage_measured` is None and stays None. The
   measured figure lives in §2.6 beside the budget, and a backtest reporting a
   cost it never paid is how a budget stops being corrected from data.

@@ -990,10 +990,15 @@ function renderReplay(el, report, live) {
   }
 
   const a = report.assumptions || {};
+  // Whether the exits came off a real book or a guess is the difference
+  // between a measurement and an estimate, so it leads.
+  const measured = a.book_assumed === 0 && a.book_recorded;
   note.innerHTML = 'This is a <b>signal</b> replay, not a fill simulator. ' +
-    'The book was ' + (a.book || 'assumed') + '; ' + (a.fills || '') + '; ' +
-    (a.costs || '') + '. Read against ' + (report.samples || 0) +
-    ' recorded prices.';
+    '<b>The book:</b> ' + (a.book || 'assumed') +
+    (measured ? '' : ' — an exit reads the executable side, so where the ' +
+      'book was not recorded the exit price is an assumption') + '. ' +
+    (a.fills || '') + '; ' + (a.costs || '') + '. Read against ' +
+    (report.samples || 0) + ' recorded prices.';
 }
 
 function cls(v) {

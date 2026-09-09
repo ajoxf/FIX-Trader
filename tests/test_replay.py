@@ -81,7 +81,9 @@ def test_every_result_carries_the_assumptions_it_ran_under():
     out = replay_mod.replay(a_wave(), settings(), 0.01, 1.0)
     a = out['assumptions']
     assert a['assumed_spread_ticks'] == replay_mod.DEFAULT_ASSUMED_SPREAD_TICKS
-    assert 'not recorded' in a['book']
+    # These samples are mids only, so the spread is a guess and says so
+    assert 'carries a book' in a['book'] and 'guess' in a['book']
+    assert a['book_recorded'] == 0 and a['book_assumed'] == 600
     assert 'queue' in a['fills']
     assert 'BUDGET' in a['costs']
 
@@ -197,3 +199,180 @@ def test_a_cooldown_is_never_the_headline_reason_for_no_trades():
     assert out['summary']['trades'] == 0
     assert 'cooling down' not in (out['blocked_by'] or '')
     assert 'edge' in out['blocked_by']
+
+
+# -- the recorded book ------------------------------------------------------
+
+def a_recorded_wave(n=600, half_spread=0.005, **kw):
+    """A series carrying the book it came from, as the engine records now."""
+    from fixtrader.database import RecordedSample
+    return [RecordedSample(ts, px, round(px - half_spread, 6),
+                           round(px + half_spread, 6))
+            for ts, px in a_wave(n=n, **kw)]
+
+
+def test_a_recorded_book_is_used_and_nothing_is_assumed():
+    out = replay_mod.replay(a_recorded_wave(),
+                            settings(exit_signal_mode='zscore'), 0.01, 1.0)
+    assert out['book'] == {'recorded': 600, 'assumed': 0}
+    assert 'nothing about the spread was assumed' in out['assumptions']['book']
+
+
+def test_a_recording_of_mids_alone_still_replays_and_says_it_guessed():
+    """Every row written before the book was recorded is a mid. Those still
+    replay — they just cannot claim to know the spread."""
+    out = replay_mod.replay(a_wave(), settings(exit_signal_mode='zscore'),
+                            0.01, 1.0)
+    assert out['book'] == {'recorded': 0, 'assumed': 600}
+    assert 'guess' in out['assumptions']['book']
+
+
+def test_a_recording_that_changed_mid_way_reports_BOTH_counts():
+    """A desk that upgrades has a database with both kinds in it, and a
+    figure two thirds measured is not a measured figure."""
+    rows = a_recorded_wave(n=400) + a_wave(n=200)[:200]
+    out = replay_mod.replay(rows, settings(exit_signal_mode='zscore'),
+                            0.01, 1.0)
+    assert out['book']['recorded'] == 400 and out['book']['assumed'] == 200
+    said = out['assumptions']['book']
+    assert '400' in said and '200' in said
+
+
+def test_a_recorded_book_beats_the_assumption_on_the_exits_it_prices():
+    """The point of recording it. A real wide book and an assumed tight one
+    price the same exits differently, and the recorded answer is the one
+    that happened."""
+    tight_assumption = replay_mod.replay(
+        a_wave(), settings(exit_signal_mode='zscore'), 0.01, 1.0,
+        assumed_spread_ticks=1.0)
+    really_wide = replay_mod.replay(
+        a_recorded_wave(half_spread=0.04),
+        settings(exit_signal_mode='zscore'), 0.01, 1.0,
+        assumed_spread_ticks=1.0)
+    assert tight_assumption['summary']['net'] is not None
+    assert really_wide['summary']['net'] is not None
+    # the recording knows the book was wide; the assumption never would have
+    assert really_wide['summary']['net'] < tight_assumption['summary']['net']
+
+
+def test_a_crossed_or_half_recorded_book_falls_back_rather_than_trusting_it():
+    """A bid above its ask is bad data, not an arbitrage, and one side alone
+    is not a book. Either way the assumption is used and COUNTED as one."""
+    from fixtrader.database import RecordedSample
+    rows = [RecordedSample(ts, px, px + 0.02, px - 0.02)      # crossed
+            for ts, px in a_wave(n=300)]
+    rows += [RecordedSample(ts, px, px - 0.005, None)         # half a book
+             for ts, px in a_wave(n=300)]
+    out = replay_mod.replay(rows, settings(exit_signal_mode='zscore'),
+                            0.01, 1.0)
+    assert out['book'] == {'recorded': 0, 'assumed': 600}
+
+
+# -- a database written before the book was recorded ------------------------
+
+def test_an_older_database_gains_the_columns_and_keeps_its_rows(tmp_path):
+    """Databases are already running on the desk. `CREATE TABLE IF NOT
+    EXISTS` does nothing to a table that exists, so the columns are added by
+    migration — additively, because a migration that rewrote history would
+    rewrite the recordings the replay reads."""
+    import sqlite3
+    from datetime import datetime, timezone
+    from fixtrader.database import Database
+
+    path = str(tmp_path / 'old.db')
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE samples (contract_key TEXT NOT NULL, "
+                "ts TEXT NOT NULL, price REAL NOT NULL)")
+    when = datetime(2026, 9, 1, tzinfo=timezone.utc).isoformat()
+    old.execute("INSERT INTO samples VALUES (?,?,?)", ('fef', when, 0.61))
+    old.commit(); old.close()
+
+    db = Database(path)                       # opening it migrates it
+    rows = db.samples_between('fef')
+    assert len(rows) == 1
+    assert rows[0].price == 0.61
+    assert rows[0].has_book is False          # not recorded, not zero-width
+
+    # and it records a book from here on, in the same table
+    db.save_samples('fef', [(datetime.now(timezone.utc), 0.62, 0.615, 0.625,
+                             25.0, 30.0)])
+    rows = db.samples_between('fef')
+    assert [r.has_book for r in rows] == [False, True]
+
+
+def test_migrating_twice_is_harmless(tmp_path):
+    from datetime import datetime, timezone
+    from fixtrader.database import Database
+    path = str(tmp_path / 'twice.db')
+    db = Database(path)
+    db.save_samples('fef', [(datetime.now(timezone.utc), 0.5, 0.49, 0.51,
+                             1.0, 1.0)])
+    again = Database(path)                    # a second process, or a restart
+    assert again.samples_between('fef')[0].bid == 0.49
+
+
+def test_the_crash_that_took_the_engine_down_mid_fill(tmp_path):
+    """Reported from a desk: `table positions has no column named
+    opened_qty`, in a restart loop, with a position open.
+
+    `CREATE TABLE IF NOT EXISTS` does nothing to a table that exists, so
+    every column added after that desk first ran was missing from its
+    database — and the first write that named one killed the engine while
+    it was applying a FILL.
+    """
+    import sqlite3
+    from datetime import datetime, timezone
+    from fixtrader.database import Database
+    from fixtrader.models import Position, Side
+
+    path = str(tmp_path / 'old.db')
+    old = sqlite3.connect(path)
+    # positions as it was BEFORE opened_qty, entry_std, tickets and the rest
+    old.execute("""CREATE TABLE positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, contract_key TEXT NOT NULL,
+        side TEXT NOT NULL, qty REAL NOT NULL, avg_price REAL NOT NULL,
+        opened_at TEXT, closed_at TEXT)""")
+    old.execute("INSERT INTO positions (contract_key, side, qty, avg_price)"
+                " VALUES ('fef', 'BUY', 5, 0.48)")
+    old.commit(); old.close()
+
+    db = Database(path)                        # opening it migrates it
+    saved = db.save_position(Position(
+        contract_key='fef', side=Side.BUY, qty=5.0, opened_qty=5.0,
+        avg_price=0.48, opened_at=datetime.now(timezone.utc),
+        entry_z=-2.14, entry_std=0.08, tickets=['E1', 'E2']))
+    assert saved is not None
+
+    # the row that was already there is untouched — additive, never a rewrite
+    with sqlite3.connect(path) as check:
+        rows = check.execute("SELECT contract_key, qty, avg_price FROM"
+                             " positions ORDER BY id").fetchall()
+    assert rows[0] == ('fef', 5.0, 0.48)
+
+
+def test_the_migration_reads_the_schema_rather_than_a_list(tmp_path):
+    """A hand-kept list of additions is what drifted in the first place. A
+    column is migrated by having been DECLARED, with nothing else to
+    remember — so a table stripped to one column comes back whole."""
+    import sqlite3
+    from fixtrader.database import Database, _declared_tables, SCHEMA
+
+    path = str(tmp_path / 'bare.db')
+    bare = sqlite3.connect(path)
+    bare.execute("CREATE TABLE sd_touches (contract_key TEXT NOT NULL)")
+    bare.commit(); bare.close()
+
+    Database(path)
+    with sqlite3.connect(path) as check:
+        have = {r[1] for r in check.execute("PRAGMA table_info(sd_touches)")}
+    declared = {name for name, _ in _declared_tables(SCHEMA)['sd_touches']}
+    assert declared <= have
+
+
+def test_a_composite_primary_key_is_not_read_as_a_column(tmp_path):
+    """`PRIMARY KEY (venue, exec_id)` split naively yields a column called
+    `exec_id)`, and the migration then fails on every startup."""
+    from fixtrader.database import _declared_tables, SCHEMA
+    names = [name for name, _ in _declared_tables(SCHEMA)['fills']]
+    assert 'exec_id' in names
+    assert not any(')' in n or n.upper() == 'PRIMARY' for n in names)

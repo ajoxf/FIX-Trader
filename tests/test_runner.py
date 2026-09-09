@@ -261,3 +261,67 @@ def test_a_command_publishes_the_snapshot_at_once(tmp_path):
     # well inside one 5s screen refresh, and one 2s engine pass, measured
     # from the send rather than from the start of the process
     assert time.monotonic() - sent['at'] < 2.0
+
+
+# -- a restart after a crash ------------------------------------------------
+
+def test_a_crashed_engines_last_snapshot_does_not_block_the_restart(tmp_path):
+    """Reported from a desk: the engine died on a database fault, and the
+    launcher's restarts were then refused by the one-engine guard because
+    the dead engine's snapshot was two seconds old. Two of its three strikes
+    went on the guard rather than on the fault."""
+    import os
+    import socket
+    from datetime import datetime, timezone
+    from fixtrader import atomicfile, runner as r
+
+    status = str(tmp_path / 'status.json')
+    dead = {'ts': datetime.now(timezone.utc).isoformat(),
+            'engine': {'pid': 999999999, 'host': socket.gethostname()}}
+    atomicfile.write_json(status, dead)
+    assert r.another_engine_is_running(status) is None
+
+    # the control: a snapshot from a process that IS alive still refuses
+    alive = {'ts': datetime.now(timezone.utc).isoformat(),
+             'engine': {'pid': os.getpid(), 'host': socket.gethostname()}}
+    atomicfile.write_json(status, alive)
+    assert r.another_engine_is_running(status) is not None
+
+
+def test_a_snapshot_from_another_machine_is_still_treated_as_alive(tmp_path):
+    """A status file on a shared drive names a pid that means nothing here.
+    Being wrong towards 'alive' refuses a start; being wrong the other way
+    runs two engines against one book."""
+    import socket
+    from datetime import datetime, timezone
+    from fixtrader import atomicfile, runner as r
+    status = str(tmp_path / 'status.json')
+    atomicfile.write_json(status, {
+        'ts': datetime.now(timezone.utc).isoformat(),
+        'engine': {'pid': 999999999,
+                   'host': socket.gethostname() + '-somewhere-else'}})
+    assert r.another_engine_is_running(status) is not None
+
+
+def test_a_snapshot_with_no_pid_falls_back_to_the_heartbeat(tmp_path):
+    """Written by a build before the pid was stamped. The old rule still
+    holds, and it is the safe one."""
+    from datetime import datetime, timezone
+    from fixtrader import atomicfile, runner as r
+    status = str(tmp_path / 'status.json')
+    atomicfile.write_json(status, {
+        'ts': datetime.now(timezone.utc).isoformat(), 'engine': {}})
+    assert r.another_engine_is_running(status) is not None
+
+
+def test_the_liveness_probe_never_signals_the_process(monkeypatch):
+    """On Windows, CPython maps `os.kill` with any signal other than
+    CTRL_C_EVENT / CTRL_BREAK_EVENT onto TerminateProcess — so the usual
+    'harmless' probe kills the engine it was asking about."""
+    import os
+    from fixtrader import runner as r
+    monkeypatch.setattr(os, 'name', 'nt')
+    called = []
+    monkeypatch.setattr(os, 'kill', lambda *a: called.append(a))
+    r._process_is_alive(os.getpid())
+    assert called == []

@@ -108,6 +108,39 @@ the drawing wins.
   cover the round trip. Any "best level" must clear its costs, or the Analysis
   window invites lowering the threshold onto something that reverts
   beautifully and loses money every time.
+- **The schema MIGRATES itself, from the schema.** `CREATE TABLE IF NOT
+  EXISTS` does nothing to a table that already exists, so every column added
+  after a desk first ran is missing from that desk's database — and the first
+  write naming it kills the engine mid-fill (`table positions has no column
+  named opened_qty`, on a live desk, in a restart loop). `Database._migrate`
+  reads the DECLARED schema, reads what the database has, and adds the
+  difference: a column is migrated by having been declared, with no second
+  list to keep in step. Additive only — nothing dropped, renamed or
+  rewritten, because that would rewrite the recordings the replay reads and
+  the positions the book is recovered from. Tables are created, THEN
+  migrated, THEN indexed: an index naming a column the migration is about to
+  add cannot be created before it.
+- **`another_engine_is_running` checks the WRITER, not just the heartbeat.**
+  A crashed engine leaves a snapshot seconds old, so an age check alone
+  refuses the restart and the launcher spends its strikes on the guard rather
+  than on the fault. The snapshot carries the writer's pid and host; a dead
+  pid on this machine means a stale file. Anything it cannot tell — no pid,
+  another host, no way to ask — counts as ALIVE, because being wrong that way
+  refuses a start and being wrong the other way runs two engines against one
+  book. **Never probe with `os.kill(pid, 0)`**: on Windows CPython maps every
+  signal but CTRL_C/CTRL_BREAK onto TerminateProcess, so the harmless probe
+  kills the engine it asked about.
+- **The engine records the BOOK, not just its mid.** An exit reads the
+  executable side, so a replay given only mids has to assume a spread — and
+  that assumption cannot be corrected afterwards, which makes this the one
+  thing in the system that got harder the longer it waited. `samples` carries
+  `bid`/`ask`/`bid_size`/`ask_size`, added by an ADDITIVE migration because
+  databases are already running; `None` there means NOT RECORDED, never a
+  book of zero width. The replay counts what it read against what it had to
+  assume and prints both, because a report whose exits came off a real book
+  and one whose exits came off a guess must not look alike. A crossed book or
+  one side alone is bad data, not a book: it falls back to the assumption and
+  is counted as one.
 - **The replay is a SIGNAL replay and says so on its own face.** It calls
   `stats` and `signals` — never a second implementation of a rule — over
   recorded mids. The book either side of the mid was never stored, so the

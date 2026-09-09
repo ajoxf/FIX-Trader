@@ -52,17 +52,36 @@ MIN_TRADES_FOR_A_VERDICT = 10
 
 def assumptions(settings: Dict[str, Any], tick_size: float,
                 tick_value: float,
-                assumed_spread_ticks: float = DEFAULT_ASSUMED_SPREAD_TICKS
-                ) -> Dict[str, Any]:
+                assumed_spread_ticks: float = DEFAULT_ASSUMED_SPREAD_TICKS,
+                recorded: Optional[int] = None,
+                assumed: Optional[int] = None) -> Dict[str, Any]:
     """What the replay had to assume, in words, for the page it prints on.
 
     Attached to every result. A figure whose assumptions are not beside it is
     a figure somebody will quote without them.
     """
     qty = float(settings.get('quantity', 1.0) or 1.0)
+    # What the book actually was, where the recording knows. The engine
+    # records bid and ask now; rows written before it did carry only a mid,
+    # and those — and only those — get the assumption.
+    if recorded is None and assumed is None:
+        book = (f'assumed {assumed_spread_ticks:g} tick wide around the '
+                f'recorded mid where the book was not recorded')
+    elif not assumed:
+        book = ('the REAL book, as recorded, on every sample — nothing about '
+                'the spread was assumed')
+    elif not recorded:
+        book = (f'assumed {assumed_spread_ticks:g} tick wide around the '
+                f'recorded mid: none of these {assumed:,} samples carries a '
+                f'book, so every exit here is priced off a guess')
+    else:
+        book = (f'the real recorded book on {recorded:,} of '
+                f'{recorded + assumed:,} samples; the other {assumed:,} '
+                f'carry only a mid and assume {assumed_spread_ticks:g} tick')
     return {
-        'book': (f'assumed {assumed_spread_ticks:g} tick wide around the '
-                 f'recorded mid — the book itself was not recorded'),
+        'book': book,
+        'book_recorded': recorded,
+        'book_assumed': assumed,
         'fills': ('every order is treated as filled at the price its signal '
                   'fired on; there is no queue here, which flatters a limit '
                   'entry'),
@@ -129,6 +148,11 @@ def replay(samples: Sequence[Tuple[datetime, float]],
                          entry_threshold=float(
                              settings.get('entry_threshold', 2.0) or 2.0))
     position: Optional[Position] = None
+    #: How many samples came with a real book, and how many needed the
+    #: assumption. The difference is the difference between a measurement and
+    #: a guess, so it is reported rather than averaged away.
+    recorded = 0
+    assumed = 0
     #: Why entries were withheld while the window was warm, counted. A
     #: cooldown between trades is not the same finding as a filter that
     #: withheld every entry there was.
@@ -143,8 +167,19 @@ def replay(samples: Sequence[Tuple[datetime, float]],
         float(settings.get('clearing_fee_per_contract', 0.0) or 0.0),
         float(settings.get('slippage_budget_ticks', 0.0) or 0.0))
 
-    for ts, mid in samples:
-        book = _book(float(mid), tick_size, assumed_spread_ticks, ts)
+    for row in samples:
+        ts, mid = row[0], row[1]
+        # The RECORDED book where the recording carries one; the assumption
+        # only where it does not. Counted either way, because a report whose
+        # exits came off a real book and one whose exits came off a guess are
+        # not the same report and must not look alike.
+        bid, ask = getattr(row, 'bid', None), getattr(row, 'ask', None)
+        if bid is not None and ask is not None and ask >= bid:
+            book = BookTop(bid=bid, ask=ask, ts=ts)
+            recorded += 1
+        else:
+            book = _book(float(mid), tick_size, assumed_spread_ticks, ts)
+            assumed += 1
         window.add(book.mid, ts, algo_armed=True)
         if not window.is_warm:
             continue
@@ -210,6 +245,10 @@ def replay(samples: Sequence[Tuple[datetime, float]],
             entry_std=entry_std)
 
     result['trades'] = trades
+    result['book'] = {'recorded': recorded, 'assumed': assumed}
+    result['assumptions'] = assumptions(
+        settings, tick_size, tick_value, assumed_spread_ticks,
+        recorded=recorded, assumed=assumed)
     result['still_open'] = 1 if (position is not None and position.is_open) else 0
     result['summary'] = summarise(trades, round_trip)
     result['withheld'] = dict(sorted(withheld.items(), key=lambda kv: -kv[1]))
@@ -277,10 +316,15 @@ def sweep(samples: Sequence[Tuple[datetime, float]],
     a different answer.
     """
     rows = []
+    # Every threshold reads the SAME recording, so what it had to assume
+    # about the book is a property of the recording and not of the run. Taken
+    # from the first, rather than recomputed without the counts.
+    ran: Dict[str, Any] = {}
     for threshold in thresholds:
         run = replay(samples, dict(settings, entry_threshold=float(threshold)),
                      tick_size, tick_value, contract_multiplier,
                      contract_key, assumed_spread_ticks)
+        ran = ran or run.get('assumptions', {})
         rows.append({
             'entry_threshold': float(threshold),
             'trades': run['summary']['trades'],
@@ -301,8 +345,8 @@ def sweep(samples: Sequence[Tuple[datetime, float]],
                if rows and len(reasons) == 1 and rows[0]['blocked_by']
                and not any(r['trades'] for r in rows) else None)
     return {'rows': rows, 'best': best_of(rows), 'blocked_by': blocked,
-            'assumptions': assumptions(settings, tick_size, tick_value,
-                                       assumed_spread_ticks)}
+            'assumptions': ran or assumptions(settings, tick_size, tick_value,
+                                              assumed_spread_ticks)}
 
 
 def best_of(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

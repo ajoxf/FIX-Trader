@@ -176,6 +176,9 @@ def create_app(config_path: str = "config.json",
             thresholds=levels,
             contract_multiplier=contract.contract_multiplier,
             contract_key=key)
+        # The sweep's own assumptions come from the first row it ran; the
+        # book counts belong to the whole recording, so they are read once
+        # here rather than inferred from a threshold that took no trades.
         out.update({'ok': True, 'key': key, 'symbol': contract.symbol,
                     'period': period, 'samples': len(rows),
                     'decimals': contract.decimals,
