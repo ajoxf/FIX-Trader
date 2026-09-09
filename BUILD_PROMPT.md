@@ -490,6 +490,9 @@ Port the full set, because the comprehensiveness is the point:
 - `lookback_period` (samples in the rolling window; default 400)
 - `stats_update_interval_sec` (how often mean/σ are recomputed; `0` = every
   update. Default 300 — stable bands are easier to trade against)
+- `trade_direction`: `BOTH` (default) / `SHORT_ONLY` / `LONG_ONLY`. Which way
+  this contract may be ENTERED — a spread above its mean is sold, one below is
+  bought. Entries only: nothing here can withhold a close
 - `entry_threshold` (|z| to enter; default 2.0)
 - `exit_signal_mode`: `profit` (default — §6.4) / `zscore` / `hybrid`
 - `exit_threshold` (|z| to exit, used by `zscore` and `hybrid`; default 0.5)

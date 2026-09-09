@@ -568,7 +568,7 @@ table.grid tr.cannot-pay .tag { opacity: .55; }
           font: 500 10.5px/1 var(--mono); font-variant-numeric: tabular-nums;
           color: var(--ink-faint); }
 .cf-eff.own { color: #2c3036; font-weight: 600; }
-.cfgwin .wfoot .cfg-note { color: var(--ink-mute); }
+.cfgwin .wfoot .cfg-explains { color: var(--ink-mute); }
 
 /* The threshold that actually paid. Marked, because the table beside it —
  * which level reverts most — reliably points somewhere else. */
@@ -668,3 +668,17 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
   background: #2b2f36; color: #e7e9ec;
 }
 .acct.unset { background: transparent; color: #9aa0a7; border-style: dashed; }
+
+/* A note under a group of settings, in the contract's own figures. It states
+ * the arithmetic the engine performs — it never performs it. */
+.cfg-explains { margin-top: 4px; line-height: 1.55; }
+.cfg-explains .warnline { color: #7d5606; }
+
+/* A contract that may only be entered one way. Marked on the window, because
+ * it is armed and yet will pass over roughly half of what it shows — and a
+ * signal that fires and is not taken looks like a fault otherwise. */
+.way {
+  font: 600 9px/1 var(--mono); letter-spacing: .1em; padding: 3px 5px;
+  background: #efe3c8; color: #6b5212; border: 1px solid #d9c48d;
+}
+.way.hidden { display: none; }

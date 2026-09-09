@@ -80,6 +80,10 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # -- defaults a blank contract field falls back to --------------------
     'DEFAULT_LOOKBACK': 400,
     'DEFAULT_STATS_UPDATE_INTERVAL_SEC': 300.0,
+    #: Which way a contract may be ENTERED: BOTH, SHORT_ONLY (sell a rich
+    #: spread, never buy a cheap one) or LONG_ONLY. An entry rule only —
+    #: nothing here can withhold an exit.
+    'DEFAULT_TRADE_DIRECTION': 'BOTH',
     'DEFAULT_ENTRY_THRESHOLD': 2.0,
     'DEFAULT_EXIT_THRESHOLD': 0.5,
     'DEFAULT_STOP_LOSS_Z': 4.0,
@@ -161,6 +165,7 @@ STRUCTURAL_SETTINGS = ('PRICE_REFRESH_SEC', 'ENGINE_POLL_SEC',
 CONTRACT_DEFAULTS: Dict[str, str] = {
     'lookback': 'DEFAULT_LOOKBACK',
     'stats_update_interval_sec': 'DEFAULT_STATS_UPDATE_INTERVAL_SEC',
+    'trade_direction': 'DEFAULT_TRADE_DIRECTION',
     'entry_threshold': 'DEFAULT_ENTRY_THRESHOLD',
     'exit_threshold': 'DEFAULT_EXIT_THRESHOLD',
     'stop_loss_z': 'DEFAULT_STOP_LOSS_Z',

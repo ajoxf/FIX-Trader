@@ -766,6 +766,7 @@ class Engine:
                 },
                 'settings': {
                     'entry_threshold': settings.get('entry_threshold'),
+                    'trade_direction': settings.get('trade_direction'),
                     'stop_loss_z': settings.get('stop_loss_z'),
                     'quantity': qty,
                     'entry_order_type': settings.get('entry_order_type'),

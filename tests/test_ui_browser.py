@@ -938,3 +938,96 @@ def test_the_screen_says_which_account_it_trades(server):
         assert 'tag 1 empty' in (badge.get_attribute('title') or '')
         browser.close()
     assert errors == []
+
+
+# -- where the profit target comes from -------------------------------------
+
+def test_the_signal_tab_says_where_the_profit_percentage_lives(analysis_server):
+    """The Signal tab names the exit MODE and the number that defines it is
+    two tabs away. A trader went looking for it there; saying so is cheaper
+    than the trip."""
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        cfg = open_config(page)
+        # This fixture exits on the z-score, and the note says the target is
+        # not consulted rather than pointing at a number nothing reads.
+        assert 'not consulted' in cfg.locator('.cfg-explains').inner_text()
+
+        page.select_option('#cf-exit_signal_mode', 'profit')
+        cfg.locator('.cfg-save').click()
+        page.wait_for_function(
+            "() => document.querySelector('.cfgwin .cfg-explains')"
+            ".innerText.includes('Costs tab')", timeout=10000)
+        note = cfg.locator('.cfg-explains').inner_text()
+        assert 'break-even plus' in note and '% of initial margin' in note
+        browser.close()
+    assert errors == []
+
+
+def test_the_costs_tab_states_the_arithmetic_in_this_contracts_figures(
+        analysis_server):
+    """Checkable without opening a position: the round trip is a real
+    number, and the formula that turns it into a target is written out."""
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        cfg = open_config(page)
+        cfg.locator('.cfg-tabs button', has_text='Costs').click()
+        page.wait_for_selector('.cfgwin #cf-profit_target_pct')
+        note = cfg.locator('.cfg-explains').inner_text()
+        assert 'Target = break-even' in note
+        assert 'round trip' in note
+        # the round trip is the ENGINE's figure, not one computed here
+        assert '$19' in note
+        browser.close()
+    assert errors == []
+
+
+def test_a_target_that_cannot_be_priced_says_so_rather_than_showing_a_number(
+        analysis_server):
+    """On initial margin there is no target until the venue reports margin.
+    An em dash is the honest answer; a figure nothing stands behind is not."""
+    url, tmp = analysis_server
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['contracts'][0]['target_missing'] = 'the venue has not reported margin'
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.locator('.contractwin .cog').click()
+        page.wait_for_selector('.cfgwin .cf-row')
+        page.locator('.cfgwin .cfg-tabs button', has_text='Costs').click()
+        page.wait_for_selector('.cfgwin #cf-profit_target_pct')
+        page.wait_for_function(
+            "() => document.querySelector('.cfgwin .cfg-explains')"
+            ".innerText.includes('cannot be priced')", timeout=10000)
+        note = page.locator('.cfgwin .cfg-explains').inner_text()
+        assert 'has not reported margin' in note
+        assert 'em dash' in note
+        browser.close()
+    assert errors == []
+
+
+def test_the_live_note_refreshes_without_wiping_what_is_being_typed(
+        analysis_server):
+    """The note quotes figures that move. Repainting the panel to refresh
+    them would wipe out a half-typed setting."""
+    url, tmp = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.locator('.contractwin .cog').click()
+        page.wait_for_selector('.cfgwin .cf-row')
+        page.locator('#cf-entry_threshold').fill('2.75')       # mid-edit
+        for pnl in (-20.0, -30.0, -40.0):
+            snap = json.loads((tmp / 'status.json').read_text())
+            snap['contracts'][0]['position']['open_pnl'] = pnl
+            snap['ts'] = datetime.now(timezone.utc).isoformat()
+            (tmp / 'status.json').write_text(json.dumps(snap))
+            page.wait_for_timeout(700)
+        assert page.locator('#cf-entry_threshold').input_value() == '2.75'
+        browser.close()
+    assert errors == []

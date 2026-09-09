@@ -76,6 +76,15 @@ the drawing wins.
 - **Unmeasured is not zero.** Return `None` and render `—`. A target of 0.00
   reads as "get out at break-even", which is a different instruction; a
   net P&L that quietly means gross makes a losing system look profitable.
+- **`trade_direction` restricts ENTRIES only.** BOTH / SHORT_ONLY / LONG_ONLY,
+  per contract: a desk that will only sell a rich spread passes over every
+  long-spread signal. It can never withhold an exit — the position a one-way
+  contract holds is by definition in the one direction it is allowed, so a
+  direction filter on the close would strand exactly the position the desk
+  was most careful about. An unrecognised value means BOTH, never a silent
+  refusal to trade. The window carries a badge while it is in force, because
+  a contract that is armed and passes over half its signals otherwise looks
+  broken.
 - **A guard may withhold an ORDER. A guard must never prevent a close** — and
   nothing withholds the escalation to market on an exit.
 - **A refusal carries the venue's own words** (`tag 58: "Instrument not open
