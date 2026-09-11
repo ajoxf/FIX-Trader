@@ -86,7 +86,9 @@ class ManualTerminal:
     def _enrich(self, instrument):
         p = instrument.get('parameters', {})
         instrument['tick_size'] = p.get('16552') or instrument.get('tick_size', '')
-        instrument['point_value'] = p.get('16554', '')
+        # TT commonly supplies point value in 16554; standard FIX contract
+        # multiplier (231) is the equivalent fallback when 16554 is absent.
+        instrument['point_value'] = p.get('16554') or instrument.get('multiplier') or p.get('231', '')
         instrument['display_factor'] = p.get('9787', '')
         instrument['tick_value'] = ''
         if instrument.get('tick_size') and instrument['point_value']:
@@ -631,6 +633,77 @@ class ManualTerminal:
         order['updated'] = now()
         self._save('order', order['id'], order)
 
+    @staticmethod
+    def _money_pnl(instrument, entry, exit_price, quantity, side):
+        """PnL using only TT definition values; unknown metadata stays unknown."""
+        try:
+            tick = Decimal(str(instrument.get('tick_size') or ''))
+            tick_value = Decimal(str(instrument.get('tick_value') or ''))
+            entry = Decimal(str(entry)); exit_price = Decimal(str(exit_price))
+            quantity = Decimal(str(quantity))
+            if tick <= 0:
+                return None
+            direction = Decimal('1') if side == 'BUY' else Decimal('-1')
+            return float((exit_price - entry) / tick * tick_value * quantity * direction)
+        except (InvalidOperation, ValueError, TypeError, ZeroDivisionError):
+            return None
+
+    def _pnl_snapshot(self, watch_rows):
+        quotes = {row['instrument']['security_id']: row['quote'] for row in watch_rows}
+        trades, positions = [], []
+        realized_total = Decimal('0'); floating_total = Decimal('0')
+        realized_complete = floating_complete = True
+        for order in self.orders.values():
+            if order.get('close_of') or not order.get('filled_qty') or order.get('avg_price') is None:
+                continue
+            instrument = order['ticket']['instrument']; security_id = order['ticket']['security_id']
+            closed = Decimal('0')
+            for close in self.orders.values():
+                if close.get('close_of') != order['id'] or not close.get('filled_qty'):
+                    continue
+                qty = Decimal(str(close['filled_qty'])); closed += qty
+                value = self._money_pnl(instrument, order['avg_price'], close.get('avg_price'),
+                                        qty, order['ticket']['side'])
+                if value is None:
+                    realized_complete = False
+                else:
+                    realized_total += Decimal(str(value))
+                trades.append({'entry_order_id': order['id'], 'exit_order_id': close['id'],
+                    'instrument': instrument.get('display_name') or instrument.get('description'),
+                    'security_id': security_id, 'side': order['ticket']['side'],
+                    'quantity': float(qty), 'entry_price': order['avg_price'],
+                    'exit_price': close.get('avg_price'), 'realized_pnl': value,
+                    'currency': instrument.get('currency') or None,
+                    'closed_at': close.get('updated'), 'source': 'TT execution reports'})
+            open_qty = max(Decimal('0'), Decimal(str(order['filled_qty'])) - closed)
+            if open_qty:
+                quote = quotes.get(security_id, {}); mark = quote.get('mid')
+                fresh = bool(mark is not None and not quote.get('stale'))
+                value = self._money_pnl(instrument, order['avg_price'], mark, open_qty,
+                                        order['ticket']['side']) if fresh else None
+                if value is None:
+                    floating_complete = False
+                else:
+                    floating_total += Decimal(str(value))
+                positions.append({'entry_order_id': order['id'],
+                    'instrument': instrument.get('display_name') or instrument.get('description'),
+                    'security_id': security_id, 'side': order['ticket']['side'],
+                    'quantity': float(open_qty), 'entry_price': order['avg_price'],
+                    'mark_price': mark if fresh else None, 'floating_pnl': value,
+                    'currency': instrument.get('currency') or None,
+                    'mark_source': 'TT FIX bid/ask midpoint' if fresh else 'Unavailable: TT quote is stale or missing',
+                    'quote_sequence': quote.get('fix_sequence'), 'quote_time': quote.get('timestamp')})
+        currencies = {row.get('currency') for row in trades + positions if row.get('currency')}
+        currency = next(iter(currencies)) if len(currencies) == 1 else None
+        return {'trades': trades[::-1], 'positions': positions,
+                'realized_total': float(realized_total) if realized_complete else None,
+                'floating_total': float(floating_total) if floating_complete else None,
+                'currency': currency, 'fees_included': False,
+                'account': {'name': self.gateway.venue.account,
+                    'balance': None, 'equity': None, 'margin': None,
+                    'status': ('Unavailable from this TT FIX Order Routing / Market Data session. '
+                               'Tag 1 identifies the order account but is not an account-balance feed.')}}
+
     def snapshot(self):
         with self.lock:
             rows = []
@@ -645,6 +718,7 @@ class ManualTerminal:
                 book['spread'] = ask - bid if bid is not None and ask is not None else None
                 book['mid'] = (ask + bid) / 2 if bid is not None and ask is not None else None
                 rows.append({'instrument': instrument, 'quote': book})
+            pnl = self._pnl_snapshot(rows)
             return copy.deepcopy({'search': self.search, 'instruments': list(self.instruments.values())[:2000],
                 'catalogue': [{k: i.get(k, '') for k in ('security_id','symbol','exchange','security_type','display_name','maturity')}
                               for i in self.catalogue.values()],
@@ -652,5 +726,5 @@ class ManualTerminal:
                     closed_qty=sum(float(c['filled_qty']) for c in self.orders.values() if c.get('close_of') == o['id']))
                     for o in list(self.orders.values())[-200:][::-1]],
                 'fills': [json.loads(row[0]) for row in self.db.execute('SELECT data FROM manual_fills ORDER BY rowid DESC LIMIT 100')],
-                'errors': self.errors, 'account': self.gateway.venue.account,
+                'errors': self.errors, 'account': self.gateway.venue.account, 'pnl': pnl,
                 'order_types': list(ORDER_TYPES), 'tifs': list(TIFS)})

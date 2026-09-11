@@ -256,6 +256,21 @@
     const fills=document.createDocumentFragment();for(const f of data.fills||[]){const row=document.createElement('tr');for(const value of [clock(f.time),f.symbol,f.side,f.quantity,f.price,f.exec_id])row.append(text('td',fmt(value)));fills.append(row);}
     $('fills').replaceChildren(fills);if(!data.fills?.length)empty($('fills'),6,'No executions received.');
   }
+  function renderPnl() {
+    const pnl=data.pnl||{}, account=pnl.account||{}, currency=pnl.currency||'';
+    const cards=document.createDocumentFragment();
+    for(const [label,value,unavailable] of [
+      ['FIX account',account.name||'Unavailable',false],
+      ['Realized gross P&L',pnl.realized_total, pnl.realized_total===null||pnl.realized_total===undefined],
+      ['Floating gross P&L',pnl.floating_total,pnl.floating_total===null||pnl.floating_total===undefined],
+      ['Venue balance / equity','Unavailable',true]]) {
+      const card=text('div','', 'pnl-card'), shown=typeof value==='number'?`${currency} ${fmt(value)}`:String(value??'Unavailable');
+      card.append(text('span',label),text('strong',shown,unavailable?'pnl-unavailable':typeof value==='number'?(value>=0?'pnl-positive':'pnl-negative'):''));cards.append(card);
+    }
+    $('account-summary').replaceChildren(cards);$('account-summary').title=account.status||'';
+    const floating=document.createDocumentFragment();for(const p of pnl.positions||[]){const row=document.createElement('tr');for(const v of [p.instrument,p.side,p.quantity,p.entry_price,p.mark_price,p.floating_pnl===null?'Unavailable':`${p.currency||''} ${fmt(p.floating_pnl)}`,`${p.mark_source} · FIX seq ${p.quote_sequence||'—'}`])row.append(text('td',fmt(v)));floating.append(row)}$('floating-pnl').replaceChildren(floating);if(!(pnl.positions||[]).length)empty($('floating-pnl'),7,'No locally observed open filled quantity.');
+    const realized=document.createDocumentFragment();for(const p of pnl.trades||[]){const row=document.createElement('tr');for(const v of [clock(p.closed_at),p.instrument,p.side,p.quantity,p.entry_price,p.exit_price,p.realized_pnl===null?'Unavailable':`${p.currency||''} ${fmt(p.realized_pnl)}`,`${p.entry_order_id} → ${p.exit_order_id}`])row.append(text('td',fmt(v)));realized.append(row)}$('realized-pnl').replaceChildren(realized);if(!(pnl.trades||[]).length)empty($('realized-pnl'),8,'No completed entry/close pair received from TT.');
+  }
   function conditionals() {
     const type=$('order-type').value, tif=$('tif').value, form=$('ticket-form');
     const limit=['LIMIT','STOP_LIMIT','LIMIT_ON_CLOSE','POST_ONLY'].includes(type), stop=['STOP','STOP_LIMIT'].includes(type);
@@ -296,7 +311,7 @@
       if(!engine.alive)notice('The engine is offline. Prices below are historical and orders are unavailable.',true);
       if(!engine.alive)for(const w of data.watchlist||[])w.quote.stale=true;
       if(!$('account').value&&data.account)$('account').value=data.account;
-      renderResults();renderWatch();renderOrders();renderLadders();renderExplorer();
+      renderResults();renderWatch();renderOrders();renderPnl();renderLadders();renderExplorer();
     }catch(error){for(const w of data.watchlist||[])w.quote.stale=true;if(snapshot.engine)snapshot.engine.alive=false;$('session').textContent='Engine unavailable';$('session').className='tag error';$('review-order').disabled=true;notice(error.message,true);renderWatch();renderLadders();}
     setTimeout(poll,1000);
   }

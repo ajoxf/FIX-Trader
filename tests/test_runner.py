@@ -20,6 +20,21 @@ def a_config(tmp_path):
     return cfg
 
 
+def test_live_locked_configuration_refuses_every_simulator(tmp_path):
+    cfg = a_config(tmp_path)
+    cfg.settings['REQUIRE_LIVE_FIX'] = True
+    with pytest.raises(RuntimeError, match='simulated mode is refused'):
+        runner.build_gateway(cfg, simulated=True)
+    with pytest.raises(RuntimeError, match='no enabled FIX venue'):
+        runner.build_gateway(cfg, simulated=False)
+
+
+def test_fix_mode_never_falls_back_to_fake_prices(tmp_path):
+    cfg = a_config(tmp_path)
+    with pytest.raises(RuntimeError, match='simulated fallback is refused'):
+        runner.build_gateway(cfg, simulated=False)
+
+
 def run_once(tmp_path, **kw):
     runner.run(config_path=str(tmp_path / 'config.json'),
                status_path=str(tmp_path / 'status.json'),

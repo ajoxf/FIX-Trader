@@ -36,7 +36,14 @@ def build_gateway(config, simulated: bool, runtime_dir: str = ""):
     # FIX session pointed at nothing, which looks like a connection failure
     # somebody could waste an afternoon retyping a port to fix.
     reachable = [v for v in config.venues.values() if v.host and v.enabled]
-    if simulated or not reachable:
+    require_live = config.settings.get('REQUIRE_LIVE_FIX') is True
+    if require_live and simulated:
+        raise RuntimeError('This configuration requires live FIX; simulated mode is refused')
+    if require_live and not reachable:
+        raise RuntimeError('This configuration requires live FIX but has no enabled FIX venue')
+    if not simulated and not reachable:
+        raise RuntimeError('Live FIX mode has no enabled FIX venue; simulated fallback is refused')
+    if simulated:
         from .fake_gateway import FakeGateway, SimContract
         sims = []
         for c in config.contracts.values():
