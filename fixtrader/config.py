@@ -80,10 +80,6 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # -- defaults a blank contract field falls back to --------------------
     'DEFAULT_LOOKBACK': 400,
     'DEFAULT_STATS_UPDATE_INTERVAL_SEC': 300.0,
-    #: Which way a contract may be ENTERED: BOTH, SHORT_ONLY (sell a rich
-    #: spread, never buy a cheap one) or LONG_ONLY. An entry rule only —
-    #: nothing here can withhold an exit.
-    'DEFAULT_TRADE_DIRECTION': 'BOTH',
     'DEFAULT_ENTRY_THRESHOLD': 2.0,
     'DEFAULT_EXIT_THRESHOLD': 0.5,
     'DEFAULT_STOP_LOSS_Z': 4.0,
@@ -165,7 +161,6 @@ STRUCTURAL_SETTINGS = ('PRICE_REFRESH_SEC', 'ENGINE_POLL_SEC',
 CONTRACT_DEFAULTS: Dict[str, str] = {
     'lookback': 'DEFAULT_LOOKBACK',
     'stats_update_interval_sec': 'DEFAULT_STATS_UPDATE_INTERVAL_SEC',
-    'trade_direction': 'DEFAULT_TRADE_DIRECTION',
     'entry_threshold': 'DEFAULT_ENTRY_THRESHOLD',
     'exit_threshold': 'DEFAULT_EXIT_THRESHOLD',
     'stop_loss_z': 'DEFAULT_STOP_LOSS_Z',
@@ -241,21 +236,23 @@ class VenueConfig:
                  sender_comp_id: str = "", target_comp_id: str = "",
                  sender_sub_id: str = "", target_sub_id: str = "",
                  on_behalf_of_comp_id: str = "",
-                 on_behalf_of_sub_id: str = "",
-                 md_sender_comp_id: str = "", md_target_comp_id: str = "",
-                 dc_host: str = "", dc_port: Optional[int] = None,
-                 dc_sender_comp_id: str = "", dc_target_comp_id: str = "",
                  fix_version: str = "FIX.4.4", username: str = "",
                  password_env: str = "", account: str = "",
                  heartbeat_sec: int = 30, reset_seq_on_logon: bool = True,
                  use_tls: bool = True, data_dictionary: str = "",
                  store_path: str = "", log_path: str = "",
-                 enabled: bool = True):
+                 enabled: bool = True, on_behalf_of_sub_id: str = "",
+                 md_sender_comp_id: str = "", md_target_comp_id: str = "",
+                 md_password_env: str = ""):
         self.name = name
         self.environment = self._environment(environment, name)
         self.broker = broker
         self.host = host
         self.port = int(port) if port else None
+        self.on_behalf_of_sub_id = on_behalf_of_sub_id
+        self.md_sender_comp_id = md_sender_comp_id
+        self.md_target_comp_id = md_target_comp_id
+        self.md_password_env = md_password_env
         self.md_host = md_host
         self.md_port = int(md_port) if md_port else None
         self.sender_comp_id = sender_comp_id
@@ -263,27 +260,6 @@ class VenueConfig:
         self.sender_sub_id = sender_sub_id
         self.target_sub_id = target_sub_id
         self.on_behalf_of_comp_id = on_behalf_of_comp_id
-        #: Tag 116. NOT tag 115 — a broker that asks for `OnBehalfOfSubID`
-        #: and is sent `OnBehalfOfCompID` is a session that logs on and then
-        #: rejects every order, which is a slow way to find a typo.
-        self.on_behalf_of_sub_id = on_behalf_of_sub_id
-
-        #: Market data is its own session at brokers that split them, with
-        #: its OWN comp ids — not the order-routing ones. Blank falls back to
-        #: the order session, which is right where a broker runs one session
-        #: for both.
-        self.md_sender_comp_id = md_sender_comp_id
-        self.md_target_comp_id = md_target_comp_id
-
-        #: Drop copy: a read-only feed of everything on the account,
-        #: INCLUDING what a person did by hand in the broker's own UI. See
-        #: `docs/FIX_NOTES.md` — subscribing to it is a decision, not a
-        #: detail, because this system is the algo and a hand trade it did
-        #: not send is a position it cannot explain.
-        self.dc_host = dc_host
-        self.dc_port = int(dc_port) if dc_port else None
-        self.dc_sender_comp_id = dc_sender_comp_id
-        self.dc_target_comp_id = dc_target_comp_id
         self.fix_version = fix_version
         self.username = username
         self.password_env = password_env or env_key_for(name)
@@ -331,17 +307,15 @@ class VenueConfig:
             'environment': self.environment, 'broker': self.broker,
             'host': self.host, 'port': self.port,
             'md_host': self.md_host, 'md_port': self.md_port,
+            'md_sender_comp_id': self.md_sender_comp_id,
+            'md_target_comp_id': self.md_target_comp_id,
+            'md_password_env': self.md_password_env,
+            'on_behalf_of_sub_id': self.on_behalf_of_sub_id,
             'sender_comp_id': self.sender_comp_id,
             'target_comp_id': self.target_comp_id,
             'sender_sub_id': self.sender_sub_id,
             'target_sub_id': self.target_sub_id,
             'on_behalf_of_comp_id': self.on_behalf_of_comp_id,
-            'on_behalf_of_sub_id': self.on_behalf_of_sub_id,
-            'md_sender_comp_id': self.md_sender_comp_id,
-            'md_target_comp_id': self.md_target_comp_id,
-            'dc_host': self.dc_host, 'dc_port': self.dc_port,
-            'dc_sender_comp_id': self.dc_sender_comp_id,
-            'dc_target_comp_id': self.dc_target_comp_id,
             'fix_version': self.fix_version, 'username': self.username,
             'password_env': self.password_env, 'account': self.account,
             'heartbeat_sec': self.heartbeat_sec,
@@ -349,44 +323,6 @@ class VenueConfig:
             'use_tls': self.use_tls, 'data_dictionary': self.data_dictionary,
             'store_path': self.store_path, 'log_path': self.log_path,
             'enabled': self.enabled,
-        }
-
-    def session(self, which: str = "order") -> Dict[str, Any]:
-        """The endpoint and comp ids for one of this venue's FIX sessions.
-
-        `order`, `md` or `dropcopy`. A broker that splits them gives each its
-        own host, port and comp ids; a broker that does not leaves them blank
-        and every one of them falls back to the order session. Falling back
-        is right — GUESSING is not, which is why a blank means "the same" and
-        never "make something up".
-        """
-        which = (which or "order").lower()
-        if which in ("md", "marketdata", "market_data"):
-            return {
-                'host': self.md_host or self.host,
-                'port': self.md_port or self.port,
-                'sender_comp_id': self.md_sender_comp_id or self.sender_comp_id,
-                'target_comp_id': self.md_target_comp_id or self.target_comp_id,
-                'shared': not (self.md_host or self.md_port
-                               or self.md_target_comp_id),
-            }
-        if which in ("dc", "dropcopy", "drop_copy"):
-            return {
-                'host': self.dc_host,
-                'port': self.dc_port,
-                'sender_comp_id': self.dc_sender_comp_id or self.sender_comp_id,
-                'target_comp_id': self.dc_target_comp_id,
-                # Drop copy never falls back to the order session: an absent
-                # drop copy is "not configured", not "use the other one".
-                'shared': False,
-                'configured': bool(self.dc_host and self.dc_port
-                                   and self.dc_target_comp_id),
-            }
-        return {
-            'host': self.host, 'port': self.port,
-            'sender_comp_id': self.sender_comp_id,
-            'target_comp_id': self.target_comp_id,
-            'shared': False,
         }
 
     def to_public_dict(self) -> Dict[str, Any]:

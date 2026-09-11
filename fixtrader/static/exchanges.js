@@ -50,28 +50,10 @@ async function loadVenues() {
 
 function vField(name) { return document.getElementById('v-' + name); }
 
-/* A field this build's form does not carry. The lists below and the template
- * are edited separately, and a mismatch used to throw on the FIRST field it
- * reached — which aborted the handler and left the whole page dead, with
- * every later field unset and no visible reason. Skipping is not silence:
- * the console says which name has no box. */
-function eachField(names, fn) {
-  names.forEach((name) => {
-    const el = vField(name);
-    if (!el) {
-      console.warn('no form field for venue setting: ' + name);
-      return;
-    }
-    fn(el, name);
-  });
-}
-
 const VENUE_TEXT = ['broker', 'host', 'md_host', 'sender_comp_id',
-  'target_comp_id', 'sender_sub_id', 'on_behalf_of_comp_id',
-  'on_behalf_of_sub_id', 'md_sender_comp_id', 'md_target_comp_id',
-  'dc_host', 'dc_sender_comp_id', 'dc_target_comp_id', 'username',
+  'target_comp_id', 'sender_sub_id', 'on_behalf_of_comp_id', 'username',
   'account', 'data_dictionary', 'fix_version'];
-const VENUE_NUM = ['port', 'md_port', 'dc_port', 'heartbeat_sec'];
+const VENUE_NUM = ['port', 'md_port', 'heartbeat_sec'];
 const VENUE_BOOL = ['reset_seq_on_logon', 'use_tls', 'enabled'];
 
 function showVenue(v) {
@@ -88,14 +70,14 @@ function showVenue(v) {
   });
   paintEnvRadios();
 
-  eachField(VENUE_TEXT, (el, k) => { el.value = (v && v[k]) || ''; });
+  VENUE_TEXT.forEach((k) => { vField(k).value = (v && v[k]) || ''; });
   // A select whose value matches no option renders BLANK, which reads as "no
   // FIX version" rather than "the usual one".
   if (!vField('fix_version').value) vField('fix_version').value = 'FIX.4.4';
-  eachField(VENUE_NUM, (el, k) => {
-    el.value = (v && v[k] !== null && v[k] !== undefined) ? v[k] : '';
+  VENUE_NUM.forEach((k) => {
+    vField(k).value = (v && v[k] !== null && v[k] !== undefined) ? v[k] : '';
   });
-  eachField(VENUE_BOOL, (el, k) => { el.checked = v ? !!v[k] : true; });
+  VENUE_BOOL.forEach((k) => { vField(k).checked = v ? !!v[k] : true; });
   if (!v) vField('heartbeat_sec').value = 30;
 
   const pw = document.getElementById('v-password');
@@ -130,11 +112,11 @@ document.getElementById('v-save').onclick = async () => {
   if (!name) { toast('REJECT', 'NOT SAVED', 'a name is required'); return; }
   const chosen = document.querySelector('[name="env"]:checked');
   const body = { environment: chosen ? chosen.value : '' };
-  eachField(VENUE_TEXT, (el, k) => { body[k] = el.value.trim(); });
-  eachField(VENUE_NUM, (el, k) => {
-    body[k] = el.value === '' ? null : Number(el.value);
+  VENUE_TEXT.forEach((k) => { body[k] = vField(k).value.trim(); });
+  VENUE_NUM.forEach((k) => {
+    body[k] = vField(k).value === '' ? null : Number(vField(k).value);
   });
-  eachField(VENUE_BOOL, (el, k) => { body[k] = el.checked; });
+  VENUE_BOOL.forEach((k) => { body[k] = vField(k).checked; });
   const pw = document.getElementById('v-password').value;
   if (pw) body.password = pw;              // blank leaves the stored one alone
 

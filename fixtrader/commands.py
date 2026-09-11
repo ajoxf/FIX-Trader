@@ -96,6 +96,36 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
     key = command.get('contract', '')
     args = command.get('args') or {}
     try:
+        if action.startswith('terminal_'):
+            terminal = getattr(engine.gateway, 'terminal', None)
+            if terminal is None:
+                raise ValueError('Start the TT FIX engine to use instruments and manual orders')
+            operation = action[len('terminal_'):]
+            methods = {'search': terminal.lookup, 'add': terminal.add, 'remove': terminal.remove,
+                       'depth': terminal.depth,
+                       'preview': terminal.preview, 'preview_close': terminal.preview_close, 'submit': terminal.submit,
+                       'risk': terminal.set_risk,
+                       'cancel': terminal.manage,
+                       'replace': lambda data: terminal.manage(data, replace=True)}
+            if operation not in methods:
+                raise ValueError('Unknown terminal action')
+            return methods[operation](args)
+        if action in ('fix_connect', 'fix_status', 'fix_disconnect', 'fix_reconnect'):
+            gateway = engine.gateway
+            venue = getattr(gateway, 'venue', None)
+            if venue is None or venue.name != args.get('venue'):
+                return {'ok': False, 'rows': [{'check': 'Session', 'ok': False,
+                    'detail': 'This venue is not owned by the running FIX engine.',
+                    'fix': 'Restart with --fix and the intended venue enabled.'}],
+                    'simulated': engine.simulated}
+            if action == 'fix_connect':
+                gateway.start()
+            elif action == 'fix_disconnect':
+                gateway.stop()
+            elif action == 'fix_reconnect':
+                gateway.reconnect()
+            return {'ok': True if action != 'fix_status' else gateway.state().value == 'LOGGED_ON',
+                    'simulated': False, 'rows': gateway.diagnose()[:1]}
         if action == 'algo_on':
             return engine.set_algo(key, True)
         if action == 'algo_off':

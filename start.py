@@ -164,7 +164,10 @@ def main(argv=None) -> int:
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8000)
     parser.add_argument('--no-browser', action='store_true')
-    parser.add_argument('--simulated', action='store_true', default=True)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--simulated', action='store_true', default=True)
+    mode.add_argument('--fix', dest='simulated', action='store_false',
+                      help='Use configured TT UAT FIX sessions')
     args = parser.parse_args(argv)
 
     # Before anything is started, and before any file is written.

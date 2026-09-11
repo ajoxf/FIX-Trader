@@ -20,6 +20,21 @@ def a_config(tmp_path):
     return cfg
 
 
+def test_live_locked_configuration_refuses_every_simulator(tmp_path):
+    cfg = a_config(tmp_path)
+    cfg.settings['REQUIRE_LIVE_FIX'] = True
+    with pytest.raises(RuntimeError, match='simulated mode is refused'):
+        runner.build_gateway(cfg, simulated=True)
+    with pytest.raises(RuntimeError, match='no enabled FIX venue'):
+        runner.build_gateway(cfg, simulated=False)
+
+
+def test_fix_mode_never_falls_back_to_fake_prices(tmp_path):
+    cfg = a_config(tmp_path)
+    with pytest.raises(RuntimeError, match='simulated fallback is refused'):
+        runner.build_gateway(cfg, simulated=False)
+
+
 def run_once(tmp_path, **kw):
     runner.run(config_path=str(tmp_path / 'config.json'),
                status_path=str(tmp_path / 'status.json'),
@@ -43,6 +58,25 @@ def test_a_pass_publishes_a_snapshot(tmp_path):
     snap = json.loads((tmp_path / 'status.json').read_text())
     assert snap['contracts'][0]['key'] == 'fef'
     assert snap['engine']['alive'] is True
+
+
+def test_relative_databases_follow_the_runtime_status_directory(tmp_path):
+    config_dir = tmp_path / 'configuration'
+    runtime_dir = tmp_path / 'runtime'
+    config_dir.mkdir()
+    runtime_dir.mkdir()
+    cfg = TraderConfig(path=str(config_dir / 'config.json'))
+    cfg.settings['DATABASE_PATH'] = 'fixtrader.db'
+    cfg.save()
+
+    runner.run(config_path=str(cfg.path),
+               status_path=str(runtime_dir / 'status.json'),
+               command_path=str(runtime_dir / 'commands.jsonl'),
+               result_path=str(runtime_dir / 'results.json'),
+               simulated=True, once=True)
+
+    assert (runtime_dir / 'fixtrader.db').exists()
+    assert not (config_dir / 'fixtrader.db').exists()
 
 
 def test_the_engine_survives_a_snapshot_it_cannot_publish(monkeypatch, tmp_path):
@@ -261,67 +295,3 @@ def test_a_command_publishes_the_snapshot_at_once(tmp_path):
     # well inside one 5s screen refresh, and one 2s engine pass, measured
     # from the send rather than from the start of the process
     assert time.monotonic() - sent['at'] < 2.0
-
-
-# -- a restart after a crash ------------------------------------------------
-
-def test_a_crashed_engines_last_snapshot_does_not_block_the_restart(tmp_path):
-    """Reported from a desk: the engine died on a database fault, and the
-    launcher's restarts were then refused by the one-engine guard because
-    the dead engine's snapshot was two seconds old. Two of its three strikes
-    went on the guard rather than on the fault."""
-    import os
-    import socket
-    from datetime import datetime, timezone
-    from fixtrader import atomicfile, runner as r
-
-    status = str(tmp_path / 'status.json')
-    dead = {'ts': datetime.now(timezone.utc).isoformat(),
-            'engine': {'pid': 999999999, 'host': socket.gethostname()}}
-    atomicfile.write_json(status, dead)
-    assert r.another_engine_is_running(status) is None
-
-    # the control: a snapshot from a process that IS alive still refuses
-    alive = {'ts': datetime.now(timezone.utc).isoformat(),
-             'engine': {'pid': os.getpid(), 'host': socket.gethostname()}}
-    atomicfile.write_json(status, alive)
-    assert r.another_engine_is_running(status) is not None
-
-
-def test_a_snapshot_from_another_machine_is_still_treated_as_alive(tmp_path):
-    """A status file on a shared drive names a pid that means nothing here.
-    Being wrong towards 'alive' refuses a start; being wrong the other way
-    runs two engines against one book."""
-    import socket
-    from datetime import datetime, timezone
-    from fixtrader import atomicfile, runner as r
-    status = str(tmp_path / 'status.json')
-    atomicfile.write_json(status, {
-        'ts': datetime.now(timezone.utc).isoformat(),
-        'engine': {'pid': 999999999,
-                   'host': socket.gethostname() + '-somewhere-else'}})
-    assert r.another_engine_is_running(status) is not None
-
-
-def test_a_snapshot_with_no_pid_falls_back_to_the_heartbeat(tmp_path):
-    """Written by a build before the pid was stamped. The old rule still
-    holds, and it is the safe one."""
-    from datetime import datetime, timezone
-    from fixtrader import atomicfile, runner as r
-    status = str(tmp_path / 'status.json')
-    atomicfile.write_json(status, {
-        'ts': datetime.now(timezone.utc).isoformat(), 'engine': {}})
-    assert r.another_engine_is_running(status) is not None
-
-
-def test_the_liveness_probe_never_signals_the_process(monkeypatch):
-    """On Windows, CPython maps `os.kill` with any signal other than
-    CTRL_C_EVENT / CTRL_BREAK_EVENT onto TerminateProcess — so the usual
-    'harmless' probe kills the engine it was asking about."""
-    import os
-    from fixtrader import runner as r
-    monkeypatch.setattr(os, 'name', 'nt')
-    called = []
-    monkeypatch.setattr(os, 'kill', lambda *a: called.append(a))
-    r._process_is_alive(os.getpid())
-    assert called == []

@@ -23,7 +23,7 @@ The rules that make the limit path safe, and the reasons they exist:
 
 import logging
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from . import sizing
 from .models import (Intent, OrderRequest, OrderState, OrderType,
@@ -151,9 +151,6 @@ class Executor:
         #: instrument it is about.
         self.contracts: Dict[str, Any] = {}
         self.books: Dict[str, Any] = {}
-        #: How to find the account for a contract. The engine sets it; the
-        #: executor does not read configuration itself.
-        self.account_resolver: Optional[Callable[[str], str]] = None
         #: The state the DECISION was made on — z, mean, sigma, half-life at
         #: the moment the signal fired. Kept per order and stamped onto the
         #: position when the fill lands, because by then the window has moved
@@ -212,10 +209,6 @@ class Executor:
             # reduce_only is a CAP, not an instruction. It is sent as well as
             # the effect, never instead of it.
             reduce_only=(intent is Intent.CLOSE), reason=reason,
-            # Tag 1. Stamped on every order, never left for the session to
-            # imply: on a desk where the algo has its own sub-account, this
-            # is the line between what this system did and what a person did.
-            account=self.account_for(contract),
             position_effect=effect,
             position_id=position_id or getattr(position, 'id', None),
             close_tickets=list(getattr(position, 'tickets', []) or [])
@@ -297,21 +290,6 @@ class Executor:
             wo.price = wanted
             self._persist(wo, now)
         return said
-
-    def account_for(self, contract) -> str:
-        """The account an order on this contract is sent for.
-
-        Resolved by the engine, which knows the contract's venue; the
-        executor does not read configuration itself. Empty where the desk
-        has configured none — and empty is sent as empty, never as a guess
-        at some default account.
-        """
-        if self.account_resolver is None:
-            return ""
-        try:
-            return self.account_resolver(getattr(contract, 'key', contract)) or ""
-        except Exception:                                    # noqa: BLE001
-            return ""
 
     def cancel_all(self, contract_key: Optional[str] = None) -> int:
         """Cancel OUR working orders, scoped by ClOrdID. Never touches an

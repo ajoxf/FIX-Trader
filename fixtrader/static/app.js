@@ -317,25 +317,6 @@ function renderContract(c) {
       : 'not enough of a window to estimate it yet');
   q('.f-hl').textContent = s.half_life === null ? DASH : num(s.half_life, 1);
 
-  // A one-way contract is armed and yet cannot take half the signals it
-  // shows. The band it will never enter is marked on the strip, so the
-  // restriction is visible where the trader is actually looking.
-  const way = String((c.settings && c.settings.trade_direction) || 'BOTH')
-    .toUpperCase();
-  el.classList.toggle('short-only', way === 'SHORT_ONLY');
-  el.classList.toggle('long-only', way === 'LONG_ONLY');
-  const wayTag = q('.f-way');
-  if (wayTag) {
-    wayTag.textContent = way === 'SHORT_ONLY' ? 'SELL ONLY'
-      : way === 'LONG_ONLY' ? 'BUY ONLY' : '';
-    wayTag.title = way === 'BOTH' ? ''
-      : 'this contract enters only ' + (way === 'SHORT_ONLY'
-        ? 'when the spread is rich — a cheap one is left alone'
-        : 'when the spread is cheap — a rich one is left alone') +
-        '. Entries only: an open position is always closed.';
-    wayTag.classList.toggle('hidden', way === 'BOTH');
-  }
-
   // the z strip, drawn between the two entry thresholds
   const threshold = (c.settings && c.settings.entry_threshold) || 2;
   const span = threshold * 1.25;
@@ -414,7 +395,6 @@ function renderContract(c) {
     : c.state === 'WARMING' ? ' warnf' : '');
 
   markPosition(el, c);
-  refreshConfigNote(c.key);
 
   // A change of last_event is a thing that happened: say it once, and only
   // if the operator asked to hear about that kind. Order traffic is off by
@@ -558,7 +538,9 @@ function renderPositions(snap) {
   const unreadable = p.venue_readable === false;
   banner.classList.toggle('hidden', !unreadable);
   if (unreadable) {
-    banner.textContent = 'The venue could not be read, so what is shown is ' +
+    banner.textContent = snap.engine?.connection_only
+      ? 'Account positions are unavailable in connection-only mode. This table does not confirm that the account is flat.'
+      : 'The venue could not be read, so what is shown is ' +
       'this book alone. It is NOT confirmation that the account is flat.';
   }
 
@@ -1010,15 +992,10 @@ function renderReplay(el, report, live) {
   }
 
   const a = report.assumptions || {};
-  // Whether the exits came off a real book or a guess is the difference
-  // between a measurement and an estimate, so it leads.
-  const measured = a.book_assumed === 0 && a.book_recorded;
   note.innerHTML = 'This is a <b>signal</b> replay, not a fill simulator. ' +
-    '<b>The book:</b> ' + (a.book || 'assumed') +
-    (measured ? '' : ' — an exit reads the executable side, so where the ' +
-      'book was not recorded the exit price is an assumption') + '. ' +
-    (a.fills || '') + '; ' + (a.costs || '') + '. Read against ' +
-    (report.samples || 0) + ' recorded prices.';
+    'The book was ' + (a.book || 'assumed') + '; ' + (a.fills || '') + '; ' +
+    (a.costs || '') + '. Read against ' + (report.samples || 0) +
+    ' recorded prices.';
 }
 
 function cls(v) {
@@ -1185,19 +1162,6 @@ function renderChrome(snap) {
   badge.title = engine.simulated
     ? 'these prices come from the simulator, not from a venue'
     : 'live venue session';
-
-  // Whose money this is, beside which environment it is. On a desk that
-  // gives the algo its own sub-account the two questions are the same class
-  // of question, and neither should be left to memory. An em dash where no
-  // account is configured: blank is not "the default account".
-  const acct = document.getElementById('account-badge');
-  if (acct) {
-    acct.textContent = engine.account || DASH;
-    acct.title = engine.account
-      ? 'every order this system sends is stamped with this account'
-      : 'no account configured — orders go out without one (tag 1 empty)';
-    acct.classList.toggle('unset', !engine.account);
-  }
   badge.className = 'env' + (engine.environment === 'PROD' ? ' prod'
     : engine.simulated ? ' sim' : '');
 
@@ -1212,6 +1176,9 @@ function renderChrome(snap) {
     banner.classList.remove('critical');
     banner.textContent = 'KILL ALL is on — every algo is stood down and ' +
       'our working orders are cancelled. Positions are untouched.';
+  } else if (engine.connection_only) {
+    banner.classList.remove('hidden', 'critical');
+    banner.textContent = 'Account recovery and automated execution are unavailable. Open Instruments & orders for manual UAT trading.';
   } else if (engine.book_complete === false) {
     banner.classList.remove('hidden');
     banner.classList.add('critical');
@@ -1284,10 +1251,9 @@ function renderChrome(snap) {
  */
 
 const CFG_GROUPS = [
-  { name: 'Signal', note: exitModeNote, fields: [
+  { name: 'Signal', fields: [
     ['lookback', 'Lookback', 'samples in the rolling window', 'number', { step: 10, min: 2 }],
     ['stats_update_interval_sec', 'Recompute mean and σ every', 'seconds; 0 = every update. Stable bands are easier to aim at', 'number', { step: 10, min: 0 }],
-    ['trade_direction', 'Trade which way', 'a spread ABOVE its mean is SOLD', 'select', { options: [['BOTH', 'Both directions'], ['SHORT_ONLY', 'Short spread only (high → low)'], ['LONG_ONLY', 'Long spread only (low → high)']] }],
     ['entry_threshold', 'Enter at |z|', '', 'number', { step: 0.1, min: 0 }],
     ['exit_signal_mode', 'Exit on', '', 'select', { options: [['profit', 'Profit target'], ['zscore', 'z-score'], ['hybrid', 'Whichever comes first']] }],
     ['exit_threshold', 'Exit at |z|', 'used by z-score and hybrid', 'number', { step: 0.1, min: 0 }],
@@ -1324,7 +1290,7 @@ const CFG_GROUPS = [
     ['time_in_force', 'Time in force', '', 'select', { options: [['DAY', 'Day'], ['IOC', 'IOC'], ['GTC', 'GTC']] }],
     ['close_offset_mode', 'Closing flag', 'what this venue wants on a close. AUTO reads the venue; an unknown flag degrades to CLOSE, never to OPEN', 'select', { options: [['AUTO', 'Auto'], ['CLOSE', 'Close'], ['CLOSE_TODAY_FIRST', 'Close today first'], ['NONE', 'None (netting venue)']] }],
   ] },
-  { name: 'Costs', note: targetNote, fields: [
+  { name: 'Costs', fields: [
     ['commission_per_contract', 'Commission', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
     ['exchange_fee_per_contract', 'Exchange fee', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
     ['clearing_fee_per_contract', 'Clearing fee', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
@@ -1469,128 +1435,7 @@ function paintConfig(key) {
     || CFG_GROUPS[0];
   el.querySelector('.cfg-body').innerHTML = '<div class="cb">' +
     group.fields.map((f) => cfgField(f[0], f[1], f[2], f[3], f[4], row)).join('') +
-    (group.note ? group.note(row, liveContract(key)) : '') +
     '</div>';
-}
-
-/* Keep a settings panel's NOTE current without touching its boxes.
- *
- * The note quotes live figures — the round trip, an open position's
- * break-even and target — and those move. Repainting the whole panel to
- * refresh them would wipe out whatever is half-typed in a field, so only the
- * note is replaced. */
-function refreshConfigNote(key) {
-  const el = document.querySelector('.win[data-key="__config__' + key + '"]');
-  const row = cfgState[key] && cfgState[key].contract;
-  if (!el || !row) return;
-  const note = el.querySelector('.cfg-explains');
-  if (!note) return;
-  const group = CFG_GROUPS.find((g) => g.name === cfgState[key].group);
-  if (!group || !group.note) return;
-  const wrapper = document.createElement('div');
-  wrapper.innerHTML = group.note(row, liveContract(key));
-  const fresh = wrapper.firstElementChild;
-  if (fresh && fresh.innerHTML !== note.innerHTML) {
-    note.innerHTML = fresh.innerHTML;
-    note.className = fresh.className;
-  }
-}
-
-/* This contract as the ENGINE last described it. Every money figure a note
- * below shows comes from here — the panel states the arithmetic, it never
- * performs it. One conversion, in `sizing.py`, and a screen that recomputes
- * a target is a screen that can disagree with the order that was sent. */
-function liveContract(key) {
-  const snap = window.__lastSnapshot || {};
-  return (snap.contracts || []).find((c) => c.key === key) || null;
-}
-
-/* Where the profit target actually comes from, in the contract's own
- * figures. It answers the question the Costs tab invites and cannot
- * otherwise settle without opening a position. */
-function targetNote(row, live) {
-  const eff = row.effective || {};
-  const pct = eff.profit_target_pct;
-  const basis = String(eff.profit_target_basis || 'MARGIN');
-  const basisName = { MARGIN: 'initial margin', NOTIONAL: 'notional',
-                      ENTRY_SIGMA: 'sigma at entry' }[basis] || basis;
-  const d = row.decimals === undefined ? 4 : row.decimals;
-  const costs = (live && live.costs) || {};
-  const pos = live && live.position;
-
-  let out = '<div class="finding cfg-explains"><b>Target = break-even ' +
-    (pct ? '+ ' + num(pct, 2) + '% of ' + basisName : '(the target is 0%: ' +
-      'leave at break-even)') + '</b><br>' +
-    'Break-even is the fill plus this contract\'s whole round trip — ' +
-    'commission, exchange, clearing and the slippage budget, both sides. ' +
-    'It is <b>' + money(costs.round_trip_money) + '</b> here' +
-    (costs.round_trip_ticks !== null && costs.round_trip_ticks !== undefined
-      ? ' (' + num(costs.round_trip_ticks, 2) + ' ticks)' : '') +
-    ' at the configured quantity. A long\'s break-even is ABOVE its fill and ' +
-    'its target above that; a short\'s are below.';
-
-  if (pos && pos.qty) {
-    out += '<br><b>Open now:</b> filled ' + num(pos.avg_price, d) +
-      ' → break-even ' + num(pos.break_even, d) + ' → target ' +
-      num(pos.target, d) +
-      (pos.margin_locked ? ', on margin of ' + money(pos.margin_locked) : '');
-  }
-  if (live && live.target_missing) {
-    out += '<br><span class="warnline">The target cannot be priced: ' +
-      live.target_missing + ' — it renders as an em dash rather than a ' +
-      'number nothing stands behind, and the position is held by the stop ' +
-      'and the z instead.</span>';
-  } else if (basis === 'MARGIN' && !(pos && pos.margin_locked)) {
-    out += '<br>On <b>initial margin</b> the target can only be priced once ' +
-      'the venue reports the margin a position locked up. Until it does, ' +
-      'the target shows as an em dash — never as a figure nothing stands ' +
-      'behind.';
-  }
-  return out + '</div>';
-}
-
-/* A direction restriction halves the trades a contract can take, quietly.
- * It is worth a line saying so — and saying that it is an ENTRY rule, since
- * "short only" reading as "cannot buy" would be alarming beside an open long
- * that still has to be closed. */
-function directionNote(eff) {
-  const way = String(eff.trade_direction || 'BOTH').toUpperCase();
-  if (way === 'BOTH') return '';
-  const selling = way === 'SHORT_ONLY';
-  return '<div class="finding warn cfg-explains"><b>' +
-    (selling ? 'Short spread only' : 'Long spread only') + '.</b> This ' +
-    'contract enters only when the spread is ' +
-    (selling ? 'RICH — z above the threshold, sold back down to the mean. A ' +
-      'cheap spread is left alone' : 'CHEAP — z below the threshold, bought ' +
-      'back up to the mean. A rich spread is left alone') +
-    ', so roughly half the signals are passed over. It restricts ENTRIES ' +
-    'only: a position already on is closed by whatever closes it.</div>';
-}
-
-/* The Signal tab names the exit MODE; the number that defines it lives on
- * Costs. Saying so is cheaper than the trip a trader makes looking for it. */
-function exitModeNote(row, live) {
-  const eff = row.effective || {};
-  const mode = String(eff.exit_signal_mode || 'profit');
-  if (mode === 'zscore') {
-    return directionNote(eff) +
-      '<div class="finding cfg-explains">Exiting on <b>z-score</b>: this ' +
-      'contract leaves when z comes back to ' + num(eff.exit_threshold, 2) +
-      ', whatever the trade is worth. The profit target is not consulted.' +
-      '</div>';
-  }
-  const pct = eff.profit_target_pct;
-  const basis = { MARGIN: 'initial margin', NOTIONAL: 'notional',
-                  ENTRY_SIGMA: 'sigma at entry' }[
-    String(eff.profit_target_basis || 'MARGIN')] || 'initial margin';
-  return directionNote(eff) +
-    '<div class="finding cfg-explains">Exiting on <b>' +
-    (mode === 'hybrid' ? 'whichever comes first' : 'the profit target') +
-    '</b>: break-even plus <b>' + num(pct, 2) + '% of ' + basis + '</b>' +
-    (mode === 'hybrid' ? ', or z back to ' + num(eff.exit_threshold, 2) : '') +
-    '. <b>The percentage itself is set on the Costs tab</b>, beside the fees ' +
-    'it is measured from — the target is taken after the round trip, so the ' +
-    'two are one calculation.</div>';
 }
 
 async function saveConfig(key) {
