@@ -233,9 +233,27 @@ class FixGateway:
     def diagnose(self):
         return [{'check': 'TT FIX sessions', 'ok': self.state() == SessionState.LOGGED_ON,
                  'detail': self.state_text(),
-                 'fix': 'Check TT session provisioning and credentials in .env.'},
+                 'fix': self._connection_fix()},
                 {'check': 'Execution', 'ok': False, 'detail': self.NOT_WIRED,
                  'fix': 'Execution and reconciliation require a separate integration.'}]
+
+    def _connection_fix(self):
+        """Give the operator the remedy for the observed connection failure.
+
+        A WinError 10013 is raised by Windows while opening the TCP socket.
+        No FIX Logon has been put on the wire at that point, so suggesting a
+        password change is both misleading and delays the actual repair.
+        """
+        errors = ' '.join(str(session.state.error) for session in self._sessions.values()).lower()
+        if 'winerror 10013' in errors or 'access permissions' in errors:
+            return ('Windows is blocking outbound TCP before FIX Logon. Allow the Python '
+                    'executable through the firewall/endpoint security for TT UAT ports '
+                    '11502 (Order Routing) and 11503 (Market Data), or use a network that '
+                    'permits those ports. Credentials are not involved in this error.')
+        if 'timed out' in errors:
+            return ('TT did not respond. Check VPN/proxy/firewall access to the configured '
+                    'TT UAT hosts and ports, then verify TT session provisioning.')
+        return 'Check TT session provisioning and credentials in .env.'
 
 
 # Native FIX session implementation extracted from backup_v1fixapp.py.

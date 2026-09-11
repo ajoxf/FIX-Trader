@@ -125,6 +125,22 @@ def test_missing_credentials_and_unsupported_protocol_do_not_open_sockets(monkey
     assert 'FIX.4.2' in gateway.state_text()
 
 
+def test_socket_permission_denied_has_a_network_remedy(monkeypatch):
+    def denied(*args, **kwargs):
+        raise PermissionError(10013, 'An attempt was made to access a socket in a way forbidden by its access permissions')
+
+    monkeypatch.setattr(socket, 'create_connection', denied)
+    gateway = FixGateway(venue(monkeypatch))
+    gateway.start()
+    deadline = time.monotonic() + 2
+    while gateway.state() == SessionState.CONNECTING and time.monotonic() < deadline:
+        time.sleep(0.01)
+    diagnostic = gateway.diagnose()[0]
+    assert diagnostic['ok'] is False
+    assert 'firewall' in diagnostic['fix'].lower()
+    assert '.env' not in diagnostic['fix']
+
+
 def test_separate_session_settings_survive_config_roundtrip(monkeypatch):
     v = venue(monkeypatch)
     raw = v.to_dict()
