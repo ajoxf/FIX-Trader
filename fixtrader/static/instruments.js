@@ -25,7 +25,7 @@
       if(!quote)continue;
       row.quote={...row.quote,...quote};
       const age=quote.timestamp?Date.now()-Date.parse(quote.timestamp):Infinity;
-      row.quote.stale=!frame.connected||age>15000;
+      row.quote.stale=quote.integrity_ok===false||!frame.connected||age>15000;
       row.quote.spread=quote.ask!==null&&quote.ask!==undefined&&quote.bid!==null&&quote.bid!==undefined?quote.ask-quote.bid:null;
       row.quote.mid=quote.ask!==null&&quote.ask!==undefined&&quote.bid!==null&&quote.bid!==undefined?(quote.ask+quote.bid)/2:null;
     }

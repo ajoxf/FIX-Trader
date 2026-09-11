@@ -12,6 +12,8 @@ the real one.
 """
 
 import os
+import io
+import csv
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -88,6 +90,33 @@ def create_app(config_path: str = "config.json",
     @app.get('/instruments')
     def instruments():
         return render_template('instruments.html', asset_version=ASSET_VERSION)
+
+    @app.get('/logs')
+    def logs_page():
+        return render_template('logs.html', asset_version=ASSET_VERSION)
+
+    def audit_log():
+        from .fix_audit import FixAuditLog
+        return FixAuditLog()
+
+    @app.get('/api/fix-logs')
+    def api_fix_logs():
+        return jsonify({'rows': audit_log().read(request.args.get('limit', 500),
+            request.args.get('category', ''), request.args.get('search', ''))})
+
+    @app.post('/api/fix-logs/clear')
+    def api_clear_fix_logs():
+        audit_log().clear()
+        return jsonify({'ok': True})
+
+    @app.get('/api/fix-logs.csv')
+    def api_fix_logs_csv():
+        rows = audit_log().read(5000, request.args.get('category', ''), request.args.get('search', ''))
+        out = io.StringIO(); columns = ['timestamp','level','category','session','direction','event','sequence','details','raw']
+        writer = csv.DictWriter(out, fieldnames=columns); writer.writeheader()
+        for row in reversed(rows):
+            item = {key: row.get(key, '') for key in columns}; item['details'] = str(item['details']); writer.writerow(item)
+        return Response(out.getvalue(), mimetype='text/csv', headers={'Content-Disposition':'attachment; filename=fix-logs.csv'})
 
     @app.get('/settings')
     def settings_page():

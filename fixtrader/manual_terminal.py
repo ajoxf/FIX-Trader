@@ -398,6 +398,13 @@ class ManualTerminal:
                 book[side + '_levels'] = levels[:100]
                 book[side] = levels[0]['price'] if levels else None
                 book[side + '_size'] = levels[0]['size'] if levels else None
+            if (book.get('bid') is not None and book.get('ask') is not None
+                    and book['bid'] > book['ask']):
+                book['error'] = 'Crossed book rejected; waiting for a clean TT snapshot'
+                book['stale'] = True
+                book['integrity_ok'] = False
+            else:
+                book['integrity_ok'] = True
 
     def _validate(self, args):
         self.session('Order Routing')
@@ -632,7 +639,8 @@ class ManualTerminal:
                 book = {k: v for k, v in self.books.get(key, {}).items() if k != 'entries'}
                 stamp = book.get('timestamp')
                 age = (datetime.now(timezone.utc) - datetime.fromisoformat(stamp)).total_seconds() if stamp else None
-                book['stale'] = not md or md.state.status != 'CONNECTED' or age is None or age > 15
+                book['stale'] = (book.get('integrity_ok') is False or not md
+                                 or md.state.status != 'CONNECTED' or age is None or age > 15)
                 bid, ask = book.get('bid'), book.get('ask')
                 book['spread'] = ask - bid if bid is not None and ask is not None else None
                 book['mid'] = (ask + bid) / 2 if bid is not None and ask is not None else None

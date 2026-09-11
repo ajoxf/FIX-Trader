@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterator, List, Optional, Protocol, runtime_checka
 from .models import (BookTop, Fill, GatewayEvent, OrderRequest, SecurityDef,
                      SessionState, VenueOrder, VenuePosition)
 from .manual_terminal import ManualTerminal
+from .fix_audit import FixAuditLog
 
 #: Every order we send carries this. Anything at the venue without it belongs
 #: to somebody else — a hand order in TT, most likely — and is never
@@ -67,6 +68,8 @@ class FixGateway:
         self._activity_lock = threading.Lock()
         self._reconnect_at = None
         self._connect_not_before = 0
+        # Disk IO never runs on the latency-sensitive FIX receiver threads.
+        self.audit = FixAuditLog(async_write=True)
         self._contract_security_ids = {}
         self.terminal = ManualTerminal(self, manual_path)
 
@@ -161,9 +164,24 @@ class FixGateway:
         return text
 
     def log_fix(self, session, direction, msg_type, seq_num, raw):
-        # Only protocol metadata is exposed; never raw FIX or credential fields.
+        # Raw protocol evidence is durable; sensitive fields are redacted by the writer.
         names = {'A': 'Logon', '0': 'Heartbeat', '1': 'Test request',
                  '5': 'Logout', '2': 'Resend request', '3': 'Reject', '4': 'Sequence reset'}
+        fields = parse_fix_message(raw)
+        category = ('Market Data' if msg_type in ('c', 'd', 'V', 'W', 'X', 'Y', 'j')
+                    else 'Executions' if msg_type in ('8', '9')
+                    else 'Orders' if msg_type in ('D', 'F', 'G') else 'FIX Session')
+        details = {key: fields.get(tag) for key, tag in {
+            'instrument': '55', 'security_id': '48', 'client_order_id': '11',
+            'order_id': '37', 'execution_id': '17', 'execution_type': '150',
+            'order_status': '39', 'side': '54', 'quantity': '38', 'price': '44',
+            'fill_quantity': '32', 'fill_price': '31', 'remaining_quantity': '151',
+            'average_price': '6', 'reason': '58', 'fix_sending_time': '52'
+        }.items() if fields.get(tag) not in (None, '')}
+        self.audit.write(level='ERROR' if msg_type in ('3','5','9','Y','j') else 'INFO',
+                         category=category, session=session, direction=direction,
+                         event=names.get(msg_type, msg_type), sequence=str(seq_num),
+                         details=details, raw=raw)
         with self._activity_lock:
             self._activity.append({'time': utcnow().isoformat(), 'session': session,
                 'direction': direction, 'type': names.get(msg_type, msg_type),
@@ -341,6 +359,9 @@ class NativeFixSession:
             self.state.status = "CONNECTING"
             self.state.error = ""
         self.thread.start()
+        self.svc.audit.write(level='INFO', category='FIX Session', session=self.session_name,
+                             direction='LOCAL', event='Connection attempt', sequence='',
+                             details={'host': self.cfg['host'], 'port': self.cfg['port']})
 
     def is_running(self) -> bool:
         return self.thread.is_alive() and not self.stop_event.is_set()
@@ -434,6 +455,9 @@ class NativeFixSession:
                 if time.monotonic() - self.last_receive_monotonic > heartbeat_seconds * 2 + 5:
                     raise TimeoutError("TT heartbeat timed out; reconnect the session")
         except Exception as exc:  # show the actual server/network reason in UI
+            self.svc.audit.write(level='ERROR', category='Errors', session=self.session_name,
+                                 direction='LOCAL', event='Connection failed', sequence='',
+                                 details={'error': self.svc._redact(str(exc))})
             with self.state.lock:
                 self.state.status = "ERROR"
                 self.state.error = self.svc._redact(str(exc))
