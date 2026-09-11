@@ -45,6 +45,25 @@ def test_a_pass_publishes_a_snapshot(tmp_path):
     assert snap['engine']['alive'] is True
 
 
+def test_relative_databases_follow_the_runtime_status_directory(tmp_path):
+    config_dir = tmp_path / 'configuration'
+    runtime_dir = tmp_path / 'runtime'
+    config_dir.mkdir()
+    runtime_dir.mkdir()
+    cfg = TraderConfig(path=str(config_dir / 'config.json'))
+    cfg.settings['DATABASE_PATH'] = 'fixtrader.db'
+    cfg.save()
+
+    runner.run(config_path=str(cfg.path),
+               status_path=str(runtime_dir / 'status.json'),
+               command_path=str(runtime_dir / 'commands.jsonl'),
+               result_path=str(runtime_dir / 'results.json'),
+               simulated=True, once=True)
+
+    assert (runtime_dir / 'fixtrader.db').exists()
+    assert not (config_dir / 'fixtrader.db').exists()
+
+
 def test_the_engine_survives_a_snapshot_it_cannot_publish(monkeypatch, tmp_path):
     """The failure this test exists for actually happened, on Windows, on the
     first run: `os.replace` cannot rename over a file another process has

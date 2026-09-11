@@ -24,7 +24,7 @@ from .engine import Engine
 logger = logging.getLogger("fixtrader.runner")
 
 
-def build_gateway(config, simulated: bool):
+def build_gateway(config, simulated: bool, runtime_dir: str = ""):
     """The simulator, or the real session once it is wired.
 
     Until a venue is configured this runs against `FakeGateway` and the
@@ -48,8 +48,10 @@ def build_gateway(config, simulated: bool):
         return FakeGateway(sims), True
     from .gateway import FixGateway
     venue = reachable[0]
+    state_dir = runtime_dir or os.path.dirname(os.path.abspath(config.path))
+    manual_name = os.path.splitext(os.path.basename(config.path))[0] + '.manual.db'
     return FixGateway(venue, list(config.contracts.values()),
-                      manual_path=os.path.splitext(config.path)[0] + '.manual.db'), False
+                      manual_path=os.path.join(state_dir, manual_name)), False
 
 
 #: How fresh a snapshot has to be for us to conclude another engine is alive
@@ -104,8 +106,13 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
             f"cannot explain. Stop that one first, or point this at a "
             f"different --status and --config.")
     config = TraderConfig.from_file(config_path)
-    db = Database(config.settings.get('DATABASE_PATH', 'fixtrader.db'))
-    gateway, is_sim = build_gateway(config, simulated)
+    runtime_dir = os.path.dirname(os.path.abspath(status_path))
+    os.makedirs(runtime_dir, exist_ok=True)
+    database_path = config.settings.get('DATABASE_PATH', 'fixtrader.db')
+    if not os.path.isabs(database_path):
+        database_path = os.path.join(runtime_dir, os.path.basename(database_path))
+    db = Database(database_path)
+    gateway, is_sim = build_gateway(config, simulated, runtime_dir)
     engine = Engine(config, gateway, db=db, simulated=is_sim)
     bridge = CommandBridge(command_path, result_path)
     bridge.prime()                    # a restart never replays a KILL ALL
