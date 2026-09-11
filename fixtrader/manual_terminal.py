@@ -109,7 +109,10 @@ class ManualTerminal:
 
     def instrument_fields(self, instrument):
         # Exact TT ID is authoritative, including exchange-listed spreads.
-        return [('55', instrument['symbol']), ('48', instrument['security_id']), ('22', '96')]
+        fields = [('55', instrument['symbol']), ('48', instrument['security_id']), ('22', '96')]
+        if instrument.get('exchange'):
+            fields.append(('207', instrument['exchange']))
+        return fields
 
     def lookup(self, args):
         with self.lock:

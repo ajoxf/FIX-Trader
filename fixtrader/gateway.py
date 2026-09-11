@@ -5,6 +5,7 @@ quote and reviewed manual UAT order workflows live in ManualTerminal.
 The strategy protocol still reports unknown account positions/orders as None.
 """
 
+import copy
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional, Protocol, runtime_checkable
 
@@ -66,6 +67,7 @@ class FixGateway:
         self._activity_lock = threading.Lock()
         self._reconnect_at = None
         self._connect_not_before = 0
+        self._contract_security_ids = {}
         self.terminal = ManualTerminal(self, manual_path)
 
     def start(self):
@@ -197,10 +199,47 @@ class FixGateway:
                 'reconnect_in': max(0, round(self._reconnect_at - time.monotonic())) if self._reconnect_at else 0}
 
     def subscribe(self, contract):
+        """Register a configured contract with TT's existing MD parser.
+
+        The FIX session is asynchronous, so registration is deliberately
+        separate from sending V.  ``ManualTerminal.poll`` sends the request
+        as soon as Market Data is logged on (and re-sends it after reconnect).
+        """
+        security_id = str(getattr(contract, 'security_id', '') or '').strip()
+        symbol = str(getattr(contract, 'symbol', '') or '').strip()
+        exchange = str(getattr(contract, 'security_exchange', '') or '').strip()
+        if not security_id or not symbol or not exchange:
+            return None
+        with self.terminal.lock:
+            instrument = {
+                'security_id': security_id, 'symbol': symbol,
+                'exchange': exchange, 'description': getattr(contract, 'name', symbol),
+                'full_depth': False,
+            }
+            self._contract_security_ids[contract.key] = security_id
+            self.terminal.watch[security_id] = instrument
+            self.terminal.catalogue[security_id] = copy.deepcopy(instrument)
+            self.terminal._save('watch', security_id, instrument)
+            session = self._sessions.get('Market Data')
+            if (session is not None and session.state.status == 'CONNECTED'
+                    and session.is_running()):
+                self.terminal._subscribe(security_id)
         return None
 
     def top_of_book(self, key):
-        return None
+        security_id = self._contract_security_ids.get(key, key)
+        with self.terminal.lock:
+            book = self.terminal.books.get(security_id)
+            if not book or book.get('bid') is None or book.get('ask') is None:
+                return None
+            stamp = book.get('timestamp')
+            try:
+                ts = datetime.fromisoformat(stamp) if stamp else None
+            except (TypeError, ValueError):
+                ts = None
+            return BookTop(bid=book.get('bid'), ask=book.get('ask'),
+                           bid_size=book.get('bid_size'), ask_size=book.get('ask_size'),
+                           ts=ts)
 
     def security_definition(self, contract):
         return None
