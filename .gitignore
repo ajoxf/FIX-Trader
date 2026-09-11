@@ -15,6 +15,7 @@ results.tt-uat.json
 status.json
 commands.jsonl
 logs/
+runtime/
 store/
 .pytest_cache/
 nohup.out

@@ -1,6 +1,11 @@
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
+$logDirectory = Join-Path $PSScriptRoot 'logs'
+$runtimeDirectory = Join-Path $PSScriptRoot 'runtime'
+New-Item -ItemType Directory -Force -Path $logDirectory, $runtimeDirectory | Out-Null
+$sessionLog = Join-Path $logDirectory ('fixtrader-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+
 $pythonCandidates = @(
     (Join-Path $PSScriptRoot '.venv\Scripts\python.exe'),
     (Join-Path (Split-Path $PSScriptRoot -Parent) '.venv\Scripts\python.exe')
@@ -15,4 +20,9 @@ if (-not $python) {
     }
 }
 
-& $python start.py --fix --no-browser --config config.tt-uat.json --status status.tt-uat.json --commands commands.tt-uat.jsonl --results results.tt-uat.json --port 8000
+$env:PYTHONUNBUFFERED = '1'
+& $python start.py --fix --no-browser --config config.tt-uat.json `
+    --status (Join-Path $runtimeDirectory 'status.tt-uat.json') `
+    --commands (Join-Path $runtimeDirectory 'commands.tt-uat.jsonl') `
+    --results (Join-Path $runtimeDirectory 'results.tt-uat.json') `
+    --port 8000 2>&1 | Tee-Object -FilePath $sessionLog
