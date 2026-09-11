@@ -9,11 +9,15 @@ shutdown. Both sessions must acknowledge logon before the desk reports LOGGED_ON
 From this directory:
 
 ```powershell
-..\.venv\Scripts\python.exe import_backup_config.py
+python -m pip install -r requirements.txt
+python import_backup_config.py
 .\run_fix.ps1
 ```
 
-Run the importer once. It reads the existing backup's
+Create and activate a virtual environment first if Python dependencies are not
+already installed. `run_fix.ps1` uses `.venv` in this repository when present,
+then a sibling `.venv`, then `python` on `PATH`. Run the importer once. It
+reads the existing backup's
 `../.streamlit/secrets.toml`, writes passwords to `.env`, and creates the
 separate `config.tt-uat.json`. Existing simulator configuration is preserved.
 The imported configuration has no example instruments and has the master algo
@@ -35,7 +39,7 @@ backup terminal at the same time.
 Equivalent launch command:
 
 ```powershell
-..\.venv\Scripts\python.exe start.py --fix --no-browser --config config.tt-uat.json --status status.tt-uat.json --commands commands.tt-uat.jsonl --results results.tt-uat.json --port 8000
+python start.py --fix --no-browser --config config.tt-uat.json --status status.tt-uat.json --commands commands.tt-uat.jsonl --results results.tt-uat.json --port 8000
 ```
 
 The default `start.py` mode remains simulated. Stop the launcher with Ctrl+C.
