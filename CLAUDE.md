@@ -45,17 +45,6 @@ the drawing wins.
   on has not moved, so an algo left armed re-enters on the next pass — a
   tenth of a second after the trader pressed the button to get out.
 - **UAT and PROD are separate venues** and the screen always says which.
-- **The algo trades its OWN account** (a sub-account on this desk), and the
-  screen says which — "whose money is this" is the same class of question as
-  UAT or PROD. Tag 1 is stamped on every order rather than left for the
-  session to imply, and the reconciler is scoped by it: a position the venue
-  reports on ANOTHER account is not an anomaly, it is somebody else's work,
-  and reporting it as UNCLAIMED every second trains the operator to ignore
-  the one line that matters. A position with NO account stated is still
-  reconciled — unknown is not "not ours", nothing is auto-closed on the
-  strength of it, and the safe error is to report a position we may not own
-  rather than ignore one we do. No account configured sends an EMPTY tag 1,
-  never a guess at a default.
 
 ## Conventions that are easy to lose in a refactor
 
@@ -76,15 +65,6 @@ the drawing wins.
 - **Unmeasured is not zero.** Return `None` and render `—`. A target of 0.00
   reads as "get out at break-even", which is a different instruction; a
   net P&L that quietly means gross makes a losing system look profitable.
-- **`trade_direction` restricts ENTRIES only.** BOTH / SHORT_ONLY / LONG_ONLY,
-  per contract: a desk that will only sell a rich spread passes over every
-  long-spread signal. It can never withhold an exit — the position a one-way
-  contract holds is by definition in the one direction it is allowed, so a
-  direction filter on the close would strand exactly the position the desk
-  was most careful about. An unrecognised value means BOTH, never a silent
-  refusal to trade. The window carries a badge while it is in force, because
-  a contract that is armed and passes over half its signals otherwise looks
-  broken.
 - **A guard may withhold an ORDER. A guard must never prevent a close** — and
   nothing withholds the escalation to market on an exit.
 - **A refusal carries the venue's own words** (`tag 58: "Instrument not open
@@ -117,39 +97,6 @@ the drawing wins.
   cover the round trip. Any "best level" must clear its costs, or the Analysis
   window invites lowering the threshold onto something that reverts
   beautifully and loses money every time.
-- **The schema MIGRATES itself, from the schema.** `CREATE TABLE IF NOT
-  EXISTS` does nothing to a table that already exists, so every column added
-  after a desk first ran is missing from that desk's database — and the first
-  write naming it kills the engine mid-fill (`table positions has no column
-  named opened_qty`, on a live desk, in a restart loop). `Database._migrate`
-  reads the DECLARED schema, reads what the database has, and adds the
-  difference: a column is migrated by having been declared, with no second
-  list to keep in step. Additive only — nothing dropped, renamed or
-  rewritten, because that would rewrite the recordings the replay reads and
-  the positions the book is recovered from. Tables are created, THEN
-  migrated, THEN indexed: an index naming a column the migration is about to
-  add cannot be created before it.
-- **`another_engine_is_running` checks the WRITER, not just the heartbeat.**
-  A crashed engine leaves a snapshot seconds old, so an age check alone
-  refuses the restart and the launcher spends its strikes on the guard rather
-  than on the fault. The snapshot carries the writer's pid and host; a dead
-  pid on this machine means a stale file. Anything it cannot tell — no pid,
-  another host, no way to ask — counts as ALIVE, because being wrong that way
-  refuses a start and being wrong the other way runs two engines against one
-  book. **Never probe with `os.kill(pid, 0)`**: on Windows CPython maps every
-  signal but CTRL_C/CTRL_BREAK onto TerminateProcess, so the harmless probe
-  kills the engine it asked about.
-- **The engine records the BOOK, not just its mid.** An exit reads the
-  executable side, so a replay given only mids has to assume a spread — and
-  that assumption cannot be corrected afterwards, which makes this the one
-  thing in the system that got harder the longer it waited. `samples` carries
-  `bid`/`ask`/`bid_size`/`ask_size`, added by an ADDITIVE migration because
-  databases are already running; `None` there means NOT RECORDED, never a
-  book of zero width. The replay counts what it read against what it had to
-  assume and prints both, because a report whose exits came off a real book
-  and one whose exits came off a guess must not look alike. A crossed book or
-  one side alone is bad data, not a book: it falls back to the assumption and
-  is counted as one.
 - **The replay is a SIGNAL replay and says so on its own face.** It calls
   `stats` and `signals` — never a second implementation of a rule — over
   recorded mids. The book either side of the mid was never stored, so the

@@ -227,14 +227,12 @@ def test_a_contract_the_venue_does_not_know_is_a_failure_with_a_step():
     assert 'FIX_NOTES' in row['fix']       # it points at the open question
 
 
-def test_connect_against_an_unwired_session_says_so_honestly(client):
-    """A venue with a host takes the real FixGateway, which is not wired yet.
-    It must say that in words rather than looking like a connection failure
-    somebody could try to fix by retyping the port."""
+def test_real_connect_requires_engine_instead_of_opening_a_duplicate_session(client):
+    """The web worker never opens a temporary real FIX connection."""
     c, _ = client
     body = c.get('/api/venues/wired/connect').get_json()
     assert body['ok'] is False
-    assert 'not wired' in body['rows'][0]['detail']
+    assert 'engine is not running' in body['rows'][0]['detail']
 
 
 def test_a_missing_password_is_reported_as_not_set_never_as_a_value(client):

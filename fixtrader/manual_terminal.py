@@ -1,0 +1,645 @@
+"""Manual TT UAT instrument, quote and order workflows.
+
+Runs in the engine and uses the gateway's existing sessions. The strategy
+gateway remains separate: manual orders never become algo-owned positions.
+"""
+import copy
+import json
+import sqlite3
+import threading
+import time
+import uuid
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+
+
+ORDER_TYPES = {'MARKET': '1', 'LIMIT': '2', 'STOP': '3', 'STOP_LIMIT': '4',
+               'MARKET_ON_CLOSE': '5', 'LIMIT_ON_CLOSE': 'B', 'POST_ONLY': 'p'}
+TIFS = {'DAY': '0', 'GTC': '1', 'AT_OPEN': '2', 'IOC': '3', 'FOK': '4', 'GTD': '6', 'AT_CLOSE': '7'}
+LIMIT_TYPES = {'LIMIT', 'STOP_LIMIT', 'LIMIT_ON_CLOSE', 'POST_ONLY'}
+TERMINAL = {'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'}
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def fix_time():
+    return datetime.now(timezone.utc).strftime('%Y%m%d-%H:%M:%S.%f')[:-3]
+
+
+def clean(value, name='value', required=False):
+    text = str(value or '').strip()
+    if (required and not text) or len(text) > 240 or any(ord(c) < 32 or ord(c) > 126 for c in text) or '|' in text:
+        raise ValueError(f'{name} is missing or contains invalid characters')
+    return text
+
+
+def number(value, name, positive=False):
+    try:
+        d = Decimal(str(value))
+        if not d.is_finite() or (positive and d <= 0):
+            raise ValueError()
+        return format(d, 'f')
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError(f'{name} must be a finite' + (' positive' if positive else '') + ' number') from None
+
+
+def pairs(raw):
+    return [tuple(p.split('=', 1)) for p in raw.split('\x01') if '=' in p]
+
+
+class ManualTerminal:
+    def __init__(self, gateway, path=':memory:'):
+        self.gateway = gateway
+        self.lock = threading.RLock()
+        self.quote_changed = threading.Event()
+        self.db = sqlite3.connect(path, check_same_thread=False)
+        self.db.execute('CREATE TABLE IF NOT EXISTS manual_state (kind TEXT, id TEXT, data TEXT, PRIMARY KEY(kind,id))')
+        self.db.execute('CREATE TABLE IF NOT EXISTS manual_fills (id TEXT PRIMARY KEY, data TEXT)')
+        self.db.commit()
+        self.instruments = {}
+        self.catalogue = {}
+        self.search = {'status': 'Idle', 'request_id': '', 'error': ''}
+        self.watch = self._load('watch')
+        for instrument in self.watch.values():
+            self._enrich(instrument)
+            self.catalogue[instrument['security_id']] = copy.deepcopy(instrument)
+        self.orders = self._load('order')
+        self.previews = {}
+        self.subscriptions = {}
+        self.books = {}
+        self.errors = []
+        self._md_session = None
+        self._or_session = None
+        self._search_count = 0
+        # A local record after a restart cannot establish the venue's order state.
+        for order in self.orders.values():
+            if order['status'] not in TERMINAL:
+                order['status'] = 'UNKNOWN'
+                order['text'] = 'Restarted: venue status not recovered. Verify in TT before placing another order.'
+                self._save('order', order['id'], order)
+
+    def _load(self, kind):
+        return {key: json.loads(data) for key, data in self.db.execute('SELECT id,data FROM manual_state WHERE kind=?', (kind,))}
+
+    def _enrich(self, instrument):
+        p = instrument.get('parameters', {})
+        instrument['tick_size'] = p.get('16552') or instrument.get('tick_size', '')
+        instrument['point_value'] = p.get('16554', '')
+        instrument['display_factor'] = p.get('9787', '')
+        instrument['tick_value'] = ''
+        if instrument.get('tick_size') and instrument['point_value']:
+            instrument['tick_value'] = format(Decimal(instrument['tick_size']) * Decimal(instrument['point_value']), 'f')
+        instrument['contract_code'] = instrument.get('contract_code') or p.get('455', '')
+        instrument['display_name'] = instrument.get('contract_code') or (instrument.get('description', instrument.get('symbol', '')) + ' ' + instrument.get('maturity', ''))
+
+    def _save(self, kind, key, value):
+        self.db.execute('INSERT OR REPLACE INTO manual_state VALUES (?,?,?)', (kind, key, json.dumps(value)))
+        self.db.commit()
+
+    def session(self, name):
+        session = self.gateway._sessions.get(name)
+        if session is None or session.state.status != 'CONNECTED' or not session.is_running():
+            raise ConnectionError(name + ' FIX is not connected')
+        return session
+
+    def _send(self, name, msg, fields):
+        self.session(name).send(msg, fields)
+
+    def instrument_fields(self, instrument):
+        # Exact TT ID is authoritative, including exchange-listed spreads.
+        return [('55', instrument['symbol']), ('48', instrument['security_id']), ('22', '96')]
+
+    def lookup(self, args):
+        with self.lock:
+            self.session('Market Data')
+            exchange = clean(args.get('exchange'), 'Exchange', True)
+            symbol = clean(args.get('symbol'), 'Product symbol', True)
+            security_type = clean(args.get('security_type', 'FUT'))
+            if security_type not in ('FUT', 'MLEG', 'OPT', 'CS', 'FOR', 'SPOT'):
+                raise ValueError('Unsupported instrument type')
+            maturity = clean(args.get('maturity', ''))
+            if maturity and (len(maturity) != 6 or not maturity.isdigit()):
+                raise ValueError('Expiry month must be YYYYMM')
+            if self._search_count >= 20:
+                raise ValueError('20 active catalogue searches reached. Reconnect Market Data before searching again.')
+            request_id = 'SEC-' + uuid.uuid4().hex[:16]
+            self.search = {'status': 'Searching', 'request_id': request_id, 'error': '', 'started': time.time()}
+            self.instruments.clear()
+            fields = [('320', request_id), ('321', '3'), ('207', exchange), ('55', symbol), ('167', security_type), ('17000', 'Y')]
+            if maturity:
+                fields.append(('200', maturity))
+            self._send('Market Data', 'c', fields)
+            self._search_count += 1
+            return {'ok': True, 'request_id': request_id}
+
+    def add(self, args):
+        with self.lock:
+            key = clean(args.get('security_id'), 'TT Security ID', True)
+            instrument = self.instruments.get(key) or self.watch.get(key) or self.catalogue.get(key)
+            if not instrument:
+                raise ValueError('Find and select the exact instrument from TT first')
+            if len(self.watch) >= 30 and key not in self.watch:
+                raise ValueError('Watchlist limit is 30 instruments')
+            self.watch[key] = copy.deepcopy(instrument)
+            if key in self.subscriptions:
+                self.watch[key]['full_depth'] = bool(self.books.get(key, {}).get('full_depth', self.watch[key].get('full_depth')))
+            self._save('watch', key, self.watch[key])
+            self._subscribe(key)
+            return {'ok': True, 'security_id': key}
+
+    def remove(self, args):
+        with self.lock:
+            key = str(args.get('security_id', ''))
+            if key in self.subscriptions:
+                self._subscribe(key, '2')
+            self.watch.pop(key, None)
+            self.books.pop(key, None)
+            self.db.execute('DELETE FROM manual_state WHERE kind=? AND id=?', ('watch', key))
+            self.db.commit()
+            return {'ok': True}
+
+    def _subscribe(self, key, action='1'):
+        if key in self.subscriptions and action == '1':
+            return
+        request_id = self.subscriptions.get(key) or 'MD-' + uuid.uuid4().hex[:16]
+        fields = [('262', request_id), ('263', action), ('264', '0' if self.watch[key].get('full_depth') else '1'), ('265', '1'), ('266', 'Y'),
+                  ('146', '1')] + self.instrument_fields(self.watch[key])
+        if action != '2':
+            fields += [('267', '4'), ('269', '0'), ('269', '1'), ('269', '2'), ('269', 'x')]
+            self.subscriptions[key] = request_id
+            self.books[key] = {'bid': None, 'ask': None, 'last': None, 'bid_size': None, 'ask_size': None,
+                               'timestamp': '', 'error': '', 'entries': {}, 'full_depth': self.watch[key].get('full_depth', False)}
+        try:
+            self._send('Market Data', 'V', fields)
+        except Exception:
+            self.subscriptions.pop(key, None)
+            raise
+        if action == '2':
+            self.subscriptions.pop(key, None)
+
+    def depth(self, args):
+        with self.lock:
+            key = str(args.get('security_id', ''))
+            if key not in self.watch:
+                raise ValueError('Add this instrument to the watchlist first')
+            self.session('Market Data')
+            if key in self.subscriptions:
+                self._subscribe(key, '2')
+            self.watch[key]['full_depth'] = args.get('enabled') is True
+            self._save('watch', key, self.watch[key])
+            self._subscribe(key)
+            return {'ok': True}
+
+    def poll(self):
+        with self.lock:
+            session = self.gateway._sessions.get('Market Data')
+            if session and session.state.status == 'CONNECTED' and session.is_running():
+                if session is not self._md_session:
+                    self._md_session = session
+                    self._search_count = 0
+                    self.subscriptions.clear()
+                    self.books.clear()
+                for key in self.watch:
+                    if key not in self.subscriptions:
+                        try:
+                            self._subscribe(key)
+                        except Exception as error:
+                            self.errors = [str(error)]
+                            break
+            order_session = self.gateway._sessions.get('Order Routing')
+            if order_session is not self._or_session:
+                if self._or_session is not None:
+                    for order in self.orders.values():
+                        if order['status'] not in TERMINAL:
+                            order['status'] = 'UNKNOWN'
+                            order['text'] = 'Session changed; verify order status in TT. No automatic resend.'
+                            self._save('order', order['id'], order)
+                self._or_session = order_session
+            if order_session is not None and order_session.state.status in ('ERROR', 'DISCONNECTED'):
+                for order in self.orders.values():
+                    if order['status'] not in TERMINAL and order['status'] != 'UNKNOWN':
+                        order['status'] = 'UNKNOWN'
+                        order['text'] = 'FIX connection lost; venue order status is unknown. Verify in TT.'
+                        self._save('order', order['id'], order)
+            if self.search['status'] == 'Searching' and time.time() - self.search.get('started', 0) > 20:
+                self.search['status'] = 'No results yet' if not self.instruments else 'Receiving results'
+
+    def on_message(self, name, fields, raw):
+        with self.lock:
+            msg = fields.get('35')
+            if msg == 'd' and fields.get('320') == self.search['request_id']:
+                # Repeating-group fields must not overwrite the top-level identity.
+                first = {}
+                for tag, value in pairs(raw):
+                    first.setdefault(tag, value)
+                key = first.get('48')
+                if key and first.get('55') and len(self.instruments) < 2000:
+                    instrument = {'security_id': key, 'symbol': first['55'], 'exchange': first.get('207', first.get('100', '')),
+                        'security_type': first.get('167', ''), 'maturity': first.get('200', ''),
+                        'description': first.get('107', ''), 'currency': first.get('15', ''),
+                        'tick_size': first.get('969', ''), 'multiplier': first.get('231', ''),
+                        'strike': first.get('202', ''), 'put_call': first.get('201', ''),
+                        'subtype': first.get('762', ''), 'expiry_date': first.get('541', ''),
+                        'min_qty': first.get('16460', ''), 'legs': [],
+                        'parameters': {k: v for k, v in first.items() if k not in ('95', '96', '553', '554')}}
+                    leg = None
+                    alternate = None
+                    for tag, value in pairs(raw):
+                        if tag == '455' and leg is None:
+                            alternate = value
+                        elif tag == '456' and value == '98' and alternate is not None and leg is None:
+                            instrument['contract_code'] = alternate
+                        if tag == '600':
+                            if leg:
+                                instrument['legs'].append(leg)
+                            leg = {tag: value}
+                        elif leg is not None and tag in ('602', '603', '608', '609', '610', '611', '612', '623', '624', '616'):
+                            leg[tag] = value
+                    if leg:
+                        instrument['legs'].append(leg)
+                    self._enrich(instrument)
+                    self.instruments[key] = instrument
+                    if len(self.catalogue) < 5000 or key in self.catalogue:
+                        self.catalogue[key] = copy.deepcopy(instrument)
+                    if key in self.watch:
+                        instrument['full_depth'] = self.watch[key].get('full_depth', False)
+                        self.watch[key] = copy.deepcopy(instrument)
+                        self._save('watch', key, instrument)
+                    self.search['status'] = 'Receiving results'
+                elif fields.get('58'):
+                    self.search['error'] = self.gateway._redact(fields['58'])
+            elif msg in ('W', 'X'):
+                self._market(fields, raw)
+                self.quote_changed.set()
+            elif msg in ('Y', 'j', '3'):
+                reason = self.gateway._redact(fields.get('58', 'TT rejected the request'))
+                self.errors = (self.errors + [reason])[-10:]
+                request = fields.get('262') or fields.get('379')
+                for key, request_id in self.subscriptions.items():
+                    if request == request_id:
+                        self.books[key]['error'] = reason
+                if self.search['status'] in ('Searching', 'Receiving results'):
+                    self.search['error'] = reason
+            elif msg in ('8', '9'):
+                self._execution(fields)
+
+    def _market(self, fields, raw):
+        received_ms = time.time_ns() / 1_000_000
+        header = {}
+        groups, group = [], None
+        in_groups = False
+        for tag, value in pairs(raw):
+            if tag == '268':
+                in_groups = True
+                continue
+            if not in_groups:
+                header[tag] = value
+                continue
+            if tag == '279' or (tag == '269' and group and '269' in group):
+                if group:
+                    groups.append(group)
+                group = {}
+            if tag == '269' and group is None:
+                group = {}
+            if group is not None and tag != '10':
+                group[tag] = value
+        if group:
+            groups.append(group)
+        request_key = next((k for k, v in self.subscriptions.items() if v == header.get('262')), None)
+        reset = set()
+        touched = set()
+        inherited_key = None
+        for group_index, entry in enumerate(groups):
+            key = entry.get('48') or header.get('48') or request_key or inherited_key
+            if key is None and entry.get('278'):
+                matches = [k for k,b in self.books.items() if entry['278'] in b['entries']]
+                if len(matches) == 1:
+                    key = matches[0]
+            if key not in self.books:
+                continue  # Never route by product name: multiple expiries share tag 55.
+            inherited_key = key
+            book = self.books[key]
+            touched.add(key)
+            book['received_ms'] = received_ms
+            book['fix_message_type'] = fields.get('35', header.get('35', ''))
+            book['fix_sequence'] = fields.get('34', header.get('34', ''))
+            if header.get('35') == 'W' and key not in reset:
+                book.update(bid=None, ask=None, bid_size=None, ask_size=None, entries={})
+                reset.add(key)
+            kind = entry.get('269')
+            action = entry.get('279', '0')
+            entry_id = entry.get('278') or (kind + ':' + entry['290'] if kind and entry.get('290') else kind)
+            old = book['entries'].get(entry.get('280', entry_id), {})
+            kind = kind or old.get('269')
+            if action == '0':
+                old = {}
+            if kind == 'J':
+                book.update(bid=None, ask=None, bid_size=None, ask_size=None, entries={})
+            elif kind in ('0', '1', '2', 'x'):
+                side = {'0': 'bid', '1': 'ask', '2': 'last', 'x': 'last'}[kind]
+                # TT positions in changes/deletes refer to the book BEFORE this
+                # entire message. New levels must not overwrite those positions.
+                if kind in ('0', '1') and not entry.get('278') and entry.get('290') and action == '0':
+                    entry_id = 'new:' + str(group_index)
+                if action == '2':
+                    book['entries'].pop(entry_id, None)
+                    if kind in ('2', 'x'):
+                        book[side] = None
+                        book[side + '_size'] = None
+                else:
+                    merged = dict(old, **entry)
+                    if entry.get('280') and entry['280'] != entry_id:
+                        book['entries'].pop(entry['280'], None)
+                    merged['269'] = kind
+                    book['entries'][entry_id] = merged
+                    for tag, attribute in [('270', side), ('271', side + '_size')]:
+                        if tag in merged:
+                            try:
+                                book[attribute] = float(number(merged[tag], attribute))
+                            except ValueError:
+                                book[attribute] = None
+            book['timestamp'] = now()
+            book['error'] = ''
+        for key in touched:
+            book = self.books[key]
+            # Only renumber positional entries once all actions have been applied.
+            entries = book['entries']
+            positional = {k: v for k, v in entries.items() if not v.get('278') and v.get('290')}
+            for entry_id in positional:
+                entries.pop(entry_id)
+            for kind in ('0', '1'):
+                values = []
+                for value in positional.values():
+                    if value.get('269') != kind or not value.get('270'):
+                        continue
+                    try:
+                        number(value['270'], 'price')
+                    except ValueError:
+                        continue
+                    values.append(value)
+                values.sort(key=lambda v: Decimal(v['270']), reverse=kind == '0')
+                for position, value in enumerate(values, 1):
+                    entries[kind + ':' + str(position)] = dict(value, **{'290': str(position)})
+            for kind, side in [('0', 'bid'), ('1', 'ask')]:
+                levels = []
+                for stored in book['entries'].values():
+                    if stored.get('269') == kind and stored.get('270') is not None:
+                        try:
+                            levels.append({'price': float(number(stored['270'], 'price')),
+                                           'size': float(number(stored['271'], 'size')) if stored.get('271') else None})
+                        except ValueError:
+                            continue
+                levels.sort(key=lambda level: level['price'], reverse=kind == '0')
+                book[side + '_levels'] = levels[:100]
+                book[side] = levels[0]['price'] if levels else None
+                book[side + '_size'] = levels[0]['size'] if levels else None
+
+    def _validate(self, args):
+        self.session('Order Routing')
+        instrument = self.watch.get(str(args.get('security_id', '')))
+        if instrument is None:
+            raise ValueError('Add an instrument to the watchlist first')
+        ticket = {k: clean(args.get(k, '')) for k in ('side', 'order_type', 'tif', 'account', 'text', 'expire_date', 'open_close', 'capacity', 'customer_capacity')}
+        if ticket['side'] not in ('BUY', 'SELL') or ticket['order_type'] not in ORDER_TYPES or ticket['tif'] not in TIFS:
+            raise ValueError('Choose a supported side, order type and time in force')
+        ticket['account'] = clean(ticket['account'] or self.gateway.venue.account, 'Account', True)
+        ticket['quantity'] = number(args.get('quantity'), 'Quantity', True)
+        ticket['instrument'] = copy.deepcopy(instrument)
+        ticket['security_id'] = instrument['security_id']
+        if instrument.get('min_qty') and Decimal(ticket['quantity']) < Decimal(number(instrument['min_qty'], 'Minimum quantity', True)):
+            raise ValueError('Quantity is below the instrument minimum')
+        for key in ('price', 'stop_price', 'min_qty', 'display_qty'):
+            value = args.get(key)
+            ticket[key] = number(value, key, key in ('min_qty', 'display_qty')) if value not in ('', None) else None
+        if ticket['order_type'] in LIMIT_TYPES and ticket['price'] is None:
+            raise ValueError('Limit price is required for this order type')
+        if ticket['order_type'] in ('STOP', 'STOP_LIMIT') and ticket['stop_price'] is None:
+            raise ValueError('Stop trigger price is required')
+        if ticket['order_type'] not in LIMIT_TYPES:
+            ticket['price'] = None
+        if ticket['order_type'] not in ('STOP', 'STOP_LIMIT'):
+            ticket['stop_price'] = None
+        for key in ('min_qty', 'display_qty'):
+            if ticket[key] is not None and Decimal(ticket[key]) > Decimal(ticket['quantity']):
+                raise ValueError(key + ' cannot exceed total quantity')
+        tick = instrument.get('tick_size')
+        if instrument.get('parameters', {}).get('16456', '0') != '0':
+            raise ValueError('This instrument has a variable tick table; ticket validation is not yet supported for it')
+        if tick:
+            tick = Decimal(number(tick, 'Instrument tick size', True))
+            for key in ('price', 'stop_price'):
+                if ticket[key] is not None and Decimal(ticket[key]) % tick != 0:
+                    raise ValueError(key + ' must align with the instrument tick size ' + str(tick))
+        if ticket['tif'] == 'GTD':
+            try:
+                expiry = datetime.strptime(ticket['expire_date'].replace('-', ''), '%Y%m%d').date()
+                if expiry < datetime.now(timezone.utc).date():
+                    raise ValueError()
+                ticket['expire_date'] = expiry.strftime('%Y%m%d')
+            except ValueError:
+                raise ValueError('GTD requires an expiry date today or later') from None
+        if ticket['open_close'] not in ('', 'O', 'C', 'F'):
+            raise ValueError('Open/close must be O, C or F')
+        if ticket['capacity'] not in ('', 'A', 'G', 'I', 'P', 'R', 'W') or ticket['customer_capacity'] not in ('', '1', '2', '3', '4'):
+            raise ValueError('Invalid order capacity')
+        ticket['cancel_on_disconnect'] = args.get('cancel_on_disconnect') is True
+        if ticket['cancel_on_disconnect'] and ticket['tif'] in ('GTC', 'GTD'):
+            raise ValueError('TT cancel-on-disconnect cannot be used with GTC/GTD')
+        if ticket['tif'] == 'IOC' and instrument.get('exchange') == 'CME' and ticket['min_qty']:
+            raise ValueError('CME IOC must omit minimum quantity; use FOK instead')
+        return ticket
+
+    def _order_fields(self, ticket, client_id):
+        fields = [('11', client_id), ('1', ticket['account'])] + self.instrument_fields(ticket['instrument'])
+        fields += [('54', '1' if ticket['side'] == 'BUY' else '2'), ('38', ticket['quantity']),
+                   ('40', ORDER_TYPES[ticket['order_type']]), ('59', TIFS[ticket['tif']]), ('60', fix_time()), ('1028', 'Y')]
+        for key, tag in [('price', '44'), ('stop_price', '99'), ('min_qty', '110'), ('display_qty', '1138'),
+                         ('open_close', '77'), ('capacity', '528'), ('customer_capacity', '582'), ('text', '58')]:
+            if ticket.get(key) not in (None, ''):
+                fields.append((tag, ticket[key]))
+        if ticket['tif'] == 'GTD':
+            fields.append(('432', ticket['expire_date']))
+        if ticket['tif'] == 'FOK' and ticket['instrument'].get('exchange') == 'CME':
+            fields = [(tag, value) for tag, value in fields if tag not in ('59', '110')]
+            fields += [('59', '3'), ('110', ticket['quantity'])]
+        if ticket['cancel_on_disconnect']:
+            fields.append(('18', 'o 2'))
+        return fields
+
+    def preview(self, args):
+        with self.lock:
+            ticket = self._validate(args)
+            token = uuid.uuid4().hex
+            self.previews = {k: v for k, v in self.previews.items() if v['expires'] > time.time()}
+            self.previews[token] = {'ticket': ticket, 'expires': time.time() + 60}
+            return {'ok': True, 'token': token, 'ticket': ticket,
+                    'fields': self._order_fields(ticket, 'assigned-on-confirmation'), 'expires_in': 60}
+
+    def closeable(self, order):
+        """Unclosed fills in this ticket's ledger, with outstanding closes reserved."""
+        if order.get('close_of') or order['ticket'].get('open_close') in ('C', 'F'):
+            return Decimal('0')
+        if order['status'] not in TERMINAL or order.get('pending'):
+            return Decimal('0')
+        remaining = Decimal(str(order.get('filled_qty', 0)))
+        for child in self.orders.values():
+            if child.get('close_of') == order['id']:
+                # UNKNOWN is reserved too: a lost acknowledgement is not a rejection.
+                remaining -= (Decimal(str(child['filled_qty'])) if child['status'] in TERMINAL
+                              else Decimal(child['ticket']['quantity']))
+        return max(Decimal('0'), remaining)
+
+    def preview_close(self, args):
+        with self.lock:
+            source = self.orders.get(str(args.get('order_id', '')))
+            if source is None or self.closeable(source) <= 0:
+                raise ValueError('No unclosed filled quantity is available. Cancel any working remainder first.')
+            original = source['ticket']
+            # Use the immutable original instrument, even if removed from the watchlist.
+            instrument = original['instrument']
+            key = original['security_id']
+            previous = self.watch.get(key)
+            self.watch[key] = instrument
+            try:
+                result = self.preview({'security_id': key, 'account': original['account'],
+                    'side': 'SELL' if original['side'] == 'BUY' else 'BUY',
+                    'order_type': 'MARKET', 'quantity': str(self.closeable(source)),
+                    'tif': 'DAY', 'open_close': 'C', 'capacity': original.get('capacity', ''),
+                    'customer_capacity': original.get('customer_capacity', ''),
+                    'text': 'Close ' + source['id']})
+            finally:
+                if previous is None:
+                    self.watch.pop(key, None)
+                else:
+                    self.watch[key] = previous
+            self.previews[result['token']]['close_of'] = source['id']
+            result['close_of'] = source['id']
+            return result
+
+    def submit(self, args):
+        with self.lock:
+            token = str(args.get('token', ''))
+            order_id = 'FTM-' + token
+            if order_id in self.orders:
+                return {'ok': True, 'order_id': order_id, 'status': self.orders[order_id]['status']}
+            preview = self.previews.get(token)
+            if not preview or preview['expires'] < time.time() or args.get('confirmed') is not True:
+                raise ValueError('Review the ticket again and confirm before sending')
+            self.session('Order Routing')
+            ticket = copy.deepcopy(preview['ticket'])
+            close_of = preview.get('close_of')
+            if close_of and Decimal(ticket['quantity']) > self.closeable(self.orders[close_of]):
+                raise ValueError('The available close quantity changed. Review the close again.')
+            order = {'id': order_id, 'current_id': order_id, 'ids': [order_id], 'ticket': ticket,
+                     'status': 'PENDING', 'text': 'Awaiting TT acknowledgement', 'updated': now(),
+                     'filled_qty': 0, 'remaining_qty': float(ticket['quantity']), 'avg_price': None, 'venue_order_id': '', 'pending': None}
+            if close_of:
+                order['close_of'] = close_of
+            self.orders[order_id] = order
+            self._save('order', order_id, order)  # Durable idempotency before any bytes go out.
+            del self.previews[token]
+            try:
+                self._send('Order Routing', 'D', self._order_fields(ticket, order_id))
+            except Exception:
+                order['status'] = 'UNKNOWN'
+                order['text'] = 'Send outcome unknown. Verify in TT; this order will not be retried.'
+                self._save('order', order_id, order)
+                raise
+            return {'ok': True, 'order_id': order_id, 'status': order['status']}
+
+    def manage(self, args, replace=False):
+        with self.lock:
+            order = self.orders.get(str(args.get('order_id')))
+            if not order or not order['id'].startswith('FTM-'):
+                raise ValueError('Only orders created by this manual ticket can be managed here')
+            if order['status'] not in ('NEW', 'PARTIALLY_FILLED', 'REPLACED') or order.get('pending'):
+                raise ValueError('Order must be acknowledged and have no pending change')
+            self.session('Order Routing')
+            new_id = 'FTM-' + uuid.uuid4().hex
+            ticket = copy.deepcopy(order['ticket'])
+            if replace:
+                if order.get('close_of'):
+                    raise ValueError('Close orders cannot be increased or replaced here; cancel and review the remaining close quantity.')
+                for key in ('quantity', 'price', 'stop_price'):
+                    if key in args:
+                        ticket[key] = args[key]
+                ticket = self._validate(ticket)
+                if Decimal(ticket['quantity']) <= Decimal(str(order['filled_qty'])):
+                    raise ValueError('Replacement total quantity must exceed quantity already filled')
+                fields = self._order_fields(ticket, new_id)
+            else:
+                fields = [('11', new_id), ('1', ticket['account']), ('54', '1' if ticket['side'] == 'BUY' else '2'),
+                          ('38', ticket['quantity']), ('60', fix_time()), ('1028', 'Y')] + self.instrument_fields(ticket['instrument'])
+            fields += [('41', order['current_id'])]
+            if order['venue_order_id']:
+                fields.append(('37', order['venue_order_id']))
+            order['ids'].append(new_id)
+            order['pending'] = {'id': new_id, 'kind': 'REPLACE' if replace else 'CANCEL', 'ticket': ticket}
+            order['text'] = 'Change requested; awaiting TT acknowledgement'
+            self._save('order', order['id'], order)
+            try:
+                self._send('Order Routing', 'G' if replace else 'F', fields)
+            except Exception:
+                order['status'] = 'UNKNOWN'
+                order['text'] = 'Change outcome unknown; verify in TT before retrying'
+                self._save('order', order['id'], order)
+                raise
+            return {'ok': True, 'order_id': order['id']}
+
+    def _execution(self, fields):
+        order = next((o for o in self.orders.values() if fields.get('11') in o['ids'] or fields.get('41') in o['ids']), None)
+        if order is None:
+            return
+        if fields.get('35') == '9':
+            order['pending'] = None
+            order['status'] = {'0': 'NEW', '1': 'PARTIALLY_FILLED', '2': 'FILLED', '4': 'CANCELED', 'C': 'EXPIRED'}.get(fields.get('39'), 'UNKNOWN')
+            order['text'] = self.gateway._redact(fields.get('58', 'TT rejected the order change'))
+        else:
+            if fields.get('150') in ('1', '2', 'F') and self.db.execute('SELECT 1 FROM manual_fills WHERE id=?', (fields.get('17'),)).fetchone():
+                return
+            states = {'0':'NEW', '1':'PARTIALLY_FILLED', '2':'FILLED', '4':'CANCELED', '5':'REPLACED',
+                      '6':'PENDING_CANCEL', '8':'REJECTED', 'A':'PENDING', 'C':'EXPIRED', 'E':'PENDING_REPLACE'}
+            order['status'] = states.get(fields.get('39'), 'UNKNOWN')
+            order['venue_order_id'] = fields.get('37', order['venue_order_id'])
+            pending = order.get('pending')
+            if pending and fields.get('11') == pending['id'] and fields.get('150') == '5':
+                order['ticket'] = pending['ticket']
+                order['current_id'] = pending['id']
+                order['pending'] = None
+            if order['status'] in TERMINAL:
+                order['pending'] = None
+            for tag, key in [('14', 'filled_qty'), ('151', 'remaining_qty'), ('6', 'avg_price')]:
+                if fields.get(tag) is not None:
+                    order[key] = float(number(fields[tag], key))
+            order['text'] = self.gateway._redact(fields.get('58', ''))
+            if fields.get('17') and fields.get('150') in ('1', '2', 'F'):
+                fill = {'exec_id': fields['17'], 'order_id': order['id'], 'symbol': order['ticket']['instrument']['description'],
+                        'side': order['ticket']['side'], 'quantity': fields.get('32'), 'price': fields.get('31'), 'time': now()}
+                self.db.execute('INSERT OR IGNORE INTO manual_fills VALUES (?,?)', (fields['17'], json.dumps(fill)))
+        order['updated'] = now()
+        self._save('order', order['id'], order)
+
+    def snapshot(self):
+        with self.lock:
+            rows = []
+            md = self.gateway._sessions.get('Market Data')
+            for key, instrument in self.watch.items():
+                book = {k: v for k, v in self.books.get(key, {}).items() if k != 'entries'}
+                stamp = book.get('timestamp')
+                age = (datetime.now(timezone.utc) - datetime.fromisoformat(stamp)).total_seconds() if stamp else None
+                book['stale'] = not md or md.state.status != 'CONNECTED' or age is None or age > 15
+                bid, ask = book.get('bid'), book.get('ask')
+                book['spread'] = ask - bid if bid is not None and ask is not None else None
+                book['mid'] = (ask + bid) / 2 if bid is not None and ask is not None else None
+                rows.append({'instrument': instrument, 'quote': book})
+            return copy.deepcopy({'search': self.search, 'instruments': list(self.instruments.values())[:2000],
+                'catalogue': [{k: i.get(k, '') for k in ('security_id','symbol','exchange','security_type','display_name','maturity')}
+                              for i in self.catalogue.values()],
+                'watchlist': rows, 'orders': [dict(o, close_available=float(self.closeable(o)),
+                    closed_qty=sum(float(c['filled_qty']) for c in self.orders.values() if c.get('close_of') == o['id']))
+                    for o in list(self.orders.values())[-200:][::-1]],
+                'fills': [json.loads(row[0]) for row in self.db.execute('SELECT data FROM manual_fills ORDER BY rowid DESC LIMIT 100')],
+                'errors': self.errors, 'account': self.gateway.venue.account,
+                'order_types': list(ORDER_TYPES), 'tifs': list(TIFS)})

@@ -10,7 +10,6 @@ import argparse
 import logging
 import os
 import signal
-import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -49,7 +48,8 @@ def build_gateway(config, simulated: bool):
         return FakeGateway(sims), True
     from .gateway import FixGateway
     venue = reachable[0]
-    return FixGateway(venue, list(config.contracts.values())), False
+    return FixGateway(venue, list(config.contracts.values()),
+                      manual_path=os.path.splitext(config.path)[0] + '.manual.db'), False
 
 
 #: How fresh a snapshot has to be for us to conclude another engine is alive
@@ -81,63 +81,7 @@ def another_engine_is_running(status_path: str,
                - _dt.fromisoformat(raw['ts'])).total_seconds()
     except Exception:                                    # noqa: BLE001
         return None
-    if not (0 <= age <= within):
-        return None
-
-    # The heartbeat says the file is FRESH. It does not say the process that
-    # wrote it is alive — and an engine that has just crashed leaves a file
-    # seconds old. Refusing then costs the launcher its restarts on a guard
-    # rather than on the fault, which is what happened to a desk whose
-    # database needed migrating: three strikes, two of them spent here.
-    engine = raw.get('engine') or {}
-    pid, host = engine.get('pid'), engine.get('host')
-    if pid and host == socket.gethostname() and not _process_is_alive(pid):
-        return None                     # a dead engine's last words
-    return age
-
-
-def _process_is_alive(pid: int) -> bool:
-    """Whether a process id is still running on THIS machine.
-
-    Returns True when it cannot tell. Being wrong towards "alive" refuses a
-    start; being wrong the other way runs two engines against one book, and
-    only one of those is recoverable.
-
-    NOT `os.kill(pid, 0)`. That is the usual answer and it is correct on
-    POSIX, but on Windows CPython maps any signal other than CTRL_C_EVENT /
-    CTRL_BREAK_EVENT onto TerminateProcess — so the "harmless liveness
-    probe" kills the very engine it was asking about.
-    """
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return True
-    if pid <= 0:
-        return True
-    if os.name == 'nt':
-        try:
-            import ctypes
-            SYNCHRONIZE = 0x00100000
-            WAIT_TIMEOUT = 0x00000102
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-            if not handle:
-                return False            # gone, or not ours to look at
-            try:
-                return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
-            finally:
-                kernel32.CloseHandle(handle)
-        except Exception:                                # noqa: BLE001
-            return True                 # cannot tell — assume it is alive
-    try:
-        os.kill(pid, 0)                 # POSIX: signal 0 really is a probe
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True                     # somebody else's process, so alive
-    except OSError:
-        return True
-    return True
+    return age if 0 <= age <= within else None
 
 
 def run(config_path: str = "config.json", status_path: str = "status.json",
@@ -166,6 +110,11 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
     bridge = CommandBridge(command_path, result_path)
     bridge.prime()                    # a restart never replays a KILL ALL
     engine.start()
+    quote_publisher = None
+    if not is_sim and getattr(gateway, 'terminal', None) is not None:
+        from .quote_stream import QuotePublisher
+        quote_publisher = QuotePublisher(gateway.terminal, status_path)
+        quote_publisher.start()
 
     stopping = {'now': False}
 
@@ -285,6 +234,8 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
                 if drain_commands():
                     publish()
     finally:
+        if quote_publisher:
+            quote_publisher.stop()
         # Sweep our own working orders at shutdown, scoped to our own ids.
         engine.stop()
         logger.info("engine down")
