@@ -2,6 +2,7 @@
 import copy
 import json
 import logging
+import os
 import threading
 import time
 
@@ -31,7 +32,11 @@ class QuotePublisher:
                        'connected': bool(md and md.state.status == 'CONNECTED' and md.is_running()),
                        'quotes': copy.deepcopy({k: {field: value for field, value in book.items() if field != 'entries'}
                                   for k, book in self.terminal.books.items() if k in self.terminal.watch})}
-        atomicfile.write_json(self.path, payload, indent=None)
+        # This is a disposable latest-value frame, rebuilt after restart.
+        # Orders, fills, configuration and the regular status snapshot remain
+        # durable; forcing the physical disk to flush for every market tick
+        # only adds latency and write pressure on Windows.
+        atomicfile.write_json(self.path, payload, indent=None, durable=False)
 
     def run(self):
         failures = 0
@@ -55,13 +60,22 @@ class QuotePublisher:
 def events(path):
     """Latest-state stream: slow clients skip intermediate frames, never queue them."""
     previous = None
+    previous_stamp = None
     heartbeat = time.monotonic()
-    yield 'retry: 1000\n\n'
+    yield 'retry: 250\n\n'
     while True:
         try:
-            payload = atomicfile.read_json(path, default=None)
-        except (OSError, ValueError):
+            stamp = os.stat(path).st_mtime_ns
+        except OSError:
+            stamp = None
+        if stamp == previous_stamp:
             payload = None
+        else:
+            previous_stamp = stamp
+            try:
+                payload = atomicfile.read_json(path, default=None)
+            except (OSError, ValueError):
+                payload = None
         if payload and payload.get('published_ms') != previous:
             previous = payload['published_ms']
             payload['server_sent_ms'] = time.time_ns() / 1_000_000
@@ -70,4 +84,6 @@ def events(path):
         elif time.monotonic() - heartbeat > 1:
             yield ': heartbeat\n\n'
             heartbeat = time.monotonic()
-        time.sleep(0.002)
+        # Five milliseconds is below a normal display frame while avoiding
+        # hundreds of redundant JSON reads per second for a quiet market.
+        time.sleep(0.005)

@@ -70,6 +70,31 @@ def test_review_is_required_idempotent_and_allows_zero_negative_prices(terminal)
     assert terminal.preview(ticket())['ticket']['price']=='-0.5'
 
 
+def test_manual_risk_limits_persist_and_are_rechecked_at_submit(terminal):
+    terminal.set_risk({'trading_enabled': True, 'max_order_qty': '2',
+                       'max_open_qty_per_instrument': '3', 'daily_loss_limit': '0'})
+    with pytest.raises(ValueError, match='per-order limit'):
+        terminal.preview(ticket(quantity='3'))
+    preview = terminal.preview(ticket(quantity='2'))
+    terminal.set_risk({'trading_enabled': False, 'max_order_qty': '2',
+                       'max_open_qty_per_instrument': '3', 'daily_loss_limit': '0'})
+    with pytest.raises(ValueError, match='kill switch'):
+        terminal.submit({'token': preview['token'], 'confirmed': True})
+    path = terminal.db.execute('PRAGMA database_list').fetchone()[2]
+    assert ManualTerminal(terminal.gateway, path).snapshot()['risk']['trading_enabled'] is False
+
+
+def test_kill_switch_still_permits_risk_reducing_close(terminal):
+    preview=terminal.preview(ticket(quantity='1'));oid=terminal.submit({'token':preview['token'],'confirmed':True})['order_id']
+    report(terminal,{'35':'8','11':oid,'37':'TT-1','39':'2','150':'2','17':'EXEC-CLOSE','14':'1','151':'0','32':'1','31':'10','6':'10'})
+    terminal.set_risk({'trading_enabled': False, 'max_order_qty': 0,
+                       'max_open_qty_per_instrument': 0, 'daily_loss_limit': 0})
+    close = terminal.preview_close({'order_id': oid})
+    assert close['ticket']['side'] == 'SELL'
+    terminal.submit({'token': close['token'], 'confirmed': True})
+    assert len(sent(terminal, 'D')) == 2
+
+
 @pytest.mark.parametrize('changes', [dict(quantity='NaN'),dict(quantity='0'),dict(price='Infinity'),dict(price='0.11'),
     dict(order_type='STOP',stop_price=''),dict(order_type='STOP_LIMIT',stop_price='1',price=''),
     dict(tif='GTD',expire_date=''),dict(display_qty='3'),dict(account='bad\x0135=D'),

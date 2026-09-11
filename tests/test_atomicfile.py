@@ -13,6 +13,15 @@ def test_a_save_lands_whole(tmp_path):
     assert json.load(open(path)) == {'a': 1}
 
 
+def test_disposable_save_can_skip_physical_disk_flush(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(os, 'fsync', lambda fd: calls.append(fd))
+    atomicfile.write_json(str(tmp_path / 'quote.json'), {'bid': 1}, durable=False)
+    assert calls == []
+    atomicfile.write_json(str(tmp_path / 'order.json'), {'id': 1})
+    assert len(calls) == 1
+
+
 def test_no_temp_files_are_left_behind(tmp_path):
     path = str(tmp_path / 'x.json')
     for _ in range(5):

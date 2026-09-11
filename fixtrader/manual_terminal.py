@@ -18,6 +18,8 @@ ORDER_TYPES = {'MARKET': '1', 'LIMIT': '2', 'STOP': '3', 'STOP_LIMIT': '4',
 TIFS = {'DAY': '0', 'GTC': '1', 'AT_OPEN': '2', 'IOC': '3', 'FOK': '4', 'GTD': '6', 'AT_CLOSE': '7'}
 LIMIT_TYPES = {'LIMIT', 'STOP_LIMIT', 'LIMIT_ON_CLOSE', 'POST_ONLY'}
 TERMINAL = {'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'}
+DEFAULT_RISK = {'trading_enabled': True, 'max_order_qty': 0.0,
+                'max_open_qty_per_instrument': 0.0, 'daily_loss_limit': 0.0}
 
 
 def now():
@@ -66,6 +68,9 @@ class ManualTerminal:
             self._enrich(instrument)
             self.catalogue[instrument['security_id']] = copy.deepcopy(instrument)
         self.orders = self._load('order')
+        saved_risk = self._load('risk').get('manual', {})
+        self.risk = dict(DEFAULT_RISK)
+        self.risk.update({key: saved_risk[key] for key in DEFAULT_RISK if key in saved_risk})
         self.previews = {}
         self.subscriptions = {}
         self.books = {}
@@ -99,6 +104,67 @@ class ManualTerminal:
     def _save(self, kind, key, value):
         self.db.execute('INSERT OR REPLACE INTO manual_state VALUES (?,?,?)', (kind, key, json.dumps(value)))
         self.db.commit()
+
+    def set_risk(self, args):
+        """Persist operator limits. Zero means unlimited, never a guessed limit."""
+        with self.lock:
+            updated = {'trading_enabled': args.get('trading_enabled') is True}
+            for key, label in (('max_order_qty', 'Maximum order quantity'),
+                               ('max_open_qty_per_instrument', 'Maximum open quantity'),
+                               ('daily_loss_limit', 'Daily loss limit')):
+                try:
+                    value = Decimal(str(args.get(key, 0) or 0))
+                except (InvalidOperation, ValueError, TypeError):
+                    raise ValueError(label + ' must be a finite non-negative number') from None
+                if not value.is_finite() or value < 0:
+                    raise ValueError(label + ' must be a finite non-negative number')
+                updated[key] = float(value)
+            self.risk = updated
+            self._save('risk', 'manual', self.risk)
+            return {'ok': True, 'risk': copy.deepcopy(self.risk)}
+
+    def _risk_check(self, ticket, risk_reducing=False, exclude_order_id=None):
+        """Fail closed for new exposure; closing orders remain available."""
+        if risk_reducing:
+            return
+        if not self.risk['trading_enabled']:
+            raise ValueError('Manual trading kill switch is ON. New orders are blocked; closes and cancels remain available.')
+        quantity = Decimal(ticket['quantity'])
+        maximum = Decimal(str(self.risk['max_order_qty']))
+        if maximum and quantity > maximum:
+            raise ValueError(f'Quantity exceeds the manual per-order limit of {maximum:g}')
+        maximum_open = Decimal(str(self.risk['max_open_qty_per_instrument']))
+        if maximum_open:
+            security_id = ticket['security_id']
+            exposure = Decimal('0')
+            for order in self.orders.values():
+                if (order['id'] == exclude_order_id or order.get('close_of')
+                        or order['ticket'].get('security_id') != security_id):
+                    continue
+                filled = Decimal(str(order.get('filled_qty') or 0))
+                closed_or_reserved = Decimal('0')
+                for child in self.orders.values():
+                    if child.get('close_of') != order['id']:
+                        continue
+                    closed_or_reserved += (Decimal(str(child.get('filled_qty') or 0))
+                                           if child['status'] in TERMINAL
+                                           else Decimal(child['ticket']['quantity']))
+                exposure += max(Decimal('0'), filled - closed_or_reserved)
+                if order['status'] in ('PENDING', 'NEW', 'PARTIALLY_FILLED', 'REPLACED'):
+                    exposure += Decimal(str(order.get('remaining_qty') or 0))
+            if exposure + quantity > maximum_open:
+                raise ValueError(f'Order would exceed the manual open/working quantity limit of {maximum_open:g} for this instrument')
+        loss_limit = Decimal(str(self.risk['daily_loss_limit']))
+        if loss_limit:
+            snapshot = self._pnl_snapshot([])
+            today = datetime.now(timezone.utc).date()
+            values = [trade['realized_pnl'] for trade in snapshot['trades']
+                      if datetime.fromisoformat(trade['closed_at']).date() == today]
+            if any(value is None for value in values):
+                raise ValueError('Daily loss limit is enabled but realized P&L is unavailable; new exposure is blocked')
+            pnl = sum(values, 0.0)
+            if Decimal(str(pnl)) <= -loss_limit:
+                raise ValueError(f'Daily loss limit of {loss_limit:g} has been reached; new exposure is blocked')
 
     def session(self, name):
         session = self.gateway._sessions.get(name)
@@ -408,7 +474,7 @@ class ManualTerminal:
             else:
                 book['integrity_ok'] = True
 
-    def _validate(self, args):
+    def _validate(self, args, risk_reducing=False, exclude_order_id=None):
         self.session('Order Routing')
         instrument = self.watch.get(str(args.get('security_id', '')))
         if instrument is None:
@@ -461,6 +527,7 @@ class ManualTerminal:
             raise ValueError('TT cancel-on-disconnect cannot be used with GTC/GTD')
         if ticket['tif'] == 'IOC' and instrument.get('exchange') == 'CME' and ticket['min_qty']:
             raise ValueError('CME IOC must omit minimum quantity; use FOK instead')
+        self._risk_check(ticket, risk_reducing, exclude_order_id)
         return ticket
 
     def _order_fields(self, ticket, client_id):
@@ -480,14 +547,17 @@ class ManualTerminal:
             fields.append(('18', 'o 2'))
         return fields
 
-    def preview(self, args):
+    def _preview(self, args, risk_reducing=False):
         with self.lock:
-            ticket = self._validate(args)
+            ticket = self._validate(args, risk_reducing)
             token = uuid.uuid4().hex
             self.previews = {k: v for k, v in self.previews.items() if v['expires'] > time.time()}
             self.previews[token] = {'ticket': ticket, 'expires': time.time() + 60}
             return {'ok': True, 'token': token, 'ticket': ticket,
                     'fields': self._order_fields(ticket, 'assigned-on-confirmation'), 'expires_in': 60}
+
+    def preview(self, args):
+        return self._preview(args)
 
     def closeable(self, order):
         """Unclosed fills in this ticket's ledger, with outstanding closes reserved."""
@@ -515,12 +585,12 @@ class ManualTerminal:
             previous = self.watch.get(key)
             self.watch[key] = instrument
             try:
-                result = self.preview({'security_id': key, 'account': original['account'],
+                result = self._preview({'security_id': key, 'account': original['account'],
                     'side': 'SELL' if original['side'] == 'BUY' else 'BUY',
                     'order_type': 'MARKET', 'quantity': str(self.closeable(source)),
                     'tif': 'DAY', 'open_close': 'C', 'capacity': original.get('capacity', ''),
                     'customer_capacity': original.get('customer_capacity', ''),
-                    'text': 'Close ' + source['id']})
+                    'text': 'Close ' + source['id']}, risk_reducing=True)
             finally:
                 if previous is None:
                     self.watch.pop(key, None)
@@ -542,6 +612,7 @@ class ManualTerminal:
             self.session('Order Routing')
             ticket = copy.deepcopy(preview['ticket'])
             close_of = preview.get('close_of')
+            self._risk_check(ticket, risk_reducing=bool(close_of))
             if close_of and Decimal(ticket['quantity']) > self.closeable(self.orders[close_of]):
                 raise ValueError('The available close quantity changed. Review the close again.')
             order = {'id': order_id, 'current_id': order_id, 'ids': [order_id], 'ticket': ticket,
@@ -577,7 +648,7 @@ class ManualTerminal:
                 for key in ('quantity', 'price', 'stop_price'):
                     if key in args:
                         ticket[key] = args[key]
-                ticket = self._validate(ticket)
+                ticket = self._validate(ticket, exclude_order_id=order['id'])
                 if Decimal(ticket['quantity']) <= Decimal(str(order['filled_qty'])):
                     raise ValueError('Replacement total quantity must exceed quantity already filled')
                 fields = self._order_fields(ticket, new_id)
@@ -727,4 +798,5 @@ class ManualTerminal:
                     for o in list(self.orders.values())[-200:][::-1]],
                 'fills': [json.loads(row[0]) for row in self.db.execute('SELECT data FROM manual_fills ORDER BY rowid DESC LIMIT 100')],
                 'errors': self.errors, 'account': self.gateway.venue.account, 'pnl': pnl,
+                'risk': copy.deepcopy(self.risk),
                 'order_types': list(ORDER_TYPES), 'tifs': list(TIFS)})

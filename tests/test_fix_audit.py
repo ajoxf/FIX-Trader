@@ -3,6 +3,19 @@ import json
 from fixtrader.fix_audit import FixAuditLog
 
 
+def test_normal_client_logout_is_not_logged_as_an_error(tmp_path):
+    import threading
+    from fixtrader.gateway import FixGateway
+    gateway = object.__new__(FixGateway)
+    gateway.audit = FixAuditLog(tmp_path)
+    gateway._sessions = {}
+    gateway._activity_lock = threading.RLock()
+    gateway._activity = []
+    gateway.log_fix('Market Data', 'OUT', '5', '7',
+                    '8=FIX.4.2\x0135=5\x0134=7\x0158=Client disconnect\x01')
+    assert gateway.audit.read()[0]['level'] == 'INFO'
+
+
 def test_fix_audit_redacts_credentials_and_filters(tmp_path):
     log = FixAuditLog(tmp_path)
     log.write(level='INFO', category='FIX Session', session='Market Data',

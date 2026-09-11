@@ -104,6 +104,7 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
             methods = {'search': terminal.lookup, 'add': terminal.add, 'remove': terminal.remove,
                        'depth': terminal.depth,
                        'preview': terminal.preview, 'preview_close': terminal.preview_close, 'submit': terminal.submit,
+                       'risk': terminal.set_risk,
                        'cancel': terminal.manage,
                        'replace': lambda data: terminal.manage(data, replace=True)}
             if operation not in methods:

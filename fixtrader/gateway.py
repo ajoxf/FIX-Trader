@@ -178,7 +178,12 @@ class FixGateway:
             'fill_quantity': '32', 'fill_price': '31', 'remaining_quantity': '151',
             'average_price': '6', 'reason': '58', 'fix_sending_time': '52'
         }.items() if fields.get(tag) not in (None, '')}
-        self.audit.write(level='ERROR' if msg_type in ('3','5','9','Y','j') else 'INFO',
+        # A client-requested Logout is normal lifecycle activity, not an
+        # error. An inbound Logout deserves attention, while explicit FIX,
+        # order-change and market-data rejects remain errors.
+        level = ('ERROR' if msg_type in ('3', '9', 'Y', 'j') else
+                 'WARNING' if msg_type == '5' and direction == 'IN' else 'INFO')
+        self.audit.write(level=level,
                          category=category, session=session, direction=direction,
                          event=names.get(msg_type, msg_type), sequence=str(seq_num),
                          details=details, raw=raw)
@@ -483,7 +488,10 @@ class NativeFixSession:
             raise ValueError('Incoming FIX CompIDs do not match the configured session')
         msg_type, seq = fields.get("35", "?"), fields.get("34", "?")
         if not seq.isdigit() or int(seq) != self.state.in_seq + 1:
-            raise ConnectionError('FIX sequence mismatch; session stopped. Verify order status in TT before reconnecting.')
+            expected = self.state.in_seq + 1
+            raise ConnectionError(
+                f'FIX sequence mismatch on {msg_type}: expected {expected}, received {seq}. '
+                'Session stopped; verify order status in TT before reconnecting.')
         with self.state.lock:
             self.state.incoming_count += 1
             self.state.in_seq = int(seq) if seq.isdigit() else self.state.in_seq

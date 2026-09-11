@@ -5,6 +5,7 @@
   const ladderState = new Map();
   let pinned = null, explorerSignature = '', streamState = 'connecting', streamLatency = null, latestReceived = 0;
   const explorer = {exchange:'CME', type:'FUT', product:'ES', contract:''};
+  window.addEventListener('error',event=>{const status=$('feed-status');if(status)status.textContent=`Display error: ${event.message}. Refresh the page; prices are not being presented as live.`;});
   const fmt = n => n === null || n === undefined || n === '' ? '—' : typeof n === 'number' ? Number(n.toFixed(8)).toString() : String(n);
   const clock = n => n ? new Date(n).toLocaleTimeString([], {hour12:false}) : '—';
   function quoteStatus(q) {
@@ -43,7 +44,11 @@
   const text = (tag, value, cls) => {const e = document.createElement(tag); e.textContent = value; if (cls) e.className = cls; return e;};
   function notice(message, error=false) { $('notice').textContent = message; $('notice').className = 'feedback' + (error ? ' error' : ''); }
   async function request(url, options) {
-    const r = await fetch(url, {cache:'no-store', ...options});
+    const controller=new AbortController(), timeout=setTimeout(()=>controller.abort(),5000);
+    let r;
+    try{r=await fetch(url,{cache:'no-store',signal:controller.signal,...options});}
+    catch(error){throw new Error(error.name==='AbortError'?'The local engine did not respond within 5 seconds.':error.message);}
+    finally{clearTimeout(timeout);}
     if (!r.ok) throw new Error(`Request failed (${r.status}). Check the FIX engine.`);
     return r.json();
   }
@@ -57,7 +62,7 @@
         if (!r.ok) throw new Error(r.error || 'Request failed');
         return r;
       }
-      await new Promise(resolve=>setTimeout(resolve,150));
+      await new Promise(resolve=>setTimeout(resolve,40));
     }
     throw new Error('Engine reply timed out. Check status before retrying an order.');
   }
@@ -271,6 +276,13 @@
     const floating=document.createDocumentFragment();for(const p of pnl.positions||[]){const row=document.createElement('tr');for(const v of [p.instrument,p.side,p.quantity,p.entry_price,p.mark_price,p.floating_pnl===null?'Unavailable':`${p.currency||''} ${fmt(p.floating_pnl)}`,`${p.mark_source} · FIX seq ${p.quote_sequence||'—'}`])row.append(text('td',fmt(v)));floating.append(row)}$('floating-pnl').replaceChildren(floating);if(!(pnl.positions||[]).length)empty($('floating-pnl'),7,'No locally observed open filled quantity.');
     const realized=document.createDocumentFragment();for(const p of pnl.trades||[]){const row=document.createElement('tr');for(const v of [clock(p.closed_at),p.instrument,p.side,p.quantity,p.entry_price,p.exit_price,p.realized_pnl===null?'Unavailable':`${p.currency||''} ${fmt(p.realized_pnl)}`,`${p.entry_order_id} → ${p.exit_order_id}`])row.append(text('td',fmt(v)));realized.append(row)}$('realized-pnl').replaceChildren(realized);if(!(pnl.trades||[]).length)empty($('realized-pnl'),8,'No completed entry/close pair received from TT.');
   }
+  function renderRisk() {
+    const risk=data.risk||{}, form=$('risk-form'), enabled=risk.trading_enabled!==false;
+    if(!form)return;
+    if(!form.dataset.loaded){for(const key of ['max_order_qty','max_open_qty_per_instrument','daily_loss_limit'])form.elements[key].value=risk[key]??0;form.elements.trading_enabled.checked=enabled;form.dataset.loaded='1';}
+    $('risk-state').textContent=enabled?'NEW ORDERS ENABLED':'KILL SWITCH ON';
+    $('risk-state').className=enabled?'risk-safe':'risk-blocked';
+  }
   function conditionals() {
     const type=$('order-type').value, tif=$('tif').value, form=$('ticket-form');
     const limit=['LIMIT','STOP_LIMIT','LIMIT_ON_CLOSE','POST_ONLY'].includes(type), stop=['STOP','STOP_LIMIT'].includes(type);
@@ -290,6 +302,7 @@
       confirmDialog('Review UAT order',wrap,'Confirm · Send UAT order',()=>command('submit',{token:r.token,confirmed:true}));
     }catch(error){notice(error.message,true);}finally{$('review-order').disabled=false;}
   });
+  $('risk-form').addEventListener('submit',async e=>{e.preventDefault();const args=Object.fromEntries(new FormData(e.target));args.trading_enabled=e.target.elements.trading_enabled.checked;try{const result=await command('risk',args);data.risk=result.risk;e.target.dataset.loaded='';renderRisk();notice('Manual trading safety limits saved.');}catch(error){notice(error.message,true);}});
   $('confirm').addEventListener('click',async()=>{if(!confirmation)return;$('confirm').disabled=true;try{const r=await confirmation();confirmation=null;$('review-dialog').close();notice(`Request sent${r.order_id?' · '+r.order_id:''}. Wait for TT acknowledgement.`);}catch(e){$('review-error').textContent=e.message;}finally{$('confirm').disabled=false;}});
   $('abort').addEventListener('click',()=>{$('review-dialog').close();confirmation=null;});
   $('filter').addEventListener('input',renderResults);
@@ -311,7 +324,7 @@
       if(!engine.alive)notice('The engine is offline. Prices below are historical and orders are unavailable.',true);
       if(!engine.alive)for(const w of data.watchlist||[])w.quote.stale=true;
       if(!$('account').value&&data.account)$('account').value=data.account;
-      renderResults();renderWatch();renderOrders();renderPnl();renderLadders();renderExplorer();
+      renderResults();renderWatch();renderOrders();renderPnl();renderRisk();renderLadders();renderExplorer();
     }catch(error){for(const w of data.watchlist||[])w.quote.stale=true;if(snapshot.engine)snapshot.engine.alive=false;$('session').textContent='Engine unavailable';$('session').className='tag error';$('review-order').disabled=true;notice(error.message,true);renderWatch();renderLadders();}
     setTimeout(poll,1000);
   }
