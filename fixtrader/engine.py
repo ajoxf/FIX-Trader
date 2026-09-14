@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 from . import config as config_mod
 from . import costs as costs_mod
 from . import marketdata, signals as signals_mod, sizing
+from . import risk as risk_mod
 from .executor import Executor
 from .marketdata import FeedGuard
 from .models import (ContractState, ExitReason, Intent, OrderType, Position,
@@ -87,6 +88,20 @@ class Engine:
         self.executor = Executor(gateway, db=db, notify=notify,
                                  simulated=simulated)
         self.runtimes: Dict[str, ContractRuntime] = {}
+        # Whole-book position and margin caps — separate from entry_signal's
+        # per-contract filters, which cannot see other contracts. Unset
+        # RISK_MAX_MARGIN_TOTAL keeps the margin side of this off; the
+        # position caps default on at values wide enough to match today's
+        # behaviour until an operator narrows them.
+        self.risk_limits = risk_mod.PortfolioRiskLimits(
+            max_positions_total=int(
+                config.settings.get('RISK_MAX_POSITIONS_TOTAL', 3)),
+            max_positions_per_family=dict(
+                config.settings.get('RISK_MAX_POSITIONS_PER_FAMILY', {}) or {}),
+            default_family_cap=int(
+                config.settings.get('RISK_DEFAULT_FAMILY_CAP', 1)),
+            max_margin_total=config.settings.get('RISK_MAX_MARGIN_TOTAL'),
+        )
         self.master_algo: bool = bool(config.settings.get('ALGO_MASTER_ENABLED', True))
         self.killed: bool = False
         #: When an edited configuration was last picked up, and anything in
@@ -197,14 +212,45 @@ class Engine:
         for event in events:
             self._handle_event(event, now)
 
+        drain_algo = getattr(self.gateway, 'drain_algo_events', None)
+        if drain_algo is not None:
+            for algo_event in drain_algo():
+                self._handle_algo_event(algo_event, now)
+
+        # Computed once per pass, then updated IN PLACE as each contract
+        # commits to an entry below — see _portfolio_risk_state()'s
+        # docstring for why a same-pass race needs live mutation, not a
+        # frozen snapshot.
+        portfolio_state = self._portfolio_risk_state()
+
         for key, rt in self.runtimes.items():
             try:
-                self._poll_contract(rt, now)
+                self._poll_contract(rt, now, portfolio_state)
             except Exception:                    # one contract must never
                 logger.exception("contract %s failed its pass", key)
         self.loop_ms = (utcnow() - started).total_seconds() * 1000.0
 
-    def _poll_contract(self, rt: ContractRuntime, now: datetime) -> None:
+    def _portfolio_risk_state(self) -> Dict[str, Any]:
+        """Starting point for the pass: open positions per family, and
+        total margin locked, from positions ALREADY open (including ones
+        opened via a confirmed algo proposal — Position.margin_locked is
+        set the same way either path). What this pass newly commits to is
+        added on top of this as it happens, in _poll_contract."""
+        open_by_family: Dict[str, int] = {}
+        margin_locked_total = 0.0
+        for rt in self.runtimes.values():
+            if rt.position is None or not rt.position.is_open:
+                continue
+            settings = self.config.effective(rt.contract.key)
+            family = risk_mod.family_of(rt.contract, settings)
+            open_by_family[family] = open_by_family.get(family, 0) + 1
+            if rt.position.margin_locked:
+                margin_locked_total += rt.position.margin_locked
+        return {'open_by_family': open_by_family,
+                'margin_locked_total': margin_locked_total}
+
+    def _poll_contract(self, rt: ContractRuntime, now: datetime,
+                       portfolio_state: Dict[str, Any]) -> None:
         contract = rt.contract
         settings = self.config.effective(contract.key)
         rt.roll_day(now)
@@ -234,9 +280,28 @@ class Engine:
                                           settings, contract.tick_size,
                                           contract.tick_value, now,
                                           session_flat_due=flat_due)
-            if sig.action == "CLOSE" and not self._has_working_close(contract.key):
-                self._send_close(rt, settings, sig.side, sig.qty,
-                                 sig.exit_reason, sig.reason, book, now)
+            if sig.action == "CLOSE":
+                if hasattr(self.gateway, 'propose_exit'):
+                    order_id = rt.position.venue_order_id
+                    if order_id is None:
+                        self._say(rt, "PROPOSAL",
+                                  "cannot propose a close — this position "
+                                  "has no venue_order_id on record")
+                    elif not self._algo_exit_pending(contract.key):
+                        result = self.gateway.propose_exit(
+                            contract, order_id, reason=sig.reason,
+                            exit_reason=sig.exit_reason)
+                        if result.get('ok'):
+                            self._say(rt, "PROPOSAL",
+                                      f"proposed closing {rt.position.qty:g} "
+                                      f"— {sig.reason} — awaiting confirmation")
+                        else:
+                            self._say(rt, "PROPOSAL",
+                                      "could not propose close: "
+                                      + str(result.get('error', 'unknown')))
+                elif not self._has_working_close(contract.key):
+                    self._send_close(rt, settings, sig.side, sig.qty,
+                                     sig.exit_reason, sig.reason, book, now)
             return
 
         # 2. and only then the way in
@@ -252,13 +317,77 @@ class Engine:
             jump_settling=status['settling'],
             in_session=self._in_session(contract, settings, now))
         rt.blocked_by = sig.blocked_by
-        if sig.action == "OPEN" and not self.executor.working_for(contract.key):
-            self.executor.place(contract, settings, sig.side, sig.qty,
-                                Intent.OPEN, book, now, reason=sig.reason,
-                                decision=self._decision(rt.window))
-            self._mark_touch_traded(rt, sig.side)
-            self._say(rt, "ORDER",
-                      f"{sig.side.value} {sig.qty:g} — {sig.reason}")
+
+        # Portfolio-wide risk gate — runs only once entry_signal has
+        # ALREADY said OPEN, and applies identically whether the entry is
+        # about to be proposed (live TT) or sent directly (simulator):
+        # a cap on how much the WHOLE book may hold is the same question
+        # either way.
+        if sig.action == "OPEN":
+            family = risk_mod.family_of(contract, settings)
+            prospective_margin = self.gateway.margin_for(contract.key, sig.qty)
+            blocked = risk_mod.portfolio_risk_check(
+                family, prospective_margin,
+                portfolio_state['open_by_family'],
+                portfolio_state['margin_locked_total'], self.risk_limits)
+            if blocked is not None:
+                sig.action = "NONE"
+                rt.blocked_by = blocked
+
+        if sig.action == "OPEN":
+            if hasattr(self.gateway, 'propose_entry'):
+                # No local "already proposed" flag needed: a live,
+                # unexpired proposal already shows up here, and an expired
+                # one (60s, unconfirmed) is exactly when re-proposing while
+                # the signal still holds is the wanted behaviour — deciding
+                # this by asking the gateway keeps a single source of truth
+                # instead of a second copy of the same fact on rt.
+                if not self._algo_entry_pending(contract.key):
+                    result = self.gateway.propose_entry(
+                        contract, sig.side, sig.qty, reason=sig.reason,
+                        decision=self._decision(rt.window))
+                    if result.get('ok'):
+                        self._mark_touch_traded(rt, sig.side)
+                        self._say(rt, "PROPOSAL",
+                                  f"proposed {sig.side.value} {sig.qty:g} "
+                                  f"— {sig.reason} — awaiting confirmation")
+                        # Reserve the slot for the REST OF THIS PASS —
+                        # the fill has not landed, but no other contract
+                        # processed later in this same pass may be given
+                        # the slot this proposal is already spending.
+                        by_family = portfolio_state['open_by_family']
+                        by_family[family] = by_family.get(family, 0) + 1
+                        if prospective_margin:
+                            portfolio_state['margin_locked_total'] += prospective_margin
+                    else:
+                        self._say(rt, "PROPOSAL",
+                                  "could not propose entry: "
+                                  + str(result.get('error', 'unknown')))
+            elif not self.executor.working_for(contract.key):
+                self.executor.place(contract, settings, sig.side, sig.qty,
+                                    Intent.OPEN, book, now, reason=sig.reason,
+                                    decision=self._decision(rt.window))
+                self._mark_touch_traded(rt, sig.side)
+                self._say(rt, "ORDER",
+                          f"{sig.side.value} {sig.qty:g} — {sig.reason}")
+                by_family = portfolio_state['open_by_family']
+                by_family[family] = by_family.get(family, 0) + 1
+                if prospective_margin:
+                    portfolio_state['margin_locked_total'] += prospective_margin
+
+    def _algo_entry_pending(self, contract_key: str) -> bool:
+        pending = getattr(self.gateway, 'pending_algo_proposals', None)
+        if pending is None:
+            return False
+        return any(p['contract_key'] == contract_key and p['kind'] == 'entry'
+                  for p in pending())
+
+    def _algo_exit_pending(self, contract_key: str) -> bool:
+        pending = getattr(self.gateway, 'pending_algo_proposals', None)
+        if pending is None:
+            return False
+        return any(p['contract_key'] == contract_key and p['kind'] == 'exit'
+                  for p in pending())
 
     @staticmethod
     def _decision(window) -> Dict[str, Any]:
@@ -444,6 +573,124 @@ class Engine:
                     f"closed {fill.qty:g} @ {fill.price:g} · {money}")
         rt.position = None
 
+    # -- algo-confirmed fills (bypasses Executor entirely) ------------
+    #
+    # A proposal's resulting order was never registered with Executor —
+    # it was never SENT by Executor, on purpose (see propose_entry's
+    # docstring in gateway.py). So this mirrors _apply_fill's position/PnL
+    # construction using the same costs_mod pure functions, but sources
+    # decision/exit_reason from the event itself rather than
+    # executor.decision_of()/self._exit_reasons. Executor's own working-
+    # order state is never read or written here.
+
+    def _handle_algo_event(self, event: Dict[str, Any], now: datetime) -> None:
+        rt = self.runtimes.get(event['contract_key'])
+        if rt is None:
+            return
+        if event['kind'] == 'entry':
+            self._apply_algo_open_fill(rt, event, now)
+        else:
+            self._apply_algo_close_fill(rt, event, now)
+
+    def _apply_algo_open_fill(self, rt: ContractRuntime,
+                              event: Dict[str, Any], now: datetime) -> None:
+        fill = event['fill']
+        contract = rt.contract
+        settings = self.config.effective(contract.key)
+        decided = event.get('decision') or {}
+
+        if rt.position is None or not rt.position.is_open:
+            margin = self.gateway.margin_for(contract.key, fill.qty)
+            rt.position = Position(
+                contract_key=contract.key, side=fill.side, qty=fill.qty,
+                opened_qty=fill.qty, avg_price=fill.price, opened_at=now,
+                entry_z=decided.get('z', rt.window.z),
+                entry_mean=decided.get('mean', rt.window.mean),
+                entry_std=decided.get('std', rt.window.std),
+                entry_half_life=decided.get('half_life', rt.window.half_life),
+                margin_locked=margin, is_simulated=self.simulated,
+                tickets=[fill.exec_id], opened_session=now.date().isoformat(),
+                venue_order_id=fill.clordid)
+        else:
+            pos = rt.position
+            total = pos.qty + fill.qty
+            pos.avg_price = ((pos.avg_price * pos.qty)
+                             + fill.price * fill.qty) / total
+            pos.qty = total
+            pos.opened_qty = total
+            pos.tickets.append(fill.exec_id)
+            pos.margin_locked = self.gateway.margin_for(contract.key, total)
+
+        pos = rt.position
+        pos.break_even = costs_mod.break_even(
+            pos.avg_price, pos.side, pos.qty, contract.tick_size,
+            contract.tick_value, settings)
+        pos.target_price = costs_mod.target_price(
+            pos.avg_price, pos.side, pos.qty, contract.tick_size,
+            contract.tick_value, settings, margin_locked=pos.margin_locked,
+            contract_multiplier=contract.contract_multiplier,
+            entry_std=pos.entry_std)
+        pos.stop_price = rt.window.price_at_z(
+            float(settings.get('stop_loss_z', 4.0))
+            * (1 if pos.side is Side.SELL else -1))
+        if self.db is not None:
+            self.db.save_position(pos)
+        rt.last_trade_at = now
+        self._say(rt, "OPEN",
+                  f"{pos.side.value} {fill.qty:g} @ {fill.price:g} "
+                  f"— algo proposal confirmed")
+        self.notify("OPEN", contract.key,
+                    f"{pos.side.value} {fill.qty:g} @ {fill.price:g}")
+
+    def _apply_algo_close_fill(self, rt: ContractRuntime,
+                               event: Dict[str, Any], now: datetime) -> None:
+        pos = rt.position
+        if pos is None or not pos.is_open:
+            return
+        fill = event['fill']
+        contract = rt.contract
+        settings = self.config.effective(contract.key)
+
+        pos.qty = round(pos.qty - fill.qty, 10)
+        pos.tickets.append(fill.exec_id)
+        if pos.qty > 1e-9:
+            if self.db is not None:
+                self.db.save_position(pos)
+            return
+
+        pos.closed_at = now
+        pos.exit_price = fill.price
+        pos.exit_z = rt.window.z
+        pos.exit_reason = event.get('exit_reason') or ExitReason.TARGET
+        result = costs_mod.net_pnl(pos.side, fill.qty, pos.avg_price,
+                                   fill.price, contract.tick_size,
+                                   contract.tick_value,
+                                   fees_paid=self._fees_for(
+                                       pos.tickets, settings, fill.qty))
+        pos.gross_pnl = result['gross']
+        pos.fees_paid = result['fees']
+        pos.net_pnl = result['net']
+        if pos.net_pnl is not None and pos.margin_locked:
+            pos.pnl_pct_on_margin = 100.0 * pos.net_pnl / pos.margin_locked
+        if self.db is not None:
+            self.db.save_position(pos)
+        rt.trades_today += 1
+        rt.last_trade_at = now
+        if pos.net_pnl is not None:
+            rt.pnl_today += pos.net_pnl
+        rt.closes += 1
+        rt.last_close = {'side': pos.side.value, 'qty': fill.qty,
+                         'price': fill.price,
+                         'reason': pos.exit_reason.value if pos.exit_reason else None,
+                         'ts': now.isoformat()}
+        money = f"{pos.net_pnl:+,.0f}" if pos.net_pnl is not None else "—"
+        self._say(rt, "CLOSED",
+                  f"{pos.side.value} {fill.qty:g} out at {fill.price:g} "
+                  f"· {money} — algo proposal confirmed")
+        self.notify("CLOSED", contract.key,
+                    f"closed {fill.qty:g} @ {fill.price:g} · {money}")
+        rt.position = None
+
     def _fees_for(self, tickets, settings, qty) -> Optional[float]:
         """What the venue charged, where it says. Falls back to the
         configured schedule, which is what the desk agreed with the broker —
@@ -611,6 +858,9 @@ class Engine:
         self.killed = True
         self.master_algo = False
         cancelled = self.executor.cancel_all()
+        clear_proposals = getattr(self.gateway, 'clear_algo_proposals', None)
+        if clear_proposals is not None:
+            clear_proposals()
         closed = 0
         if close_positions:
             for key, rt in self.runtimes.items():
@@ -747,6 +997,9 @@ class Engine:
                     'text': self.gateway.state_text(),
                 },
                 'connection_only': getattr(self.gateway, 'connection_only', False),
+                'algo_proposals': (self.gateway.pending_algo_proposals()
+                                  if hasattr(self.gateway, 'pending_algo_proposals')
+                                  else []),
                 'fix_connection': (self.gateway.connection_snapshot()
                                    if hasattr(self.gateway, 'connection_snapshot') else None),
                 'manual_terminal': (self.gateway.terminal.snapshot()

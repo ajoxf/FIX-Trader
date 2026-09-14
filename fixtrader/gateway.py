@@ -6,11 +6,12 @@ The strategy protocol still reports unknown account positions/orders as None.
 """
 
 import copy
+import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional, Protocol, runtime_checkable
 
 from .models import (BookTop, Fill, GatewayEvent, OrderRequest, SecurityDef,
-                     SessionState, VenueOrder, VenuePosition)
+                     SessionState, Side, VenueOrder, VenuePosition)
 from .manual_terminal import ManualTerminal
 from .fix_audit import FixAuditLog
 
@@ -72,6 +73,15 @@ class FixGateway:
         self.audit = FixAuditLog(async_write=True)
         self._contract_security_ids = {}
         self.terminal = ManualTerminal(self, manual_path)
+        #: token -> {contract_key, kind, reason, created} for proposals
+        #: THIS gateway raised. Separate from terminal.previews (which
+        #: also holds human-typed previews) so an algo proposal is
+        #: distinguishable without tagging or touching that dict's shape.
+        self._algo_proposals = {}
+        #: order_id -> {..., 'delivered_exec_ids': set()} for algo
+        #: proposals a human has CONFIRMED — see pending_algo_proposals()
+        #: for the handoff and drain_algo_events() for what reads this.
+        self._algo_orders = {}
 
     def start(self):
         with self._lock:
@@ -265,7 +275,29 @@ class FixGateway:
                            ts=ts)
 
     def security_definition(self, contract):
-        return None
+        """Read, never typed: whatever TT's own SecurityDefinition (35=d)
+        response said about this instrument, via the same catalogue the
+        manual terminal already populates from a real lookup() search.
+        None means never looked up — not a guessed default. The algo must
+        search this instrument at least once (see expiries.py's live
+        lookup) before its own tick/multiplier/currency are known."""
+        security_id = self._contract_security_ids.get(contract.key)
+        if not security_id:
+            return None
+        row = self.terminal.catalogue.get(security_id)
+        if not row:
+            return None
+        def _num(v):
+            try:
+                return float(v) if v not in (None, '') else None
+            except (TypeError, ValueError):
+                return None
+        return SecurityDef(
+            symbol=row.get('symbol', contract.symbol),
+            tick_size=_num(row.get('tick_size')),
+            contract_multiplier=_num(row.get('multiplier')),
+            currency=row.get('currency') or None,
+        )
 
     def margin_for(self, key, qty):
         return None
@@ -298,6 +330,163 @@ class FixGateway:
                  'fix': self._connection_fix()},
                 {'check': 'Execution', 'ok': False, 'detail': self.NOT_WIRED,
                  'fix': 'Execution and reconciliation require a separate integration.'}]
+
+    # -- algo order proposals -----------------------------------------
+    #
+    # These call straight into ManualTerminal.preview()/preview_close() —
+    # the exact reviewed pathway a human uses at /instruments — and do
+    # NOT touch that module or NativeFixSession.send()'s FTM- prefix
+    # check at all. An algo proposal becomes a real order ONLY once a
+    # person calls the existing terminal_submit command with
+    # confirmed=True, the same as any manually-typed ticket. Nothing
+    # here can put a byte on the wire by itself.
+
+    def propose_entry(self, contract, side, qty, order_type='MARKET',
+                      price=None, reason='', account=None, decision=None):
+        """Ask the manual terminal to preview an entry ticket for this
+        algo's decision. Returns the same shape terminal.preview() does
+        (token, ticket, fields, expires_in) — nothing sent yet.
+
+        `decision` is the window's z/mean/std/half_life AT THIS MOMENT —
+        stamped onto the eventual Position the same way the ordinary
+        executor.place() path already does, via drain_algo_events() once
+        this is confirmed and filled. Read at proposal time, not fill
+        time, for the same reason _decision() gives elsewhere: by the
+        time a human confirms and TT fills it, the market has moved on.
+        """
+        security_id = self._contract_security_ids.get(contract.key)
+        if not security_id:
+            return {'ok': False, 'error': f'{contract.key} has not been '
+                    'subscribed/added to the watchlist yet'}
+        side_str = 'BUY' if str(side) in ('BUY', 'Side.BUY') else 'SELL'
+        args = {'security_id': security_id, 'side': side_str,
+                'order_type': order_type, 'tif': 'DAY',
+                'quantity': str(qty), 'text': ('algo: ' + reason)[:200]}
+        if account:
+            args['account'] = account
+        if price is not None:
+            args['price'] = str(price)
+        result = self.terminal.preview(args)
+        if result.get('ok') and result.get('token'):
+            self._algo_proposals[result['token']] = {
+                'contract_key': contract.key, 'kind': 'entry',
+                'reason': reason, 'created': utcnow().isoformat(),
+                'qty': qty, 'side': side_str, 'decision': dict(decision or {})}
+        return result
+
+    def propose_exit(self, contract, order_id, reason='', exit_reason=None):
+        """Ask the manual terminal to preview a closing ticket against an
+        already-confirmed, filled algo order. Same reviewed pathway,
+        same rule: nothing sent until a person confirms.
+
+        `order_id` is the ENTRY's order id — what this close is closing.
+        The close gets its OWN, different order id once confirmed;
+        drain_algo_events() uses `closes_order_id` below to know which
+        open position a close's fill should apply to.
+        """
+        result = self.terminal.preview_close({'order_id': order_id})
+        if result.get('ok') and result.get('token'):
+            self._algo_proposals[result['token']] = {
+                'contract_key': contract.key, 'kind': 'exit',
+                'reason': reason, 'created': utcnow().isoformat(),
+                'closes_order_id': order_id, 'exit_reason': exit_reason}
+        return result
+
+    def pending_algo_proposals(self):
+        """Algo-originated previews that have NOT yet expired or been
+        confirmed — what a human needs to see and act on. Reads
+        terminal.previews (read-only) purely to report expiry; writes
+        nothing there.
+
+        When a preview disappears because it was CONFIRMED (its order_id
+        now exists in terminal.orders) rather than merely expired, its
+        metadata is promoted to self._algo_orders so drain_algo_events()
+        can still find it — this is the only place that handoff happens.
+        """
+        now = time.time()
+        live = []
+        stale_tokens = []
+        for token, meta in self._algo_proposals.items():
+            preview = self.terminal.previews.get(token)
+            if preview is None:
+                order_id = 'FTM-' + token
+                if order_id in self.terminal.orders:
+                    self._algo_orders[order_id] = {
+                        **meta, 'delivered_exec_ids': set()}
+                stale_tokens.append(token)
+                continue
+            if preview['expires'] <= now:
+                stale_tokens.append(token)
+                continue
+            live.append({'token': token, **meta,
+                         'ticket': preview['ticket'],
+                         'expires_in': round(preview['expires'] - now)})
+        for token in stale_tokens:
+            self._algo_proposals.pop(token, None)
+        return live
+
+    def clear_algo_proposals(self):
+        """Called by kill_all(): forget every outstanding algo proposal so
+        none can be confirmed after a kill. The underlying preview still
+        naturally expires in terminal.previews within 60s regardless —
+        this only stops it being SHOWN or associated with the algo.
+        Confirmed orders already in self._algo_orders are NOT touched —
+        a kill must not stop a live order this engine already knows was
+        filled from being tracked to its close."""
+        n = len(self._algo_proposals)
+        self._algo_proposals.clear()
+        return n
+
+    def drain_algo_events(self):
+        """New fills on algo-confirmed orders since the last call, as
+        plain dicts (not GatewayEvent — this deliberately does not go
+        through Executor/_handle_event; see the conversation this was
+        designed in). Each entry:
+            {'contract_key', 'kind': 'entry'|'exit', 'fill': Fill,
+             'decision': {...} (entry only), 'exit_reason' (exit only),
+             'closes_order_id' (exit only), 'order_status'}
+        Idempotent: an exec_id is only ever returned once per order,
+        tracked in that order's own 'delivered_exec_ids' set.
+        """
+        # Also promotes any newly-confirmed orders into _algo_orders —
+        # calling this alone (without pending_algo_proposals()) still works.
+        self.pending_algo_proposals()
+        out = []
+        for order_id, meta in list(self._algo_orders.items()):
+            order = self.terminal.orders.get(order_id)
+            if order is None:
+                continue
+            rows = self.terminal.db.execute(
+                'SELECT id, data FROM manual_fills ORDER BY rowid DESC LIMIT 500'
+            ).fetchall()
+            for exec_id, blob in rows:
+                if exec_id in meta['delivered_exec_ids']:
+                    continue
+                row = json.loads(blob)
+                if row.get('order_id') != order_id:
+                    continue
+                meta['delivered_exec_ids'].add(exec_id)
+                try:
+                    qty = float(row['quantity'])
+                    price = float(row['price'])
+                except (TypeError, ValueError, KeyError):
+                    continue
+                side_value = Side.BUY if row.get('side') == 'BUY' else Side.SELL
+                fill = Fill(venue=self.venue.name, exec_id=exec_id,
+                           clordid=order_id, contract_key=meta['contract_key'],
+                           side=side_value, qty=qty, price=price)
+                event = {'contract_key': meta['contract_key'],
+                        'kind': meta['kind'], 'fill': fill,
+                        'order_status': order.get('status', 'UNKNOWN')}
+                if meta['kind'] == 'entry':
+                    event['decision'] = meta.get('decision', {})
+                else:
+                    event['exit_reason'] = meta.get('exit_reason')
+                    event['closes_order_id'] = meta.get('closes_order_id')
+                out.append(event)
+            if order.get('status') in ('CANCELED', 'REJECTED', 'EXPIRED'):
+                self._algo_orders.pop(order_id, None)
+        return out
 
     def _connection_fix(self):
         """Give the operator the remedy for the observed connection failure.

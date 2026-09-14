@@ -1,0 +1,12 @@
+#algo-proposals { margin: 0 0 10px; }
+#algo-proposals .proposal-list {
+  display: flex; flex-direction: column; gap: 6px;
+  border: 1px solid var(--warn, #c9a227); border-radius: 6px;
+  padding: 8px 10px; background: rgba(201, 162, 39, 0.08);
+}
+#algo-proposals .proposal-row {
+  display: flex; align-items: center; gap: 10px; font-size: 13px;
+}
+#algo-proposals .proposal-row .p-what { flex: 1; }
+#algo-proposals .proposal-row .p-expires { opacity: 0.7; min-width: 3em; text-align: right; }
+#algo-proposals .proposal-row button { flex-shrink: 0; }

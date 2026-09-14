@@ -309,6 +309,55 @@ def create_app(config_path: str = "config.json",
 
     # -- venues ------------------------------------------------------------
 
+    @app.get('/api/expiries')
+    def api_expiries():
+        """Available expiry months for BZ-CL and the crack spread, for the
+        quick-add dropdown. Placeholder months until a real listed-contract
+        calendar or a live TT SecurityDefinitionRequest replaces them; see
+        expiries.py."""
+        from . import expiries as expiries_mod
+        months = [{'code': m.code, 'label': m.label}
+                  for m in expiries_mod.available_months()]
+        return jsonify({
+            'months': months,
+            'families': [{'key': k, 'label': v['label']}
+                         for k, v in expiries_mod.FAMILIES.items()],
+        })
+
+    @app.post('/api/contracts/from-expiry')
+    def api_create_contract_from_expiry():
+        """Quick-add for BZ-CL and the crack spread: pick a family and a
+        month, get a contract with real CME-published tick/value specs —
+        see expiries.py's LEG_SPECS."""
+        from . import expiries as expiries_mod
+        from .config import ContractConfig
+        config = load_config()
+        data = dict(request.get_json(silent=True) or {})
+        family = str(data.get('family') or '').strip()
+        code = str(data.get('code') or '').strip()
+        if family not in expiries_mod.FAMILIES:
+            return jsonify({'ok': False,
+                            'error': f"unknown family {family!r}"}), 400
+        valid_codes = {m.code for m in expiries_mod.available_months()}
+        if code not in valid_codes:
+            return jsonify({'ok': False,
+                            'error': f"{code!r} is not an offered expiry"}), 400
+        key = expiries_mod.spread_key(family, code)
+        if key in config.contracts:
+            return jsonify({'ok': False,
+                            'error': f"{key} already exists"}), 409
+        symbol = expiries_mod.spread_symbol(family, code)
+        venue = str(data.get('venue') or '').strip()
+        if venue and venue not in config.venues:
+            return jsonify({'ok': False,
+                            'error': f"no venue {venue!r}"}), 400
+        payload = {'symbol': symbol, 'name': expiries_mod.FAMILIES[family]['label']
+                                             + ' ' + code, 'venue': venue}
+        payload.update(expiries_mod.spread_spec(family))
+        config.contracts[key] = ContractConfig.from_dict(key, payload)
+        config.save()
+        return jsonify({'ok': True, 'key': key, 'symbol': symbol})
+
     @app.post('/api/contracts')
     def api_create_contract():
         """Add a contract. The key is derived from the symbol so two rows

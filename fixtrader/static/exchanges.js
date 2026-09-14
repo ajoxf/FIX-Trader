@@ -411,9 +411,46 @@ document.getElementById('c-read').onclick = async () => {
   panel.appendChild(table);
 };
 
+/* -- BZ/CL expiry quick-add ----------------------------------------------- */
+
+async function loadExpiries() {
+  const data = await getJSON('/api/expiries');
+  const famSel = document.getElementById('qa-family');
+  const expSel = document.getElementById('qa-expiry');
+  famSel.innerHTML = '';
+  data.families.forEach((f) => {
+    const opt = document.createElement('option');
+    opt.value = f.key;
+    opt.textContent = f.label;
+    famSel.appendChild(opt);
+  });
+  expSel.innerHTML = '';
+  data.months.forEach((m) => {
+    const opt = document.createElement('option');
+    opt.value = m.code;
+    opt.textContent = m.label + ' (' + m.code + ')';
+    expSel.appendChild(opt);
+  });
+}
+
+document.getElementById('qa-add').onclick = async () => {
+  const family = document.getElementById('qa-family').value;
+  const code = document.getElementById('qa-expiry').value;
+  const { data } = await postJSON('/api/contracts/from-expiry',
+    { family, code });
+  if (!data.ok) {
+    toast('REJECT', 'NOT SAVED', data.error || 'refused');
+    return;
+  }
+  toast('OK', 'SAVED', data.symbol +
+    ' saved — its window appears within a few seconds');
+  await loadContracts();
+};
+
 /* -- go ------------------------------------------------------------------ */
 
 (async function load() {
   await loadVenues();
   await loadContracts();
+  await loadExpiries();
 })();
