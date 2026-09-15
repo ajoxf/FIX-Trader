@@ -1148,6 +1148,53 @@ function renderTabs() {
   });
 }
 
+/* Algo proposals: entries/exits the algo raised through the reviewed
+ * manual pathway (gateway.propose_entry/propose_exit), each waiting for a
+ * person to confirm through the SAME terminal_submit command the manual
+ * order form already uses. Nothing here sends anything by itself. */
+function renderAlgoProposals(snap) {
+  const el = document.getElementById('algo-proposals');
+  const proposals = (snap.engine || {}).algo_proposals || [];
+  if (!proposals.length) {
+    el.classList.add('hidden');
+    el.replaceChildren();
+    return;
+  }
+  el.classList.remove('hidden');
+  const list = document.createElement('div');
+  list.className = 'proposal-list';
+  proposals.forEach((p) => {
+    const row = document.createElement('div');
+    row.className = 'proposal-row';
+    const t = p.ticket || {};
+    const what = document.createElement('span');
+    what.className = 'p-what';
+    const verb = p.kind === 'exit' ? 'CLOSE' : (t.side || '');
+    what.textContent =
+      `ALGO PROPOSES · ${p.contract_key} · ${verb} ${t.quantity || ''} ` +
+      `— ${p.reason || ''}`;
+    const expires = document.createElement('span');
+    expires.className = 'p-expires';
+    expires.textContent = Math.max(0, p.expires_in || 0) + 's';
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'btn pri';
+    confirmBtn.textContent = 'Confirm';
+    confirmBtn.onclick = async () => {
+      confirmBtn.disabled = true;
+      const answer = await command('terminal_submit', '',
+        { token: p.token, confirmed: true });
+      if (answer.ok) {
+        toast('ORDER', 'SENT', 'confirmed — awaiting TT acknowledgement',
+          p.contract_key);
+      }
+      confirmBtn.disabled = false;
+    };
+    row.append(what, expires, confirmBtn);
+    list.appendChild(row);
+  });
+  el.replaceChildren(list);
+}
+
 function renderChrome(snap) {
   const engine = snap.engine || {};
   const badge = document.getElementById('env-badge');
@@ -1472,6 +1519,7 @@ async function tick() {
     const res = await fetch('/api/snapshot', { cache: 'no-store' });
     const snap = await res.json();
     renderChrome(snap);
+    renderAlgoProposals(snap);
     window.__lastSnapshot = snap;
     const seen = new Set(['__positions__', '__analysis__']);
     (snap.contracts || []).forEach((c) => {

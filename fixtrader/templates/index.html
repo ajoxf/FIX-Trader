@@ -8,6 +8,7 @@
      network is what failed. -->
 <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}?v={{ asset_version }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='algo-proposals.css') }}?v={{ asset_version }}">
 </head>
 <body>
 
@@ -29,6 +30,9 @@
      automatically; put here for a person to decide. -->
 <div id="unclaimed-banner" class="banner critical hidden" role="alert"></div>
 <div id="restart-banner" class="banner warn hidden" role="status"></div>
+<!-- Entries/exits the algo proposed through the reviewed manual pathway,
+     waiting for a person to confirm or let expire. Never sent by itself. -->
+<div id="algo-proposals" class="hidden"></div>
 
 <div id="desktop"></div>
 <div id="toasts" aria-live="polite"></div>

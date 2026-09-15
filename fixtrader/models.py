@@ -364,6 +364,12 @@ class Position:
     #: The venue trading DAY this was opened on, for venues that price a
     #: close-today differently from a close-yesterday.
     opened_session: Optional[str] = None
+    #: The order id (e.g. 'FTM-<token>') this position's OPENING order was
+    #: confirmed and filled under, when it came through a reviewed algo
+    #: proposal rather than direct executor.place(). None for anything
+    #: opened the ordinary way — a closing proposal needs this to name
+    #: which order it is closing (see FixGateway.propose_exit).
+    venue_order_id: Optional[str] = None
 
     @property
     def is_open(self) -> bool:
