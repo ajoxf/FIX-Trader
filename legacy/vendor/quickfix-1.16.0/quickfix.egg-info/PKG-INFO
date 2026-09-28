@@ -1,0 +1,13 @@
+Metadata-Version: 2.1
+Name: quickfix
+Version: 1.16.0
+Summary: FIX (Financial Information eXchange) protocol implementation
+Home-page: http://www.quickfixengine.org
+Download-URL: http://www.quickfixengine.org
+Author: Oren Miller
+Author-email: oren@quickfixengine.org
+Maintainer: Oren Miller
+Maintainer-email: oren@quickfixengine.org
+Requires-Python: >=3.6
+Description-Content-Type: text/markdown
+License-File: LICENSE
