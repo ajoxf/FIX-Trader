@@ -51,6 +51,79 @@ def pairs(raw):
     return [tuple(p.split('=', 1)) for p in raw.split('\x01') if '=' in p]
 
 
+#: What the instrument explorer is sent per cached contract. Enough to name,
+#: group and add it; the full definition stays here until it is added.
+CATALOGUE_FIELDS = ('security_id', 'symbol', 'exchange', 'security_type',
+                    'display_name', 'maturity', 'tt_name', 'product_key',
+                    'structure', 'first_month', 'leg_months', 'description', 'contract_code',
+                    'tick_size', 'tick_value', 'point_value', 'currency')
+
+MONTHS = ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+          'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')
+
+#: What TT's own instrument explorer calls each FIX SecurityType.
+TYPE_LABELS = {'FUT': 'Future', 'MLEG': 'Spread', 'OPT': 'Option',
+               'CS': 'Stock', 'FOR': 'Forward', 'SPOT': 'Spot'}
+
+
+def month_label(value):
+    """`202611` or `20261120` as TT writes it, `Nov26`; anything else as is."""
+    text = str(value or '')
+    if len(text) >= 6 and text[:6].isdigit() and 1 <= int(text[4:6]) <= 12:
+        return MONTHS[int(text[4:6]) - 1] + text[2:4]
+    return text
+
+
+def leg_label(leg):
+    """One leg the way TT names it: `+1xCL Nov26`."""
+    sign = {'1': '+', '2': '-'}.get(leg.get('624', ''), '')
+    ratio = leg.get('623') or '1'
+    try:
+        ratio = format(Decimal(ratio).normalize(), 'f')
+    except InvalidOperation:
+        pass
+    month = month_label(leg.get('610') or leg.get('611', ''))
+    return f"{sign}{ratio}x{leg.get('600', '?')} {month}".strip()
+
+
+def tt_name(instrument):
+    """The name TT's explorer shows. A spread is named by its LEGS —
+    `+1xCL Nov26:-1xBZ Nov26` — because the product symbol and the exchange's
+    contract code (`CLX6-CLJ0`) do not say which way round it is."""
+    legs = instrument.get('legs') or []
+    if legs:
+        return ':'.join(leg_label(leg) for leg in legs)
+    month = month_label(instrument.get('maturity', ''))
+    return ' '.join(p for p in (instrument.get('symbol', ''), month) if p)
+
+
+def product_key(instrument):
+    """The product a spread is listed under in TT: its leg products in leg
+    order, `CL|BZ`, or `CL` for a calendar. The FIX symbol alone files every
+    inter-commodity spread under one of its legs."""
+    products = []
+    for leg in instrument.get('legs') or []:
+        symbol = leg.get('600')
+        if symbol and symbol not in products:
+            products.append(symbol)
+    return '|'.join(products) or instrument.get('symbol', '')
+
+
+def structure(instrument):
+    legs = instrument.get('legs') or []
+    if not legs:
+        return TYPE_LABELS.get(instrument.get('security_type', ''),
+                               instrument.get('security_type', ''))
+    single = len({leg.get('600') for leg in legs}) == 1
+    if len(legs) == 2:
+        return 'Calendar' if single else 'Inter-commodity'
+    if len(legs) == 3 and single:
+        return 'Butterfly'
+    if len(legs) == 4 and single:
+        return 'Condor'
+    return f'{len(legs)}-leg strategy'
+
+
 class ManualTerminal:
     def __init__(self, gateway, path=':memory:'):
         self.gateway = gateway
@@ -63,6 +136,10 @@ class ManualTerminal:
         self.instruments = {}
         self.catalogue = {}
         self.search = {'status': 'Idle', 'request_id': '', 'error': ''}
+        #: Every search whose answers are still wanted. An inter-commodity
+        #: product is searched once per leg product, and the second search
+        #: must not discard the first one's definitions as they arrive.
+        self._search_ids = set()
         self.watch = self._load('watch')
         for instrument in self.watch.values():
             self._enrich(instrument)
@@ -100,6 +177,15 @@ class ManualTerminal:
             instrument['tick_value'] = format(Decimal(instrument['tick_size']) * Decimal(instrument['point_value']), 'f')
         instrument['contract_code'] = instrument.get('contract_code') or p.get('455', '')
         instrument['display_name'] = instrument.get('contract_code') or (instrument.get('description', instrument.get('symbol', '')) + ' ' + instrument.get('maturity', ''))
+        instrument['tt_name'] = tt_name(instrument)
+        instrument['product_key'] = product_key(instrument)
+        instrument['structure'] = structure(instrument)
+        legs = instrument.get('legs') or []
+        months = [(leg.get('610') or leg.get('611', ''))[:6] for leg in legs]
+        instrument['first_month'] = months[0] if months else instrument.get('maturity', '')
+        #: Every leg's month in leg order, so `Nov26:Dec26` sorts before
+        #: `Nov26:Jan27` by date rather than by the month's spelling.
+        instrument['leg_months'] = ','.join(months) or instrument.get('maturity', '')
 
     def _save(self, kind, key, value):
         self.db.execute('INSERT OR REPLACE INTO manual_state VALUES (?,?,?)', (kind, key, json.dumps(value)))
@@ -197,7 +283,11 @@ class ManualTerminal:
                 raise ValueError('20 active catalogue searches reached. Reconnect Market Data before searching again.')
             request_id = 'SEC-' + uuid.uuid4().hex[:16]
             self.search = {'status': 'Searching', 'request_id': request_id, 'error': '', 'started': time.time()}
-            self.instruments.clear()
+            if args.get('append'):
+                self._search_ids.add(request_id)
+            else:
+                self.instruments.clear()
+                self._search_ids = {request_id}
             fields = [('320', request_id), ('321', '3'), ('207', exchange), ('55', symbol), ('167', security_type), ('17000', 'Y')]
             if maturity:
                 fields.append(('200', maturity))
@@ -310,7 +400,7 @@ class ManualTerminal:
     def on_message(self, name, fields, raw):
         with self.lock:
             msg = fields.get('35')
-            if msg == 'd' and fields.get('320') == self.search['request_id']:
+            if msg == 'd' and fields.get('320') in self._search_ids:
                 # Repeating-group fields must not overwrite the top-level identity.
                 first = {}
                 for tag, value in pairs(raw):
@@ -804,7 +894,7 @@ class ManualTerminal:
                 rows.append({'instrument': instrument, 'quote': book})
             pnl = self._pnl_snapshot(rows)
             return copy.deepcopy({'search': self.search, 'instruments': list(self.instruments.values())[:2000],
-                'catalogue': [{k: i.get(k, '') for k in ('security_id','symbol','exchange','security_type','display_name','maturity')}
+                'catalogue': [{k: i.get(k, '') for k in CATALOGUE_FIELDS}
                               for i in self.catalogue.values()],
                 'watchlist': rows, 'orders': [dict(o, close_available=float(self.closeable(o)),
                     closed_qty=sum(float(c['filled_qty']) for c in self.orders.values() if c.get('close_of') == o['id']))

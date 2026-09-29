@@ -4,7 +4,15 @@
   let snapshot = {}, data = {}, selected = null, optionSignature = '', confirmation = null, searchRequest = '';
   const ladderState = new Map();
   let pinned = null, explorerSignature = '', streamState = 'connecting', streamLatency = null, latestReceived = 0;
-  const explorer = {exchange:'CME', type:'FUT', product:'ES', contract:''};
+  const EXPLORER_TYPES=[['FUT','Future'],['MLEG','Spread'],['OPT','Option'],['CS','Stock'],['FOR','Forward'],['SPOT','Spot']];
+  const explorer = {exchange:'CME', type:'MLEG', product:'', contract:'', filter:''};
+  // The last exchange/type/product is a per-viewer convenience: it may be
+  // unavailable (private window, blocked storage) and the page works without it.
+  try{Object.assign(explorer,JSON.parse(localStorage.getItem('ft.explorer')||'{}'),{contract:'',filter:''});}catch(e){}
+  const rememberExplorer=()=>{try{localStorage.setItem('ft.explorer',JSON.stringify({exchange:explorer.exchange,type:explorer.type,product:explorer.product}));}catch(e){}};
+  // `CL BZ`, `CL-BZ`, `cl/bz` and `CL|BZ` are the same product: TT writes the
+  // inter-commodity ones with a bar.
+  const productOf=v=>String(v||'').trim().toUpperCase().replace(/[\s/:+,]+|-(?=[A-Z])/g,'|').replace(/^\|+|\|+$/g,'');
   window.addEventListener('error',event=>{const status=$('feed-status');if(status)status.textContent=`Display error: ${event.message}. Refresh the page; prices are not being presented as live.`;});
   const fmt = n => n === null || n === undefined || n === '' ? '—' : typeof n === 'number' ? Number(n.toFixed(8)).toString() : String(n);
   const clock = n => n ? new Date(n).toLocaleTimeString([], {hour12:false}) : '—';
@@ -208,21 +216,52 @@
     // Avoid replacing an input while the operator types quantity or chooses a TIF.
     if(!$('ladders').contains(document.activeElement)||!['INPUT','SELECT'].includes(document.activeElement.tagName))$('ladders').replaceChildren(root);
   }
+  function explorerMatches(){
+    const catalogue=data.catalogue||[];
+    const onVenue=catalogue.filter(i=>i.exchange===explorer.exchange&&i.security_type===explorer.type);
+    const inProduct=onVenue.filter(i=>(i.product_key||i.symbol)===explorer.product);
+    const tokens=explorer.filter.toLowerCase().split(/\s+/).filter(Boolean);
+    const contracts=inProduct.filter(i=>{const hay=[i.tt_name,i.structure,i.description,i.contract_code,i.display_name,i.security_id].join(' ').toLowerCase();return tokens.every(t=>hay.includes(t));})
+      .sort((a,b)=>(a.leg_months||a.maturity||'').localeCompare(b.leg_months||b.maturity||'')||(a.tt_name||'').localeCompare(b.tt_name||''));
+    return {catalogue,onVenue,inProduct,contracts};
+  }
   function renderExplorer(force=false) {
-    const catalogue=data.catalogue||data.instruments||[];
-    const signature=catalogue.map(i=>i.security_id).join(',')+JSON.stringify(explorer);
+    const {catalogue,onVenue,inProduct,contracts}=explorerMatches();
+    const signature=catalogue.length+'|'+(data.search?.status||'')+'|'+Math.floor(Date.now()/10000)+'|'+JSON.stringify(explorer);
     if(!force&&signature===explorerSignature)return;explorerSignature=signature;
-    const options=(id, values, selected)=>{$(id).replaceChildren();for(const [value,label] of values)$(id).append(new Option(label,value));$(id).value=selected;};
-    options('explore-exchange',[...new Set([explorer.exchange,...catalogue.map(i=>i.exchange)])].sort().map(v=>[v,v]),explorer.exchange);
-    $('explore-exchange-input').value=explorer.exchange;
-    options('explore-type',[['FUT','Future'],['MLEG','Spread / Strategy'],['OPT','Option'],['CS','Stock'],['FOR','Forward'],['SPOT','Spot']],explorer.type);
-    const matching=catalogue.filter(i=>i.exchange===explorer.exchange&&i.security_type===explorer.type);
-    options('explore-product',[...new Set(matching.map(i=>i.symbol))].sort().map(v=>[v,v]),explorer.product);
-    $('explore-product-input').value=explorer.product;
-    const contracts=matching.filter(i=>i.symbol===explorer.product).sort((a,b)=>(a.maturity||'').localeCompare(b.maturity||''));
+    const options=(id, values, selected)=>{const el=$(id);el.replaceChildren();for(const [value,label,title] of values){const o=new Option(label,value);if(title)o.title=title;el.append(o);}el.value=selected;};
+    options('explore-exchange',[...new Set([explorer.exchange,...catalogue.map(i=>i.exchange)])].filter(Boolean).sort().map(v=>[v,v]),explorer.exchange);
+    if(document.activeElement!==$('explore-exchange-input'))$('explore-exchange-input').value=explorer.exchange;
+    options('explore-type',EXPLORER_TYPES,explorer.type);
+    // Products as TT files them, with how many contracts each holds, narrowed
+    // by whatever is typed in the box above the list.
+    const counts=new Map(), described=new Map();
+    for(const i of onVenue){const k=i.product_key||i.symbol;counts.set(k,(counts.get(k)||0)+1);if(!described.has(k)&&i.description)described.set(k,i.description);}
+    const typed=productOf($('explore-product-input').value);
+    const products=[...counts.keys()].filter(k=>!typed||k.includes(typed)||k===explorer.product).sort((a,b)=>a.split('|').length-b.split('|').length||a.localeCompare(b));
+    options('explore-product',products.map(k=>[k,`${k}  (${counts.get(k)})`,described.get(k)]),explorer.product);
+    if(document.activeElement!==$('explore-product-input'))$('explore-product-input').value=explorer.product;
     if(!contracts.some(i=>i.security_id===explorer.contract))explorer.contract='';
-    options('explore-contract',contracts.map(i=>[i.security_id,`${i.display_name||i.symbol} ${i.maturity||''}`]),explorer.contract);
-    $('explore-status').textContent=`${contracts.length} cached contracts. Search contracts to request current definitions from TT.`;
+    options('explore-contract',contracts.slice(0,2000).map(i=>[i.security_id,i.tt_name||i.display_name||i.symbol,[i.structure,i.description,i.contract_code].filter(Boolean).join(' · ')]),explorer.contract);
+    const pick=contracts.find(i=>i.security_id===explorer.contract), detail=$('explore-detail');
+    detail.replaceChildren();
+    if(pick){
+      detail.append(text('b',pick.tt_name||pick.display_name));
+      for(const part of [pick.structure,pick.description,pick.contract_code&&'code '+pick.contract_code,'TT Security ID '+pick.security_id,
+                         pick.tick_size&&`tick ${pick.tick_size}`+(pick.tick_value?` = ${pick.tick_value} ${pick.currency||''}`:'')].filter(Boolean))detail.append(' · '+part);
+    }else detail.textContent=explorer.product&&described.get(explorer.product)?`${explorer.product} — ${described.get(explorer.product)}`:'Select an instrument to see its legs, TT Security ID and tick value.';
+    const search=data.search||{}, typeName=(EXPLORER_TYPES.find(t=>t[0]===explorer.type)||[])[1]||explorer.type;
+    let status;
+    if(!explorer.product)status=`${counts.size} ${typeName.toLowerCase()} products cached for ${explorer.exchange}. Choose one, or type a product and press Search TT.`;
+    else if(!inProduct.length)status=`No ${explorer.product} ${typeName.toLowerCase()}s cached for ${explorer.exchange} yet. Press Search TT to fetch them`+(explorer.product.includes('|')?` (searches ${explorer.product.split('|').join(' and ')}).`:'.');
+    else status=`${contracts.length} of ${inProduct.length} ${explorer.product} contracts`+(contracts.length>2000?' · showing the first 2000; type in the filter':'')+'. Double-click an instrument to subscribe.';
+    // TT never says a search has finished, so its status is shown only while
+    // one is recent enough to still be arriving.
+    if(search.started&&Date.now()/1000-search.started<30){
+      if(['Searching','Receiving results'].includes(search.status))status+=` · TT: ${search.status}`;
+      if(search.error)status+=` · TT: ${search.error}`;
+    }
+    $('explore-status').textContent=status;
   }
   function renderOrders() {
     const rows=document.createDocumentFragment();
@@ -328,12 +367,48 @@
     }catch(error){for(const w of data.watchlist||[])w.quote.stale=true;if(snapshot.engine)snapshot.engine.alive=false;$('session').textContent='Engine unavailable';$('session').className='tag error';$('review-order').disabled=true;notice(error.message,true);renderWatch();renderLadders();}
     setTimeout(poll,1000);
   }
-  $('explore-open').onclick=()=>{renderExplorer(true);$('explore-dialog').showModal();};
+  $('explore-open').onclick=()=>{renderExplorer(true);$('explore-dialog').showModal();$('explore-product-input').focus();};
   $('explore-cancel').onclick=()=>$('explore-dialog').close();
-  for(const [id,key] of [['explore-exchange','exchange'],['explore-type','type'],['explore-product','product'],['explore-contract','contract']])$(id).onchange=()=>{explorer[key]=$(id).value;if(key!=='contract')explorer.contract='';renderExplorer(true);};
-  $('explore-product-input').oninput=()=>{explorer.product=$('explore-product-input').value.trim();explorer.contract='';$('explore-contract').value='';};
-  $('explore-exchange-input').oninput=()=>{explorer.exchange=$('explore-exchange-input').value.trim();explorer.contract='';$('explore-contract').value='';};
-  $('explore-search').onclick=async()=>{try{searchRequest='pending';const r=await command('search',{exchange:explorer.exchange,security_type:explorer.type,symbol:explorer.product});searchRequest=r.request_id;notice('Instrument explorer search sent.');}catch(e){searchRequest='';notice(e.message,true);$('explore-status').textContent=e.message;}};
-  $('explore-add').onclick=async()=>{try{if(!explorer.contract)throw new Error('Select an instrument first');await command('add',{security_id:explorer.contract});$('explore-dialog').close();notice('Instrument added and subscribed.');}catch(e){$('explore-status').textContent=e.message;}};
+  const pickExplorer=(key,value)=>{explorer[key]=value;if(key!=='contract'){explorer.contract='';explorer.filter='';$('explore-contract-filter').value='';}rememberExplorer();renderExplorer(true);};
+  $('explore-exchange').onchange=()=>pickExplorer('exchange',$('explore-exchange').value);
+  $('explore-type').onchange=()=>pickExplorer('type',$('explore-type').value);
+  $('explore-product').onchange=()=>{$('explore-product-input').value='';pickExplorer('product',$('explore-product').value);};
+  $('explore-contract').onchange=()=>pickExplorer('contract',$('explore-contract').value);
+  $('explore-exchange-input').oninput=()=>pickExplorer('exchange',$('explore-exchange-input').value.trim().toUpperCase());
+  // Typing narrows the product list; an exact match selects it, and a product
+  // that is not cached yet becomes the one Search TT asks for.
+  $('explore-product-input').oninput=()=>pickExplorer('product',productOf($('explore-product-input').value));
+  $('explore-contract-filter').oninput=()=>{explorer.filter=$('explore-contract-filter').value;renderExplorer(true);};
+  async function exploreSearch(){
+    const symbols=explorer.product.split('|').filter(Boolean);
+    if(!symbols.length)throw new Error('Type a product first, e.g. CL, BZ or CL|BZ');
+    searchRequest='pending';
+    // One TT search per leg product: an inter-commodity spread is defined
+    // under its legs' products. The later searches APPEND, so the answers to
+    // the first are not thrown away when the second is sent.
+    for(const [n,symbol] of symbols.entries()){
+      const r=await command('search',{exchange:explorer.exchange,security_type:explorer.type,symbol,append:n>0});
+      searchRequest=r.request_id;
+    }
+    notice(`Asked TT for ${explorer.exchange} ${symbols.join(' + ')} definitions. They arrive over a few seconds.`);
+  }
+  $('explore-search').onclick=async()=>{try{await exploreSearch();}catch(e){searchRequest='';notice(e.message,true);$('explore-status').textContent=e.message;}};
+  $('explore-product-input').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();if(!explorerMatches().inProduct.length)$('explore-search').click();}};
+  async function exploreSubscribe(){
+    if(!explorer.contract)throw new Error('Select an instrument first');
+    await command('add',{security_id:explorer.contract});$('explore-dialog').close();
+    notice('Instrument added to the watchlist and subscribed.');
+  }
+  $('explore-add').onclick=async()=>{try{await exploreSubscribe();}catch(e){$('explore-status').textContent=e.message;}};
+  $('explore-contract').ondblclick=async()=>{explorer.contract=$('explore-contract').value;try{await exploreSubscribe();}catch(e){$('explore-status').textContent=e.message;}};
+  // The algo desk trades what config.json lists. This fills in the contract
+  // form from TT's own definition; the trader reviews it and presses Save.
+  $('explore-algo').onclick=()=>{
+    const i=explorerMatches().contracts.find(c=>c.security_id===explorer.contract);
+    if(!i){$('explore-status').textContent='Select an instrument first';return;}
+    const q=new URLSearchParams({prefill:'1',name:i.tt_name||i.display_name||i.symbol,symbol:i.symbol,security_id:i.security_id,
+      security_exchange:i.exchange,tick_size:i.tick_size||'',tick_value:i.tick_value||'',contract_multiplier:i.point_value||'',currency:i.currency||''});
+    window.location.href='/exchanges?'+q.toString();
+  };
   conditionals();connectQuoteStream();poll();
 })();

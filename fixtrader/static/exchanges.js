@@ -419,7 +419,22 @@ document.getElementById('c-read').onclick = async () => {
 
 /* -- go ------------------------------------------------------------------ */
 
+/* A contract picked in the instrument explorer arrives here as a query
+   string. It only FILLS the form: nothing is saved until Save is pressed. */
+function prefillFromExplorer() {
+  const q = new URLSearchParams(window.location.search);
+  if (q.get('prefill') !== '1') return;
+  showContract(null);
+  C_TEXT.concat(C_NUM).forEach((k) => {
+    if (q.has(k) && q.get(k) !== '') cField(k).value = q.get(k);
+  });
+  document.getElementById('contract-form-title').textContent =
+    'New contract from TT — check it, choose the venue, then Save';
+  document.getElementById('contract-form-card').scrollIntoView({block: 'start'});
+}
+
 (async function load() {
   await loadVenues();
   await loadContracts();
+  prefillFromExplorer();
 })();
