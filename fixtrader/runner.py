@@ -90,6 +90,12 @@ def another_engine_is_running(status_path: str,
                - _dt.fromisoformat(raw['ts'])).total_seconds()
     except Exception:                                    # noqa: BLE001
         return None
+    # An engine that stopped CLEANLY says so in its last snapshot. A fresh
+    # file from an engine that has shut down is not a live engine, and
+    # treating it as one refused every restart made within seconds — the
+    # restart button's, and the launcher's after a clean exit.
+    if (raw.get('engine') or {}).get('stopped'):
+        return None
     return age if 0 <= age <= within else None
 
 
@@ -204,7 +210,8 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
     logger.info("engine up — %d contracts, %s", len(engine.runtimes),
                 "simulated" if is_sim else "live gateway")
     try:
-        while not stopping['now'] and not (should_stop and should_stop()):
+        while not stopping['now'] and not (should_stop and should_stop()) \
+                and not engine.restart_requested:
             started = time.monotonic()
             if is_sim:
                 gateway.advance(seconds=interval)
@@ -240,7 +247,8 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
                 break
             # Wait out the rest of the pass in slices, draining commands in
             # each one. The engine's own work stays on its interval.
-            while not stopping['now'] and not (should_stop and should_stop()):
+            while not stopping['now'] and not (should_stop and should_stop()) \
+                    and not engine.restart_requested:
                 left = interval - (time.monotonic() - started)
                 if left <= 0:
                     break
@@ -252,7 +260,17 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
             quote_publisher.stop()
         # Sweep our own working orders at shutdown, scoped to our own ids.
         engine.stop()
-        logger.info("engine down")
+        # The last word: nobody is behind this file any more. Written only
+        # after the sweep, so a snapshot that says "stopped" never has a
+        # working order of ours still being managed behind it.
+        try:
+            last = engine.snapshot()
+            last.setdefault('engine', {})['stopped'] = True
+            atomicfile.write_json(status_path, last)
+        except Exception:                                    # noqa: BLE001
+            pass
+        logger.info("engine down%s", " — restarting to take on saved changes"
+                    if engine.restart_requested else "")
 
 
 def main(argv=None) -> int:

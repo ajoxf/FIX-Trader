@@ -152,7 +152,10 @@ def first_run(config_path: str, env_path: str) -> None:
 
 def spawn(argv, name):
     print(f"[start] {name}: {' '.join(argv)}")
-    return subprocess.Popen(argv, cwd=HERE)
+    # Marks the child as having a launcher behind it: an engine asked to
+    # restart from the screen exits, and this loop starts it again.
+    env = dict(os.environ, FIXTRADER_SUPERVISED='1')
+    return subprocess.Popen(argv, cwd=HERE, env=env)
 
 
 def main(argv=None) -> int:

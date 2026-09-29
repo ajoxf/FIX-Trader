@@ -16,6 +16,7 @@ Order of a pass, and it matters:
    a pass that runs out of budget must have got the position out, not in.
 """
 
+import os
 import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -95,6 +96,9 @@ class Engine:
             bool(config.settings.get('AUTO_TRADE_ENABLED', True))
             if not hasattr(gateway, 'venue') else False)
         self.killed: bool = False
+        #: Asked for from the screen, after a change only a restart takes on.
+        #: The runner stops cleanly and the launcher starts it again.
+        self.restart_requested: bool = False
         #: When an edited configuration was last picked up, and anything in
         #: it that is still waiting for a restart. The screen shows both: a
         #: setting that looks saved but is not in force is worse than one
@@ -827,6 +831,9 @@ class Engine:
                 'config_reloaded_at': (self.config_reloaded_at.isoformat()
                                        if self.config_reloaded_at else None),
                 'config_restart_needed': list(self.config_restart_needed),
+                #: Whether a launcher is behind this engine to start it again,
+                #: which is what the restart button needs.
+                'supervised': bool(os.environ.get('FIXTRADER_SUPERVISED')),
                 'session': {
                     'state': self.gateway.state().value,
                     'text': self.gateway.state_text(),

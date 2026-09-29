@@ -180,6 +180,23 @@ async function commandResult(id, timeoutMs) {
   return null;
 }
 
+/* The engine takes on a new contract when it starts. It stops the way it
+ * always stops — this system's own working orders cancelled, the book
+ * already on disk — and the launcher starts it again. */
+async function restartEngine() {
+  const ok = await ask('Restart the engine',
+    'The engine stops — cancelling any working orders this system sent — ' +
+    'and the launcher starts it again with the saved changes. Open ' +
+    'positions are kept and recovered. Prices pause and the TT sessions ' +
+    'log on again: allow about 15 seconds.', 'Restart engine');
+  if (!ok) return;
+  const answer = await command('restart_engine');
+  if (answer && answer.ok) {
+    toast('OK', 'RESTARTING', 'the engine is restarting — the desk comes ' +
+      'back within about 15 seconds');
+  }
+}
+
 /* -- one window ----------------------------------------------------------- */
 
 function windowFor(key) {
@@ -1221,9 +1238,24 @@ function renderChrome(snap) {
   const waiting = engine.config_restart_needed || [];
   restart.classList.toggle('hidden', waiting.length === 0);
   if (waiting.length) {
-    restart.textContent = 'SAVED, NOT IN FORCE — ' + waiting.join(', ') +
+    const said = 'SAVED, NOT IN FORCE — ' + waiting.join(', ') +
       '. These change something the running engine already holds; restart it ' +
       'for them to take effect. Everything else you saved is live now.';
+    // Rebuilt only when the list changes, or the button would be replaced
+    // under the pointer twice a second.
+    if (restart.dataset.said !== said) {
+      restart.dataset.said = said;
+      restart.textContent = said + ' ';
+      if (engine.supervised) {
+        const b = document.createElement('button');
+        b.className = 'btn sm';
+        b.textContent = 'Restart engine now';
+        b.onclick = restartEngine;
+        restart.appendChild(b);
+      }
+    }
+  } else {
+    restart.dataset.said = '';
   }
 
   const link = document.getElementById('link-badge');
