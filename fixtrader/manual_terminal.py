@@ -272,7 +272,12 @@ class ManualTerminal:
         with self.lock:
             self.session('Market Data')
             exchange = clean(args.get('exchange'), 'Exchange', True)
-            symbol = clean(args.get('symbol'), 'Product symbol', True)
+            # TT names an inter-product spread product with a bar — `CL|BZ`
+            # is its own product in TT's explorer — so the bar is allowed in
+            # a PRODUCT SYMBOL and nowhere else. It is not a FIX delimiter
+            # (SOH is, and control characters are still refused).
+            symbol = '|'.join(clean(part, 'Product symbol', True)
+                              for part in str(args.get('symbol') or '').split('|'))
             security_type = clean(args.get('security_type', 'FUT'))
             if security_type not in ('FUT', 'MLEG', 'OPT', 'CS', 'FOR', 'SPOT'):
                 raise ValueError('Unsupported instrument type')
@@ -282,7 +287,8 @@ class ManualTerminal:
             if self._search_count >= 20:
                 raise ValueError('20 active catalogue searches reached. Reconnect Market Data before searching again.')
             request_id = 'SEC-' + uuid.uuid4().hex[:16]
-            self.search = {'status': 'Searching', 'request_id': request_id, 'error': '', 'started': time.time()}
+            self.search = {'status': 'Searching', 'request_id': request_id, 'error': '', 'started': time.time(),
+                           'symbol': symbol, 'security_type': security_type}
             if args.get('append'):
                 self._search_ids.add(request_id)
             else:

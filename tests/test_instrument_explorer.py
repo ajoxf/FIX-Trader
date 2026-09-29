@@ -104,3 +104,23 @@ def test_a_new_search_without_append_still_discards_the_old_ones(terminal):
     definition(terminal, first, '1', 'CL', [('CL', '202611', '1'), ('BZ', '202611', '2')])
     definition(terminal, second, '2', 'ES', **{'200': '202612'})
     assert set(terminal.instruments) == {'2'}
+
+
+def test_an_inter_product_name_can_be_asked_for_as_tt_writes_it(terminal):
+    """TT's explorer lists `CL|BZ` as a product of its own. The bar is not a
+    FIX delimiter, so it goes on the wire as the product symbol."""
+    terminal.lookup({'exchange': 'CME', 'symbol': 'CL|BZ',
+                     'security_type': 'MLEG'})
+    msg, fields = terminal.gateway._sessions['Market Data'].sent[-1]
+    assert msg == 'c' and dict(fields)['55'] == 'CL|BZ'
+    assert terminal.search['symbol'] == 'CL|BZ'
+
+
+def test_a_control_character_in_a_product_symbol_is_still_refused(terminal):
+    """The control: the bar is allowed, SOH and friends are not."""
+    with pytest.raises(ValueError):
+        terminal.lookup({'exchange': 'CME', 'symbol': 'CL\x01BZ',
+                         'security_type': 'MLEG'})
+    with pytest.raises(ValueError):
+        terminal.lookup({'exchange': 'CME', 'symbol': 'CL||',
+                         'security_type': 'MLEG'})

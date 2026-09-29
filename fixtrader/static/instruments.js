@@ -219,7 +219,9 @@
   function explorerMatches(){
     const catalogue=data.catalogue||[];
     const onVenue=catalogue.filter(i=>i.exchange===explorer.exchange&&i.security_type===explorer.type);
-    const inProduct=onVenue.filter(i=>(i.product_key||i.symbol)===explorer.product);
+    // The same legs in either order are one product to look for.
+    const same=(a,b)=>a===b||(a.includes('|')&&[...a.split('|')].sort().join('|')===[...b.split('|')].sort().join('|'));
+    const inProduct=onVenue.filter(i=>same(i.product_key||i.symbol,explorer.product));
     const tokens=explorer.filter.toLowerCase().split(/\s+/).filter(Boolean);
     const contracts=inProduct.filter(i=>{const hay=[i.tt_name,i.structure,i.description,i.contract_code,i.display_name,i.security_id].join(' ').toLowerCase();return tokens.every(t=>hay.includes(t));})
       .sort((a,b)=>(a.leg_months||a.maturity||'').localeCompare(b.leg_months||b.maturity||'')||(a.tt_name||'').localeCompare(b.tt_name||''));
@@ -234,7 +236,7 @@
   }
   function renderExplorer(force=false) {
     const {catalogue,onVenue,inProduct,contracts}=explorerMatches();
-    const signature=catalogue.length+'|'+(data.search?.status||'')+'|'+Math.floor(Date.now()/10000)+'|'+JSON.stringify(explorer);
+    const signature=catalogue.length+'|'+(data.instruments||[]).length+'|'+JSON.stringify(data.search||{})+'|'+Math.floor(Date.now()/10000)+'|'+JSON.stringify(explorer);
     if(!force&&signature===explorerSignature)return;explorerSignature=signature;
     const options=(id, values, selected)=>{const el=$(id);el.replaceChildren();for(const [value,label,title] of values){const o=new Option(label,value);if(title)o.title=title;el.append(o);}el.value=selected;};
     options('explore-exchange',[...new Set([explorer.exchange,...catalogue.map(i=>i.exchange)])].filter(Boolean).sort().map(v=>[v,v]),explorer.exchange);
@@ -244,8 +246,13 @@
     // by whatever is typed in the box above the list.
     const counts=new Map(), described=new Map();
     for(const i of onVenue){const k=i.product_key||i.symbol;counts.set(k,(counts.get(k)||0)+1);if(!described.has(k)&&i.description)described.set(k,i.description);}
-    const typed=productOf($('explore-product-input').value);
-    const products=[...counts.keys()].filter(k=>!typed||k.includes(typed)||k===explorer.product).sort((a,b)=>a.split('|').length-b.split('|').length||a.localeCompare(b));
+    const typed=productOf($('explore-product-input').value), wanted=typed.split('|').filter(Boolean);
+    // A product matches when it has every typed leg product, in any order:
+    // `HO|CL` finds TT's `CL|HO`. When nothing matches, every product is
+    // shown rather than an empty list, so what TT DID send is visible.
+    const all=[...counts.keys()], parts=k=>k.split('|');
+    const hits=all.filter(k=>k===explorer.product||wanted.every(w=>parts(k).some(p=>p.startsWith(w))));
+    const products=(hits.length?hits:all).sort((a,b)=>parts(a).length-parts(b).length||a.localeCompare(b));
     options('explore-product',products.map(k=>[k,`${k}  (${counts.get(k)})`,described.get(k)]),explorer.product);
     if(document.activeElement!==$('explore-product-input'))$('explore-product-input').value=explorer.product;
     if(!contracts.some(i=>i.security_id===explorer.contract))explorer.contract='';
@@ -260,13 +267,14 @@
     const search=data.search||{}, typeName=(EXPLORER_TYPES.find(t=>t[0]===explorer.type)||[])[1]||explorer.type;
     let status;
     if(!explorer.product)status=`${counts.size} ${typeName.toLowerCase()} products cached for ${explorer.exchange}. Choose one, or type a product and press Search TT.`;
-    else if(!inProduct.length)status=`No ${explorer.product} ${typeName.toLowerCase()}s cached for ${explorer.exchange} yet. Press Search TT to fetch them`+(explorer.product.includes('|')?` (searches ${explorer.product.split('|').join(' and ')}).`:'.');
+    else if(!inProduct.length)status=`No ${explorer.product} ${typeName.toLowerCase()}s cached for ${explorer.exchange} yet. Press Search TT to fetch them`+(explorer.product.includes('|')?` (asks TT for the product ${explorer.product}, then for ${explorer.product.split('|').join(' and ')}).`:'.');
     else status=`${contracts.length} of ${inProduct.length} ${explorer.product} contracts`+(contracts.length>2000?' · showing the first 2000; type in the filter':'')+'. Double-click an instrument to subscribe.';
     // TT never says a search has finished, so its status is shown only while
     // one is recent enough to still be arriving.
-    if(search.started&&Date.now()/1000-search.started<30){
-      if(['Searching','Receiving results'].includes(search.status))status+=` · TT: ${search.status}`;
-      if(search.error)status+=` · TT: ${search.error}`;
+    if(search.started&&Date.now()/1000-search.started<60){
+      // What TT actually answered, so an empty list is never a mystery.
+      status+=` · last TT search ${search.symbol||''} ${search.security_type||''}: ${search.status}, ${(data.instruments||[]).length} definitions received`;
+      if(search.error)status+=` · TT said: ${search.error}`;
     }
     $('explore-status').textContent=status;
   }
@@ -387,8 +395,11 @@
   $('explore-product-input').oninput=()=>pickExplorer('product',productOf($('explore-product-input').value));
   $('explore-contract-filter').oninput=()=>{explorer.filter=$('explore-contract-filter').value;renderExplorer(true);};
   async function exploreSearch(){
-    const symbols=explorer.product.split('|').filter(Boolean);
-    if(!symbols.length)throw new Error('Type a product first, e.g. CL, BZ or CL|BZ');
+    const legs=explorer.product.split('|').filter(Boolean);
+    if(!legs.length)throw new Error('Type a product first, e.g. CL, BZ or CL|BZ');
+    // TT's own explorer lists `CL|BZ` as a PRODUCT, so that name is asked for
+    // first; then each leg product, in case the venue files them there.
+    const symbols=legs.length>1?[explorer.product,...legs]:legs;
     searchRequest='pending';
     // One TT search per leg product: an inter-commodity spread is defined
     // under its legs' products. The later searches APPEND, so the answers to

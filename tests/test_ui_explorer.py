@@ -94,6 +94,19 @@ def test_an_inter_commodity_spread_is_found_by_its_tt_product(server):
             '#explore-contract option', 'o => o.map(x => x.textContent)')
         assert names == ['+1xCL Nov26:-1xBZ Nov26', '+1xCL Nov26:-1xBZ Dec26']
 
+        # the legs in the other order find the same product
+        page.fill('#explore-product-input', 'bz|cl')
+        page.wait_for_function(
+            "document.querySelectorAll('#explore-contract option').length === 2")
+        # a product that is not cached leaves every cached product visible
+        page.fill('#explore-product-input', 'HO|CL')
+        page.wait_for_function(
+            "document.querySelectorAll('#explore-product option').length === 2")
+        assert 'HO|CL' in page.inner_text('#explore-status')
+        page.fill('#explore-product-input', 'cl bz')
+        page.wait_for_function(
+            "document.querySelectorAll('#explore-contract option').length === 2")
+
         page.fill('#explore-contract-filter', 'dec26')
         page.wait_for_function(
             "document.querySelectorAll('#explore-contract option').length === 1")
