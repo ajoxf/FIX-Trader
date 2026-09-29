@@ -692,6 +692,25 @@ class Engine:
 
     # -- the snapshot ------------------------------------------------------
 
+    def halted_by(self, rt: ContractRuntime, now: datetime) -> Optional[str]:
+        """Why this contract is HALTED, in words, or None when it is not.
+
+        The same three causes `state_of` checks, in the same order. A badge
+        that says HALTED and nothing else reads as a fault in the program;
+        the usual cause on a quiet UAT book is a price that has not moved.
+        """
+        if self.killed:
+            return "KILL ALL is on — new entries are stopped desk-wide"
+        if rt.halted_reason:
+            return rt.halted_reason
+        if rt.guard.is_stale(now):
+            age = rt.guard.age(now) or 0.0
+            return (f"the bid/ask has not changed for {age:.0f}s — the limit "
+                    f"is {rt.guard.max_quote_age_sec:g}s (MAX_QUOTE_AGE_SEC). "
+                    f"New entries wait for the price to move; exits and "
+                    f"CLOSE NOW still work")
+        return None
+
     def state_of(self, rt: ContractRuntime, now: datetime) -> ContractState:
         if self.killed or rt.halted_reason:
             return ContractState.HALTED
@@ -742,6 +761,7 @@ class Engine:
                 'decimals': contract.decimals,
                 'tick_size': contract.tick_size,
                 'state': self.state_of(rt, now).value,
+                'halted_by': self.halted_by(rt, now),
                 'algo_on': bool(contract.algo_on),
                 'market': (book.to_dict() if book is not None else
                            {'bid': None, 'ask': None, 'mid': None}),

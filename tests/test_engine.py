@@ -680,3 +680,23 @@ def test_an_unmeasured_net_is_published_as_none_never_as_zero(tmp_path):
     engine.close_now('fef')
     engine.poll(now=gw.now); engine.poll(now=gw.now)
     assert rt.last_close['net'] is None
+
+
+def test_a_halted_window_says_why(tmp_path):
+    """HALTED alone reads as a fault. On a quiet book the cause is a price
+    that has not moved, and the window says so — with the limit it hit."""
+    engine, gw, db, cfg = build(tmp_path)
+    rt = warm_the_window(engine, gw)
+    assert engine.halted_by(rt, gw.now) is None          # the control
+
+    later = gw.now + __import__('datetime').timedelta(seconds=120)
+    engine.poll(now=later)
+    assert engine.state_of(rt, later) is ContractState.HALTED
+    why = engine.halted_by(rt, later)
+    assert 'has not changed' in why and 'MAX_QUOTE_AGE_SEC' in why
+    snap = [c for c in engine.snapshot(now=later)['contracts']
+            if c['key'] == 'fef'][0]
+    assert snap['state'] == 'HALTED' and snap['halted_by'] == why
+
+    engine.kill_all()
+    assert 'KILL ALL' in engine.halted_by(rt, later)

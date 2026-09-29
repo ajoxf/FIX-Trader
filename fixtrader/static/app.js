@@ -283,6 +283,7 @@ function renderContract(c) {
   q('.venue').textContent = c.symbol || '';
   q('.state').textContent = c.state;
   q('.state').className = 'state s-' + c.state;
+  q('.state').title = c.halted_by ? 'Halted: ' + c.halted_by : '';
   el.classList.toggle('stale', !!(c.feed && c.feed.stale));
 
   const sw = q('.sw');
@@ -350,8 +351,10 @@ function renderContract(c) {
       (f.edge_ok ? 'p-pass">PASS' : 'p-block">BLOCK') + '</span>';
   }
   const blocked = q('.f-blocked');
-  blocked.classList.toggle('hidden', !f.blocked_by);
-  if (f.blocked_by) blocked.textContent = 'Withheld: ' + f.blocked_by;
+  const why = c.halted_by ? 'Halted: ' + c.halted_by
+    : f.blocked_by ? 'Withheld: ' + f.blocked_by : '';
+  blocked.classList.toggle('hidden', !why);
+  if (why) blocked.textContent = why;
   const proposal = q('.f-proposal');
   proposal.classList.toggle('hidden', !c.proposal);
   if (c.proposal) proposal.textContent = 'Proposal: ' + c.proposal.side +
