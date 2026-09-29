@@ -262,6 +262,30 @@ def test_two_contracts_cannot_share_a_key(client):
     assert res.status_code == 409
 
 
+def test_two_tt_instruments_under_one_product_symbol_get_their_own_keys(client):
+    """`CL` is the December future AND every CL spread. The TT Security ID
+    tells them apart, so the second is not refused as a duplicate."""
+    c, _ = client
+    fut = c.post('/api/contracts', json={
+        'symbol': 'CL', 'name': 'Crude Oil Dec 2026', 'venue': 'orient',
+        'security_id': '883086633757772'}).get_json()
+    spread = c.post('/api/contracts', json={
+        'symbol': 'CL', 'name': '+1xCL Dec26:-1xCL Jan27', 'venue': 'orient',
+        'security_id': '543741535855301483'}).get_json()
+    assert fut['ok'] and spread['ok']
+    assert fut['key'] == 'cl'
+    assert spread['key'] == '1xcl_dec26_1xcl_jan27'
+
+
+def test_the_same_tt_instrument_twice_is_still_a_duplicate(client):
+    """The control: one Security ID is one contract, whatever it is named."""
+    c, _ = client
+    body = {'symbol': 'CL', 'venue': 'orient', 'security_id': '543741535855301483'}
+    assert c.post('/api/contracts', json=body).get_json()['ok']
+    res = c.post('/api/contracts', json=dict(body, name='another name'))
+    assert res.status_code == 409
+
+
 def test_a_contract_with_an_open_position_cannot_be_deleted(client, tmp_path):
     import json as _json
     from datetime import datetime, timezone

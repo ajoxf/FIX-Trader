@@ -137,7 +137,7 @@
       stamp.append(text('div',quoteStatus(q),q.stale?'stale':'quote-live'));
       if (q.error) stamp.append(text('div',q.error,'quote-message'));
       row.append(stamp);
-      const actions=document.createElement('td');actions.append(button('Buy',()=>ticketFor(i,'BUY'),'buy'),button('Sell',()=>ticketFor(i,'SELL'),'sell'),button('Ladder',()=>{if(!pinned)pinned=[];if(!pinned.includes(i.security_id)){if(pinned.length>=4)throw new Error('Close a ladder before opening another.');pinned.push(i.security_id);}renderLadders();$('ladders').scrollIntoView({behavior:'smooth'});}),button('Remove',async()=>{await command('remove',{security_id:i.security_id});notice('Removed from the watchlist.');}));row.append(actions);rows.append(row);
+      const actions=document.createElement('td');actions.append(button('Buy',()=>ticketFor(i,'BUY'),'buy'),button('Sell',()=>ticketFor(i,'SELL'),'sell'),button('Ladder',()=>{if(!pinned)pinned=[];if(!pinned.includes(i.security_id)){if(pinned.length>=4)throw new Error('Close a ladder before opening another.');pinned.push(i.security_id);}renderLadders();$('ladders').scrollIntoView({behavior:'smooth'});}),button('Remove',async()=>{await command('remove',{security_id:i.security_id});notice('Removed from the watchlist.');}),button('Algo desk…',()=>toAlgoDesk(i)));row.append(actions);rows.append(row);
     }
     $('watchlist').replaceChildren(rows);
     if (!data.watchlist?.length) empty($('watchlist'),10,'Add a returned TT instrument to subscribe to its prices.');
@@ -224,6 +224,13 @@
     const contracts=inProduct.filter(i=>{const hay=[i.tt_name,i.structure,i.description,i.contract_code,i.display_name,i.security_id].join(' ').toLowerCase();return tokens.every(t=>hay.includes(t));})
       .sort((a,b)=>(a.leg_months||a.maturity||'').localeCompare(b.leg_months||b.maturity||'')||(a.tt_name||'').localeCompare(b.tt_name||''));
     return {catalogue,onVenue,inProduct,contracts};
+  }
+  // The algo desk trades what config.json lists. This fills in the contract
+  // form from TT's own definition; the trader reviews it and presses Save.
+  function toAlgoDesk(i){
+    const q=new URLSearchParams({prefill:'1',name:i.tt_name||i.display_name||i.symbol,symbol:i.symbol,security_id:i.security_id,
+      security_exchange:i.exchange,tick_size:i.tick_size||'',tick_value:i.tick_value||'',contract_multiplier:i.point_value||'',currency:i.currency||''});
+    window.location.href='/exchanges?'+q.toString();
   }
   function renderExplorer(force=false) {
     const {catalogue,onVenue,inProduct,contracts}=explorerMatches();
@@ -401,14 +408,10 @@
   }
   $('explore-add').onclick=async()=>{try{await exploreSubscribe();}catch(e){$('explore-status').textContent=e.message;}};
   $('explore-contract').ondblclick=async()=>{explorer.contract=$('explore-contract').value;try{await exploreSubscribe();}catch(e){$('explore-status').textContent=e.message;}};
-  // The algo desk trades what config.json lists. This fills in the contract
-  // form from TT's own definition; the trader reviews it and presses Save.
   $('explore-algo').onclick=()=>{
     const i=explorerMatches().contracts.find(c=>c.security_id===explorer.contract);
     if(!i){$('explore-status').textContent='Select an instrument first';return;}
-    const q=new URLSearchParams({prefill:'1',name:i.tt_name||i.display_name||i.symbol,symbol:i.symbol,security_id:i.security_id,
-      security_exchange:i.exchange,tick_size:i.tick_size||'',tick_value:i.tick_value||'',contract_multiplier:i.point_value||'',currency:i.currency||''});
-    window.location.href='/exchanges?'+q.toString();
+    toAlgoDesk(i);
   };
   conditionals();connectQuoteStream();poll();
 })();

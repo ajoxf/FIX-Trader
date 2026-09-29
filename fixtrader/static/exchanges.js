@@ -337,8 +337,12 @@ document.getElementById('c-save').onclick = async () => {
     toast('REJECT', 'NOT SAVED', res.data.error || 'refused');
     return;
   }
-  toast('OK', 'SAVED', (body.name || body.symbol) +
-    ' saved — its window appears within a few seconds');
+  // An EDIT is adopted by the running engine; a NEW contract is not — the
+  // engine subscribes and sizes its contracts when it starts.
+  toast('OK', 'SAVED', (body.name || body.symbol) + (state.editingContract
+    ? ' saved — in force within a few seconds'
+    : ' saved — restart the engine (Ctrl+C, then run_fix.bat) and its ' +
+      'window appears on the Algo desk'));
   document.getElementById('contract-form-card').hidden = true;
   await loadContracts();
 };
@@ -428,8 +432,12 @@ function prefillFromExplorer() {
   C_TEXT.concat(C_NUM).forEach((k) => {
     if (q.has(k) && q.get(k) !== '') cField(k).value = q.get(k);
   });
+  // One venue configured is the only sensible choice; more than one is the
+  // trader's to make.
+  const venues = [...cField('venue').options].map((o) => o.value).filter(Boolean);
+  if (venues.length === 1) cField('venue').value = venues[0];
   document.getElementById('contract-form-title').textContent =
-    'New contract from TT — check it, choose the venue, then Save';
+    'New contract from TT — check it, confirm the venue, then Save';
   document.getElementById('contract-form-card').scrollIntoView({block: 'start'});
 }
 
