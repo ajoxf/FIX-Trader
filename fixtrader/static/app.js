@@ -1301,6 +1301,10 @@ function renderChrome(snap) {
   const master = document.getElementById('master-toggle');
   master.textContent = 'Master: ' + (engine.master_algo ? 'ON' : 'OFF');
   master.classList.toggle('act', !!engine.master_algo);
+  const mode = document.getElementById('mode-toggle');
+  mode.textContent = 'Mode: ' + (engine.trading_mode || '—');
+  mode.dataset.mode = engine.trading_mode || '';
+  mode.classList.toggle('manual', engine.trading_mode === 'MANUAL');
   const auto = document.getElementById('auto-trade-toggle');
   auto.textContent = 'Auto trade: ' + (engine.auto_trade_enabled ? 'ON' : 'OFF');
   auto.classList.toggle('act', !!engine.auto_trade_enabled);
@@ -1608,6 +1612,26 @@ document.getElementById('master-toggle').onclick = async () => {
   const on = document.getElementById('master-toggle').classList.contains('act');
   await command('master_algo', '', { on: !on });
 };
+/* ALGO or MANUAL — one at a time. The engine refuses the switch while the
+ * side being left has anything open or working, and says what. */
+document.getElementById('mode-toggle').onclick = async (e) => {
+  const now = e.currentTarget.dataset.mode;
+  const next = now === 'MANUAL' ? 'ALGO' : 'MANUAL';
+  const ok = await ask('Switch the desk to ' + next,
+    next === 'MANUAL'
+      ? 'The algo stops entering and proposing on every contract, and ' +
+        'automatic trading is turned off. Manual orders on Instruments & ' +
+        'orders are allowed. Refused while the algo has a position or ' +
+        'working order open.'
+      : 'Manual orders are refused from now on, and any reviewed manual ' +
+        'ticket is discarded. The algo may trade again. Refused while a ' +
+        'manual order is working or a manual fill is not yet closed.',
+    'Switch to ' + next);
+  if (!ok) return;
+  const answer = await command('trading_mode', '', { mode: next });
+  if (answer && answer.ok) toast('OK', 'MODE', 'the desk is in ' + next + ' mode');
+};
+
 document.getElementById('auto-trade-toggle').onclick = async () => {
   const on = document.getElementById('auto-trade-toggle').classList.contains('act');
   await command('auto_trade', '', { on: !on });

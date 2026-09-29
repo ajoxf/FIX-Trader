@@ -665,3 +665,8 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 @media (prefers-reduced-motion: reduce) {
   .win.contractwin, .win.contractwin > .titlebar { transition: none; }
 }
+
+/* The trading mode. MANUAL is marked, because a desk whose algo is not
+ * trading must never be mistaken for one that is. */
+.tk.mode { font-weight: 700; }
+.tk.mode.manual { background: var(--warn-soft); border-color: var(--warn); color: #5e4204; }

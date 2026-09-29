@@ -39,9 +39,13 @@ size are kept together in the algorithm model.
 options and listed spreads, save a watchlist, receive bid/ask prices, and
 review/send manual orders with cancel/replace and execution reports.
 See [symbol and order instructions](docs/INSTRUMENTS_AND_ORDERS.md).
-This manual workflow was added explicitly at the operator's request and is
-separate from the existing algorithm desk. Algorithmic execution and complete
-account-position recovery remain unfinished.
+This manual workflow was added explicitly at the operator's request. The desk
+is in ONE trading mode at a time — **ALGO** or **MANUAL**, switched from the
+Algo desk taskbar or the Instruments page — so hand trades and algo trades are
+never on the book together: each mode refuses the other's new orders, and a
+switch is refused while the side being left has anything open. Closing and
+cancelling always work. Algorithmic execution and complete account-position
+recovery remain unfinished.
 
 **Local TT UAT connection:** the native connection code from
 `backup_v1fixapp.py` is now integrated. Run `run_fix.ps1` for the configured
@@ -57,9 +61,9 @@ numbers that decide the trade — rolling mean, standard deviation, z-score, the
 edge filter, position and P&L — an **ALGO ON/OFF** switch, and a gear for that
 contract's own settings. Prices refresh twice a second.
 
-No ladders, no charts, no manual order entry: discretionary trading is done in
-TT's own front end. This screen runs the algo and shows why it is or is not
-trading.
+This screen runs the algo and shows why it is or is not trading. Manual
+trading lives on the Instruments & orders page, and only while the desk is in
+MANUAL mode.
 
 Beside the live windows there is an **Analysis** window, one contract at a
 time: what the standard-deviation touches at each level actually did next, how

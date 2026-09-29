@@ -37,6 +37,10 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+#: Who may trade the desk. One at a time — see Engine.trading_mode.
+TRADING_MODES = ('ALGO', 'MANUAL')
+
+
 class ContractRuntime:
     """Everything the engine holds for one contract."""
 
@@ -80,7 +84,7 @@ class Engine:
     """One engine per process. Owns the contracts, the venue and the book."""
 
     def __init__(self, config, gateway, db=None, notify: Optional[Callable] = None,
-                 simulated: bool = False):
+                 simulated: bool = False, mode_path: Optional[str] = None):
         self.config = config
         self.gateway = gateway
         self.db = db
@@ -96,6 +100,19 @@ class Engine:
             bool(config.settings.get('AUTO_TRADE_ENABLED', True))
             if not hasattr(gateway, 'venue') else False)
         self.killed: bool = False
+        #: WHO is trading this desk: the algo or a person, never both. Two
+        #: hands on one book fight — the algo closes a hand-placed position at
+        #: its own target, or re-enters the moment the trader gets flat — and
+        #: the journal then describes neither. Each mode refuses the other's
+        #: NEW orders; a switch is refused while the side being switched away
+        #: from has anything open or working. Exits and cancels are never
+        #: refused, in either mode. Kept on disk beside the status file, so a
+        #: restart comes back in the mode it left.
+        self.mode_path = mode_path
+        self.trading_mode: str = self._load_mode()
+        terminal = getattr(gateway, 'terminal', None)
+        if terminal is not None:
+            terminal.mode_block = self._manual_block
         #: Asked for from the screen, after a change only a restart takes on.
         #: The runner stops cleanly and the launcher starts it again.
         self.restart_requested: bool = False
@@ -269,6 +286,12 @@ class Engine:
             return
 
         # 2. and only then the way in
+        if self.trading_mode == 'MANUAL':
+            # A person is trading this desk. The statistics keep running so
+            # the windows stay useful; the algo neither enters nor proposes.
+            rt.blocked_by = "MANUAL mode — a person is trading this desk"
+            rt.proposal = None
+            return
         if self.killed:
             rt.blocked_by = "the kill switch is on"
             return
@@ -526,7 +549,84 @@ class Engine:
         self.config.save()
         return {'ok': True, 'master_algo': self.master_algo}
 
+    # -- who is trading: the algo or a person ------------------------------
+
+    def _load_mode(self) -> str:
+        if self.mode_path:
+            try:
+                from . import atomicfile
+                saved = atomicfile.read_json(self.mode_path, default=None) or {}
+                if saved.get('mode') in TRADING_MODES:
+                    return saved['mode']
+            except Exception:                                # noqa: BLE001
+                logger.warning("could not read %s — starting in ALGO mode",
+                               self.mode_path)
+        return 'ALGO'
+
+    def _manual_block(self) -> Optional[str]:
+        """Why a NEW manual order is refused right now, or None."""
+        if self.trading_mode == 'ALGO':
+            return ("the desk is in ALGO mode — manual orders are refused so "
+                    "the algo's book is not mixed with hand trades. Switch to "
+                    "MANUAL on the Algo desk first. Closing and cancelling "
+                    "still work.")
+        return None
+
+    def algo_business(self) -> List[str]:
+        """What the algo has open or working, in words. Empty = nothing."""
+        out = []
+        for key, rt in self.runtimes.items():
+            if rt.position is not None and rt.position.is_open:
+                out.append(f"{rt.contract.name or key}: an open algo position "
+                           f"({rt.position.side.value} {rt.position.qty:g})")
+            if self.executor.working_for(key):
+                out.append(f"{rt.contract.name or key}: a working algo order")
+        return out
+
+    def manual_business(self) -> List[str]:
+        terminal = getattr(self.gateway, 'terminal', None)
+        return terminal.open_business() if terminal is not None else []
+
+    def set_trading_mode(self, mode: str) -> Dict[str, Any]:
+        mode = str(mode or '').upper()
+        if mode not in TRADING_MODES:
+            return {'ok': False, 'error': f"unknown mode {mode!r} — ALGO or MANUAL"}
+        if mode == self.trading_mode:
+            return {'ok': True, 'trading_mode': mode}
+        # Switching AWAY from a side that still holds something would leave
+        # its position on a book the other side is now trading.
+        leaving = (self.algo_business() if mode == 'MANUAL'
+                   else self.manual_business())
+        if leaving:
+            side = 'algo' if mode == 'MANUAL' else 'manual'
+            return {'ok': False, 'error': (
+                f"cannot switch to {mode}: the {side} side still has "
+                + '; '.join(leaving)
+                + f". Close or cancel it first — the {side} side can always "
+                  f"close what it opened.")}
+        if mode == 'MANUAL':
+            # No automatic order may go out behind a person's back.
+            self.set_auto_trade(False)
+            for rt in self.runtimes.values():
+                rt.proposal = None
+        else:
+            terminal = getattr(self.gateway, 'terminal', None)
+            if terminal is not None:
+                # A ticket reviewed in MANUAL mode must not be sent in ALGO.
+                terminal.previews = {k: v for k, v in terminal.previews.items()
+                                     if v.get('close_of')}
+        self.trading_mode = mode
+        if self.mode_path:
+            from . import atomicfile
+            atomicfile.write_json(self.mode_path, {'mode': mode,
+                                                   'at': utcnow().isoformat()})
+        logger.info("trading mode is now %s", mode)
+        return {'ok': True, 'trading_mode': mode}
+
     def set_auto_trade(self, on: bool) -> Dict[str, Any]:
+        if on and self.trading_mode == 'MANUAL':
+            return {'ok': False, 'error': 'The desk is in MANUAL mode. Switch '
+                    'it to ALGO before turning automatic trading on.'}
         if on:
             if getattr(self.gateway, 'connection_only', False):
                 return {'ok': False, 'error':
@@ -839,6 +939,7 @@ class Engine:
                 'loop_ms': round(self.loop_ms, 1),
                 'master_algo': self.master_algo,
                 'auto_trade_enabled': self.auto_trade_enabled,
+                'trading_mode': self.trading_mode,
                 'auto_trade_available': not getattr(self.gateway, 'connection_only', False),
                 'killed': self.killed,
                 'environment': self.config.environment_label,

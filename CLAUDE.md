@@ -32,15 +32,26 @@ the drawing wins.
   that keeps long and short apart, an opposite order flagged OPEN opens the
   other side: the desk is long AND short, both posting margin, and a netting
   screen calls it flat. An unknown flag degrades to CLOSE, never to OPEN.
-- **No manual order entry. This program is the ALGO.** The only controls that
-  send are the algo switch, CLOSE NOW and KILL ALL. Manual trading is a
-  SEPARATE program — it is not a feature to add here, and a ladder was built
-  and taken back out for exactly that reason. An algo and a hand on the same
-  contract fight: the trader puts a position on and the algo closes it at its
-  own target, or the trader gets flat and the algo re-enters on the next pass.
-  Keeping them in one process means every guard has to answer "which of you
-  is trading this contract?", and the journal that Analysis reads mixes hand
-  trades into a win rate that then describes neither.
+- **Manual AND algo, but never at the same time.** This program trades by
+  hand (Instruments & orders: tickets, ladders) and by algo (the Algo desk),
+  and the desk is in exactly ONE trading mode, `ALGO` or `MANUAL`
+  (`Engine.trading_mode`, switched from the Algo desk taskbar or the
+  Instruments page, kept beside the status file so a restart comes back in
+  it). An algo and a hand on the same book fight — the trader puts a
+  position on and the algo closes it at its own target, or the trader gets
+  flat and the algo re-enters on the next pass — and a journal mixing the
+  two describes neither. So:
+  - In `ALGO` mode a NEW manual order is refused by `ManualTerminal` itself
+    (`mode_block`), at the review AND at the send, so no page or command can
+    go round it; a ticket reviewed in MANUAL is discarded on the switch.
+  - In `MANUAL` mode the algo neither enters nor proposes, and automatic
+    trading cannot be turned on. Statistics keep running.
+  - A switch is REFUSED while the side being left still has anything open
+    or working — an algo position or order, a manual working order or an
+    unclosed manual fill — and the refusal names each one.
+  - Closes and cancels are never refused, in either mode: the guard is on
+    new exposure only. A manual order recovered as UNKNOWN after a restart
+    is named, not counted as open (it would block the switch for ever).
 - **CLOSE NOW stands that contract's algo down.** The z that put the position
   on has not moved, so an algo left armed re-enters on the next pass — a
   tenth of a second after the trader pressed the button to get out.

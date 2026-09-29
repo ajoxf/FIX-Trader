@@ -149,6 +149,8 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
             return engine.set_algo(key, False)
         if action == 'master_algo':
             return engine.set_master(bool(args.get('on', True)))
+        if action == 'trading_mode':
+            return engine.set_trading_mode(args.get('mode', ''))
         if action == 'auto_trade':
             return engine.set_auto_trade(bool(args.get('on', False)))
         if action == 'close_now':

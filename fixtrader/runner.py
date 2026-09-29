@@ -126,7 +126,8 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
         database_path = os.path.join(runtime_dir, os.path.basename(database_path))
     db = Database(database_path)
     gateway, is_sim = build_gateway(config, simulated, runtime_dir)
-    engine = Engine(config, gateway, db=db, simulated=is_sim)
+    engine = Engine(config, gateway, db=db, simulated=is_sim,
+                    mode_path=str(status_path) + '.mode.json')
     bridge = CommandBridge(command_path, result_path)
     bridge.prime()                    # a restart never replays a KILL ALL
     engine.start()

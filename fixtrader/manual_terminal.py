@@ -140,6 +140,10 @@ class ManualTerminal:
         #: product is searched once per leg product, and the second search
         #: must not discard the first one's definitions as they arrive.
         self._search_ids = set()
+        #: Set by the engine: returns why a NEW manual order is refused (the
+        #: desk is in ALGO mode), or None. Checked here, in the terminal, so
+        #: no page or command can go round it. Closes and cancels never ask.
+        self.mode_block = lambda: None
         self.watch = self._load('watch')
         for instrument in self.watch.values():
             self._enrich(instrument)
@@ -665,8 +669,31 @@ class ManualTerminal:
             return {'ok': True, 'token': token, 'ticket': ticket,
                     'fields': self._order_fields(ticket, 'assigned-on-confirmation'), 'expires_in': 60}
 
+    def _refuse_if_blocked(self):
+        reason = self.mode_block()
+        if reason:
+            raise ValueError(reason)
+
     def preview(self, args):
+        self._refuse_if_blocked()
         return self._preview(args)
+
+    def open_business(self):
+        """What the manual side has open or working, in words.
+
+        A working order, or filled quantity not yet closed. UNKNOWN (a
+        restart that could not recover a venue status) is not counted as
+        open — it would block a switch for ever — but it is named, because
+        unknown is not the same as gone."""
+        with self.lock:
+            out = []
+            for order in self.orders.values():
+                name = order['ticket']['instrument'].get('display_name') or order['ticket'].get('security_id')
+                if order['status'] in ('PENDING', 'NEW', 'PARTIALLY_FILLED', 'REPLACED'):
+                    out.append(f"{name}: working manual order {order['id']}")
+                elif self.closeable(order) > 0:
+                    out.append(f"{name}: {self.closeable(order)} filled on {order['id']} not yet closed")
+            return out
 
     def closeable(self, order):
         """Unclosed fills in this ticket's ledger, with outstanding closes reserved."""
@@ -721,6 +748,10 @@ class ManualTerminal:
             self.session('Order Routing')
             ticket = copy.deepcopy(preview['ticket'])
             close_of = preview.get('close_of')
+            if not close_of:
+                # A ticket reviewed before the desk went to ALGO is refused
+                # at the send, not just at the review.
+                self._refuse_if_blocked()
             self._risk_check(ticket, risk_reducing=bool(close_of))
             if close_of and Decimal(ticket['quantity']) > self.closeable(self.orders[close_of]):
                 raise ValueError('The available close quantity changed. Review the close again.')
@@ -752,6 +783,7 @@ class ManualTerminal:
             new_id = 'FTM-' + uuid.uuid4().hex
             ticket = copy.deepcopy(order['ticket'])
             if replace:
+                self._refuse_if_blocked()
                 if order.get('close_of'):
                     raise ValueError('Close orders cannot be increased or replaced here; cancel and review the remaining close quantity.')
                 for key in ('quantity', 'price', 'stop_price'):
