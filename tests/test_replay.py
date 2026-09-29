@@ -197,3 +197,73 @@ def test_a_cooldown_is_never_the_headline_reason_for_no_trades():
     assert out['summary']['trades'] == 0
     assert 'cooling down' not in (out['blocked_by'] or '')
     assert 'edge' in out['blocked_by']
+
+
+# -- a target that is a percentage of MARGIN ----------------------------------
+
+def test_a_margin_target_with_no_margin_says_so_rather_than_blaming_a_filter():
+    """The shipped target is a percentage of MARGIN and the shipped exit mode
+    waits on it. A replay that could not price the target entered, sat open
+    for the rest of the recording, and headlined whatever entry it withheld
+    — "long entries are off" on a short-only desk — which sends the desk to
+    change a setting that was never the problem."""
+    out = replay_mod.replay(
+        a_wave(), settings(profit_target_pct=2.0, stop_loss_z=99.0,
+                           trade_direction='SHORT_ONLY'),
+        0.01, 1.0, contract_key='fef')
+    assert out['summary']['trades'] == 0
+    assert out['still_open'] == 1
+    assert 'margin' in out['target_missing']
+    assert 'no profit target' in out['blocked_by']
+    assert 'margin' in out['blocked_by']
+    assert 'not recorded' in out['assumptions']['margin']
+
+
+def test_a_recorded_margin_lets_the_replay_take_profit():
+    """The control: the same series and settings, given the margin the venue
+    actually charged, take profit at the target."""
+    out = replay_mod.replay(
+        a_wave(), settings(profit_target_pct=2.0, stop_loss_z=99.0,
+                           trade_direction='SHORT_ONLY'),
+        0.01, 1.0, contract_key='fef', margin_per_contract=260.0)
+    assert out['summary']['trades'] > 0
+    assert out['target_missing'] is None
+    assert {t['exit_reason'] for t in out['trades']} == {'TARGET'}
+    assert '260.00 per contract' in out['assumptions']['margin']
+
+
+def test_a_missing_margin_does_not_matter_where_the_z_exit_decides():
+    """Only the `profit` mode waits on the target alone. The z exit closes
+    the position whatever the target is, so there is nothing to report."""
+    out = replay_mod.replay(
+        a_wave(), settings(profit_target_pct=2.0, stop_loss_z=99.0,
+                           exit_signal_mode='zscore'), 0.01, 1.0)
+    assert out['summary']['trades'] > 0
+    assert out['blocked_by'] is None
+
+
+def test_a_sweep_carries_the_margin_to_every_threshold():
+    rows = a_wave(n=1200)
+    s = settings(profit_target_pct=2.0, stop_loss_z=99.0)
+    without = replay_mod.sweep(rows, s, 0.01, 1.0, thresholds=[1.5, 2.0])
+    assert all(r['trades'] == 0 and r['target_missing'] for r in without['rows'])
+    assert 'no profit target' in without['blocked_by']
+    priced = replay_mod.sweep(rows, s, 0.01, 1.0, thresholds=[1.5, 2.0],
+                              margin_per_contract=260.0)
+    assert all(r['trades'] > 0 for r in priced['rows'])
+    assert priced['blocked_by'] is None
+
+
+def test_the_margin_the_replay_reads_is_what_was_charged(tmp_path):
+    from fixtrader.database import Database
+    from fixtrader.models import Position, Side
+    db = Database(str(tmp_path / 'm.db'))
+    assert db.margin_per_contract('fef') is None       # nothing recorded
+    db.save_position(Position(contract_key='fef', side=Side.SELL, qty=0.0,
+                              opened_qty=5.0, avg_price=0.6,
+                              margin_locked=1300.0))
+    db.save_position(Position(contract_key='other', side=Side.SELL, qty=2.0,
+                              opened_qty=2.0, avg_price=0.6,
+                              margin_locked=9000.0))
+    # per contract, from the size it was OPENED at — `qty` is what remains
+    assert db.margin_per_contract('fef') == pytest.approx(260.0)

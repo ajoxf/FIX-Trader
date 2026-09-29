@@ -233,7 +233,8 @@ def create_app(config_path: str = "config.json",
             rows, settings, contract.tick_size, contract.tick_value,
             thresholds=levels,
             contract_multiplier=contract.contract_multiplier,
-            contract_key=key)
+            contract_key=key,
+            margin_per_contract=_db(config).margin_per_contract(key))
         out.update({'ok': True, 'key': key, 'symbol': contract.symbol,
                     'period': period, 'samples': len(rows),
                     'decimals': contract.decimals,

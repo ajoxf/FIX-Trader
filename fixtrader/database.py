@@ -197,6 +197,25 @@ class Database:
             rows = conn.execute(sql, args).fetchall()
         return [self._position_from_row(r) for r in rows]
 
+    def margin_per_contract(self, contract_key: str) -> Optional[float]:
+        """What the venue charged per contract on this contract's most
+        recent position that recorded a margin, or None.
+
+        The replay prices a MARGIN target off this. It is read from what was
+        actually locked up, never from a setting, and None when nothing was
+        recorded — a guess would price every replayed target at a size
+        nobody was charged.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT margin_locked, COALESCE(opened_qty, qty) AS size"
+                " FROM positions WHERE contract_key = ?"
+                " AND margin_locked > 0 AND COALESCE(opened_qty, qty) > 0"
+                " ORDER BY id DESC LIMIT 1", (contract_key,)).fetchone()
+        if row is None:
+            return None
+        return float(row['margin_locked']) / float(row['size'])
+
     # -- orders and fills -------------------------------------------------
 
     def save_order(self, order: Dict[str, Any]) -> None:

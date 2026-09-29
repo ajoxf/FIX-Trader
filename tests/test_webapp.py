@@ -387,3 +387,48 @@ def test_a_venue_form_round_trip_does_not_quietly_mask_the_password(client,
         if isinstance(value, str):
             assert '*' * 4 not in value
             assert '•' not in value
+
+
+def test_the_replay_prices_a_margin_target_off_the_margin_it_was_charged(tmp_path):
+    """The shipped exit waits on a target that is a percentage of MARGIN.
+    The route hands the replay what the venue charged this contract on the
+    positions it recorded — without it, no replayed position ever took
+    profit, and the card blamed an entry filter for it."""
+    import random
+    from datetime import datetime, timedelta, timezone
+    from fixtrader.config import ContractConfig
+    from fixtrader.database import Database
+    from fixtrader.models import Position, Side
+
+    cfg = TraderConfig(path=str(tmp_path / 'config.json'))
+    cfg.settings['DATABASE_PATH'] = str(tmp_path / 'r.db')
+    cfg.contracts['fef'] = ContractConfig(
+        key='fef', name='Iron ore Oct/Nov', symbol='FEFV6-FEFX6',
+        tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
+        quantity=5, commission_per_contract=1.0, entry_threshold=2.0,
+        lookback=120, exit_signal_mode='profit', profit_target_pct=2.0,
+        profit_target_basis='MARGIN', stop_loss_z=99.0,
+        edge_filter_enabled=False, stats_update_interval_sec=0)
+    cfg.save()
+    db = Database(str(tmp_path / 'r.db'))
+    rng, px, rows = random.Random(7), 0.60, []
+    base = datetime.now(timezone.utc) - timedelta(hours=2)
+    for i in range(3000):
+        px += (0.60 - px) * 0.04 + rng.gauss(0, 0.012)
+        rows.append((base + timedelta(seconds=i), round(px, 4)))
+    db.save_samples('fef', rows)
+    app = create_app(str(tmp_path / 'config.json'), str(tmp_path / 's.json'),
+                     str(tmp_path / 'c.jsonl'), str(tmp_path / 'r.json'))
+    c = app.test_client()
+
+    blind = c.get('/api/replay/fef?thresholds=2').get_json()
+    assert blind['rows'][0]['trades'] == 0
+    assert 'margin' in blind['blocked_by']
+
+    db.save_position(Position(contract_key='fef', side=Side.SELL, qty=0.0,
+                              opened_qty=5.0, avg_price=0.66,
+                              margin_locked=1300.0))
+    priced = c.get('/api/replay/fef?thresholds=2').get_json()
+    assert priced['rows'][0]['trades'] > 0
+    assert priced['blocked_by'] is None
+    assert '260.00 per contract' in priced['assumptions']['margin']

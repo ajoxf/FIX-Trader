@@ -1005,7 +1005,9 @@ function renderReplay(el, report, live) {
   const a = report.assumptions || {};
   note.innerHTML = 'This is a <b>signal</b> replay, not a fill simulator. ' +
     'The book was ' + (a.book || 'assumed') + '; ' + (a.fills || '') + '; ' +
-    (a.costs || '') + '. Read against ' + (report.samples || 0) +
+    (a.costs || '') + '. ' +
+    (a.margin ? '<b>Margin:</b> ' + a.margin + '. ' : '') +
+    'Read against ' + (report.samples || 0) +
     ' recorded prices.';
 }
 
