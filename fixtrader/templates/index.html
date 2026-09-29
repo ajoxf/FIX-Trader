@@ -8,6 +8,7 @@
      network is what failed. -->
 <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}?v={{ asset_version }}">
+<script>try{var fs=localStorage.getItem('ft.fs');if(fs)document.documentElement.style.setProperty('--fs',fs);}catch(e){}</script>
 <link rel="stylesheet" href="{{ url_for('static', filename='app_nav.css') }}?v={{ asset_version }}">
 </head>
 <body>
@@ -35,6 +36,7 @@
     <button id="auto-trade-toggle" class="tk" title="Enable or disable automatic order placement; the algo can still display proposals when off">Auto trade: OFF</button>
     <button id="sound-toggle" class="tk" title="A blip when an order is sent, two rising notes on a fill, a low note on a reject">Sound: on</button>
     <button id="tidy" class="tk" title="Put every window back in a row">Tidy</button>
+    <button id="text-smaller" class="tk" title="Smaller text">A&minus;</button><span id="text-size" class="stat" title="Text size — kept in this browser">Text 130%</span><button id="text-bigger" class="tk" title="Bigger text">A+</button>
     <a class="tk" href="/settings" title="How the system runs">Settings</a>
     <a class="tk" href="/exchanges" title="Venues, FIX sessions and contracts">Exchanges</a>
     <span id="loop-stat" class="stat" title="The engine's achieved loop, and how old this snapshot is">&mdash;</span>

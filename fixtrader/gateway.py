@@ -262,8 +262,12 @@ class FixGateway:
         security_id = self._contract_security_ids.get(key, key)
         with self.terminal.lock:
             book = self.terminal.books.get(security_id)
+            # One side alone IS returned: it is what TT is publishing, and
+            # the window has to show it rather than a blank that looks like
+            # no subscription. It is not a usable book — BookTop.usable is
+            # False, so it gives no mid, no statistic and no entry.
             if (not book or book.get('integrity_ok') is False
-                    or book.get('bid') is None or book.get('ask') is None):
+                    or (book.get('bid') is None and book.get('ask') is None)):
                 return None
             stamp = book.get('timestamp')
             try:

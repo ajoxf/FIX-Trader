@@ -270,8 +270,9 @@ function makeDraggable(el, key) {
       const r = other.getBoundingClientRect();
       placeWindow(other, r.left - desk.left + desk.left * 0,
         r.top - desk.top + document.getElementById('desktop').scrollTop);
-      state.places[other.dataset.key] = {
-        x: parseFloat(other.style.left), y: parseFloat(other.style.top) };
+      state.places[other.dataset.key] = Object.assign({},
+        state.places[other.dataset.key],
+        { x: parseFloat(other.style.left), y: parseFloat(other.style.top) });
     });
     const move = (m) => {
       const x = m.clientX - desk.left - dx;
@@ -281,13 +282,43 @@ function makeDraggable(el, key) {
     const up = () => {
       document.removeEventListener('mousemove', move);
       document.removeEventListener('mouseup', up);
-      state.places[key] = { x: parseFloat(el.style.left), y: parseFloat(el.style.top) };
-      localStorage.setItem('ft.places', JSON.stringify(state.places));
+      state.places[key] = Object.assign({}, state.places[key],
+        { x: parseFloat(el.style.left), y: parseFloat(el.style.top) });
+      savePlaces();
     };
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
     down.preventDefault();
   });
+  makeResizable(el, key);
+}
+
+function savePlaces() {
+  try { localStorage.setItem('ft.places', JSON.stringify(state.places)); }
+  catch (e) { /* a private window: the desk still works, it just forgets */ }
+}
+
+/* The corner handle is the browser's own (`resize: both`). What is kept is
+ * the size the TRADER set: a resize writes an inline width and height, which
+ * a window growing with its own content never does — so a window whose
+ * table got longer is not remembered at that height. */
+function makeResizable(el, key) {
+  const saved = state.places[key];
+  if (saved && saved.w && saved.h) {
+    el.style.width = saved.w + 'px';
+    el.style.height = saved.h + 'px';
+  }
+  if (!window.ResizeObserver) return;
+  let timer = null;
+  new ResizeObserver(() => {
+    if (!el.style.width && !el.style.height) return;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      state.places[key] = Object.assign({}, state.places[key],
+        { w: el.offsetWidth, h: el.offsetHeight });
+      savePlaces();
+    }, 250);
+  }).observe(el);
 }
 
 function renderContract(c) {
@@ -369,6 +400,7 @@ function renderContract(c) {
   }
   const blocked = q('.f-blocked');
   const why = c.halted_by ? 'Halted: ' + c.halted_by
+    : c.market_note ? 'Market: ' + c.market_note
     : f.blocked_by ? 'Withheld: ' + f.blocked_by : '';
   blocked.classList.toggle('hidden', !why);
   if (why) blocked.textContent = why;
@@ -1594,8 +1626,26 @@ document.getElementById('tidy').onclick = () => {
   document.querySelectorAll('.win').forEach((el) => {
     el.classList.remove('placed');
     el.style.left = ''; el.style.top = '';
+    el.style.width = ''; el.style.height = '';
   });
 };
+
+/* Text size, for the whole terminal. Kept per browser: it is a matter of
+ * the screen and the eyes in front of it, not of the desk. */
+function setTextSize(scale) {
+  const fs = Math.round(Math.min(2.2, Math.max(0.9, scale)) * 10) / 10;
+  document.documentElement.style.setProperty('--fs', String(fs));
+  try { localStorage.setItem('ft.fs', String(fs)); } catch (e) { /* forgets */ }
+  const label = document.getElementById('text-size');
+  if (label) label.textContent = 'Text ' + Math.round(fs * 100) + '%';
+}
+function textSize() {
+  return parseFloat(getComputedStyle(document.documentElement)
+    .getPropertyValue('--fs')) || 1.3;
+}
+document.getElementById('text-smaller').onclick = () => setTextSize(textSize() - 0.1);
+document.getElementById('text-bigger').onclick = () => setTextSize(textSize() + 0.1);
+setTextSize(textSize());
 
 document.getElementById('add-panel').onclick = () => {
   const menu = document.getElementById('add-menu');

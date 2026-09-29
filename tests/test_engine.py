@@ -700,3 +700,19 @@ def test_a_halted_window_says_why(tmp_path):
 
     engine.kill_all()
     assert 'KILL ALL' in engine.halted_by(rt, later)
+
+
+def test_a_window_without_a_mid_says_what_the_venue_is_quoting(tmp_path):
+    """A blank window reads as "not subscribed". On a quiet spread the truth
+    is usually one side quoted, or nothing yet."""
+    from fixtrader.models import BookTop
+    engine, gw, db, cfg = build(tmp_path)
+    rt = engine.runtimes['fef']
+    rt.book = None
+    assert 'no quote' in engine.market_note(rt)
+    rt.book = BookTop(bid=None, ask=3.07)
+    assert 'only an offer' in engine.market_note(rt)
+    rt.book = BookTop(bid=3.05, ask=None)
+    assert 'only a bid' in engine.market_note(rt)
+    rt.book = BookTop(bid=3.05, ask=3.07)                 # the control
+    assert engine.market_note(rt) is None

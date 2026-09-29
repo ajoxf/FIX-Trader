@@ -911,3 +911,36 @@ def test_the_flash_fades_rather_than_leaving_the_window_coloured(server):
             ".classList.contains('closed-up')", timeout=15000)
         browser.close()
     assert errors == []
+
+
+def test_text_size_and_window_size_are_the_traders_and_are_kept(server):
+    """A- / A+ scale every font on the desk, and a window dragged to a size
+    keeps it across a reload. Neither may lay one window over another."""
+    url, _ = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        size = lambda: page.evaluate(
+            "parseFloat(getComputedStyle(document.querySelector('.win .title')).fontSize)")
+        before = size()
+        page.locator('#text-bigger').click()
+        page.locator('#text-bigger').click()
+        assert size() > before * 1.1
+        assert 'Text ' in page.inner_text('#text-size')
+
+        # windows in the grid do not overlap, however large the text
+        boxes = [page.locator(f'.win[data-key="{k}"]').bounding_box()
+                 for k in ('fef', '__analysis__')]
+        assert boxes[0]['y'] + boxes[0]['height'] <= boxes[1]['y'] + 1
+
+        # a size set by the trader survives a reload
+        page.evaluate("""() => { const w = document.querySelector('.win[data-key="fef"]');
+                                w.style.width = '520px'; w.style.height = '380px'; }""")
+        page.wait_for_timeout(600)                  # the observer's debounce
+        page.reload(wait_until='domcontentloaded')
+        page.wait_for_selector('.win[data-key="fef"]')
+        box = page.locator('.win[data-key="fef"]').bounding_box()
+        assert abs(box['width'] - 520) < 2 and abs(box['height'] - 380) < 2
+        assert size() > before * 1.1               # and so does the text size
+        browser.close()
+    assert errors == []

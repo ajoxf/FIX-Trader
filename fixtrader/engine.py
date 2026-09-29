@@ -715,6 +715,27 @@ class Engine:
                     f"CLOSE NOW still work")
         return None
 
+    def market_note(self, rt: ContractRuntime) -> Optional[str]:
+        """Why the window has no mid, in words, or None when it has one.
+
+        A blank window reads as "not subscribed". On a quiet UAT spread the
+        usual truth is that TT is quoting one side, or nothing yet — and the
+        statistics and the algo need BOTH sides, because the price is the mid.
+        """
+        book = rt.book
+        if book is None:
+            return ("no quote from the venue for this contract yet — its "
+                    "window fills when a bid and an offer arrive")
+        if book.crossed:
+            return "the book is crossed — not used until it clears"
+        if book.bid is None:
+            return ("only an offer is being quoted, no bid — no mid, so no "
+                    "statistics and no entries until both sides are there")
+        if book.ask is None:
+            return ("only a bid is being quoted, no offer — no mid, so no "
+                    "statistics and no entries until both sides are there")
+        return None
+
     def state_of(self, rt: ContractRuntime, now: datetime) -> ContractState:
         if self.killed or rt.halted_reason:
             return ContractState.HALTED
@@ -766,6 +787,7 @@ class Engine:
                 'tick_size': contract.tick_size,
                 'state': self.state_of(rt, now).value,
                 'halted_by': self.halted_by(rt, now),
+                'market_note': self.market_note(rt),
                 'algo_on': bool(contract.algo_on),
                 'market': (book.to_dict() if book is not None else
                            {'bid': None, 'ask': None, 'mid': None}),

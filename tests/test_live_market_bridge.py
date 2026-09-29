@@ -54,3 +54,24 @@ def test_configured_contract_is_subscribed_with_tt_identity_and_book_is_live(tmp
 def test_live_bridge_does_not_fabricate_a_quote_for_unseen_contract(tmp_path):
     gateway = FixGateway(venue(), manual_path=str(tmp_path / 'manual.db'))
     assert gateway.top_of_book('never-seen') is None
+
+
+def test_a_one_sided_tt_book_reaches_the_window_but_is_not_a_usable_book(tmp_path):
+    """TT quoting only an offer is what TT is publishing. Returning nothing
+    left a blank window that read as "not subscribed"; returning the side
+    that exists shows it — and BookTop.usable stays False, so there is no
+    mid, no statistic and no entry off half a book."""
+    gateway = FixGateway(venue(), manual_path=str(tmp_path / 'manual.db'))
+    session = MarketSession()
+    gateway._sessions['Market Data'] = session
+    contract = SimpleNamespace(key='cl_bz', name='CL|BZ', symbol='CL|BZ',
+                               security_id='555', security_exchange='CME')
+    gateway.subscribe(contract)
+    request = dict(session.sent[0][1])['262']
+    raw = f'35=W\x01262={request}\x01268=1\x01269=1\x01270=307\x01271=12\x01'
+    gateway.terminal.on_message('Market Data', {'35': 'W'}, raw)
+
+    book = gateway.top_of_book('cl_bz')
+    assert book is not None
+    assert (book.bid, book.ask) == (None, 307)
+    assert book.usable is False and book.mid is None
