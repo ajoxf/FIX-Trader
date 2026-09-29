@@ -156,12 +156,13 @@ body {
   cursor: move;
   user-select: none;
 }
-.titlebar .swatch { width: 7px; height: 7px; flex: none; border: 1px solid rgba(0,0,0,.35); }
+.titlebar .swatch { width: calc(7px * var(--fs)); height: calc(7px * var(--fs)); flex: none; border: 1px solid rgba(0,0,0,.35); }
 .titlebar .title { font-weight: 600; font-size: calc(11.5px * var(--fs)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .titlebar .venue { font: 400 calc(9.5px * var(--fs))/1 var(--mono); color: var(--ink-faint); letter-spacing: .05em; }
 .winbtns { margin-left: auto; display: flex; gap: 2px; }
 .winbtn {
-  width: 16px; height: 15px; padding: 0;
+  width: calc(16px * var(--fs)); height: calc(15px * var(--fs)); padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
   border: 1px solid #8d8d8d; background: #dcdcdc;
   font: 400 calc(11px * var(--fs))/calc(13px * var(--fs)) var(--ui); color: #333; cursor: pointer;
 }
@@ -188,13 +189,13 @@ body {
 .algo { display: flex; align-items: center; gap: 5px; margin-left: auto; }
 .algo .lb { font: 600 calc(9.5px * var(--fs))/1 var(--mono); letter-spacing: .1em; color: var(--ink-mute); }
 .sw {
-  width: 38px; height: 16px; padding: 0; position: relative;
+  width: calc(38px * var(--fs)); height: calc(16px * var(--fs)); padding: 0; position: relative;
   border: 1px solid #8a8a8a; background: #dcdcdc; border-radius: 2px; cursor: pointer;
 }
-.sw i { position: absolute; top: 1px; left: 1px; width: 16px; height: 12px;
+.sw i { position: absolute; top: 1px; left: 1px; width: calc(16px * var(--fs)); height: calc(100% - 4px);
         background: #f6f6f6; border: 1px solid #9a9a9a; border-radius: 1px; }
-.sw span { position: absolute; right: 4px; top: 2px;
-           font: 600 calc(8px * var(--fs))/calc(12px * var(--fs)) var(--mono); color: #7a7a7a; letter-spacing: .06em; }
+.sw span { position: absolute; right: 4px; top: 0; bottom: 0; display: flex; align-items: center;
+           font: 600 calc(8px * var(--fs))/1 var(--mono); color: #7a7a7a; letter-spacing: .06em; }
 .sw.on { background: var(--good); border-color: #2c6b3c; }
 .sw.on i { left: auto; right: 1px; }
 .sw.on span { right: auto; left: 5px; color: #fff; }
@@ -205,7 +206,7 @@ body {
 .touch { display: grid; grid-template-columns: 1fr 1fr; gap: 1px;
          background: var(--line-soft); border: 1px solid var(--line-soft); }
 .touch > div { background: #fff; padding: 3px 6px; }
-.touch .k { font: 600 calc(8.5px * var(--fs))/1 var(--mono); letter-spacing: .12em; color: var(--ink-faint); }
+.touch .k { font: 600 calc(9.5px * var(--fs))/1 var(--mono); letter-spacing: .12em; color: var(--ink-faint); }
 .touch .v { font: 600 calc(17px * var(--fs))/1.15 var(--mono); font-variant-numeric: tabular-nums; }
 .touch .sz { font: 400 calc(9.5px * var(--fs))/1 var(--mono); color: var(--ink-faint); }
 .touch .bidc .v { color: var(--bid); }
@@ -215,19 +216,19 @@ body {
 .win.stale .touch .v, .win.stale .midrow .v { color: #9a9a9a !important; }
 
 .midrow { display: flex; align-items: baseline; gap: 6px; padding: 2px 2px 0; }
-.midrow .k { font: 600 calc(8.5px * var(--fs))/1 var(--mono); letter-spacing: .12em; color: var(--ink-faint); }
+.midrow .k { font: 600 calc(9.5px * var(--fs))/1 var(--mono); letter-spacing: .12em; color: var(--ink-faint); }
 .midrow .v { font: 600 calc(13px * var(--fs))/1 var(--mono); font-variant-numeric: tabular-nums; margin-left: auto; }
 
 .kv { display: flex; align-items: baseline; gap: 6px; font-size: calc(11px * var(--fs)); }
-.kv .k { font: 600 calc(8.5px * var(--fs))/1.4 var(--mono); letter-spacing: .11em; color: var(--ink-faint); min-width: 38px; }
-.kv .v { font: 500 calc(11.5px * var(--fs))/1.4 var(--mono); font-variant-numeric: tabular-nums; margin-left: auto; }
+.kv .k { font: 600 calc(9.5px * var(--fs))/1.4 var(--mono); letter-spacing: .08em; color: var(--ink-faint); min-width: calc(38px * var(--fs)); white-space: nowrap; }
+.kv .v { font: 500 calc(11.5px * var(--fs))/1.4 var(--mono); font-variant-numeric: tabular-nums; margin-left: auto; text-align: right; white-space: nowrap; }
 .kv .v.em { font-weight: 600; font-size: calc(12.5px * var(--fs)); }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 2px calc(14px * var(--fs)); }
 
 .sect { border-top: 1px solid var(--line-soft); padding-top: 4px; }
 
 /* The z strip: state at a glance, and the only non-numeric thing here. */
-.zstrip { position: relative; height: 15px; background: #fff;
+.zstrip { position: relative; height: calc(15px * var(--fs)); background: #fff;
           border: 1px solid var(--line-soft); margin: 4px 0; }
 .zstrip .zone { position: absolute; top: 0; bottom: 0; background: #f3f3f3; }
 .zstrip .zone.left { left: 0; width: 20%; }
@@ -245,7 +246,7 @@ body {
 .bands .k { color: var(--bid); }
 .bands .kv:last-child .k { color: var(--ask); }
 
-.bar { height: 5px; background: #dcdcdc; border: 1px solid var(--line-soft); position: relative; }
+.bar { height: calc(5px * var(--fs)); background: #dcdcdc; border: 1px solid var(--line-soft); position: relative; }
 .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--warn); width: 0; }
 .bar.full i { background: var(--good); }
 
@@ -255,6 +256,10 @@ body {
 .p-na    { background: #e6e6e6; color: var(--ink-faint); }
 
 .hint { font-size: calc(10.5px * var(--fs)); color: var(--ink-mute); line-height: 1.4; }
+/* Why the window is halted, withheld or has no price: one clear box, not a
+ * paragraph run into the figures above it. */
+.f-blocked { background: #fff; border-left: 3px solid var(--warn); padding: 3px 6px; margin-top: 3px; }
+.win.stale .f-blocked, .state.s-HALTED ~ .f-blocked { border-left-color: var(--ask); }
 .hint b { color: #2c3036; }
 
 .posline { background: #fff; border: 1px solid var(--line-soft); padding: 3px 6px;

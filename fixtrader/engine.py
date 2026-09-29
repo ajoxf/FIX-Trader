@@ -709,10 +709,9 @@ class Engine:
             return rt.halted_reason
         if rt.guard.is_stale(now):
             age = rt.guard.age(now) or 0.0
-            return (f"the bid/ask has not changed for {age:.0f}s — the limit "
-                    f"is {rt.guard.max_quote_age_sec:g}s (MAX_QUOTE_AGE_SEC). "
-                    f"New entries wait for the price to move; exits and "
-                    f"CLOSE NOW still work")
+            return (f"price unchanged {age:.0f}s (limit "
+                    f"{rt.guard.max_quote_age_sec:g}s, MAX_QUOTE_AGE_SEC). "
+                    f"Entries wait for a move; exits and CLOSE NOW work")
         return None
 
     def market_note(self, rt: ContractRuntime) -> Optional[str]:

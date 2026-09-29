@@ -240,11 +240,29 @@ class FixGateway:
         if not security_id or not symbol:
             return None
         with self.terminal.lock:
-            instrument = {
-                'security_id': security_id, 'symbol': symbol,
-                'exchange': exchange, 'description': getattr(contract, 'name', symbol),
-                'full_depth': False,
-            }
+            # TT's own definition WINS. This used to replace it with a stub —
+            # symbol, id, exchange — so a contract on the algo desk lost its
+            # tick size, type and expiry on the Instruments page, and its
+            # ladder waited for ever for "a valid tick size". The stub only
+            # fills what TT has not said; the contract's configured tick size
+            # stands in until TT's definition is seen again.
+            known = (self.terminal.watch.get(security_id)
+                     or self.terminal.catalogue.get(security_id) or {})
+            instrument = copy.deepcopy(known)
+            for field, value in (
+                    ('security_id', security_id), ('symbol', symbol),
+                    ('exchange', exchange),
+                    ('description', getattr(contract, 'name', '') or symbol),
+                    ('security_type', ''), ('maturity', ''), ('legs', []),
+                    ('parameters', {}), ('full_depth', False)):
+                if instrument.get(field) in (None, ''):
+                    instrument[field] = value
+            tick = getattr(contract, 'tick_size', None)
+            if not instrument.get('tick_size') and tick:
+                instrument['tick_size'] = format(tick, 'g')
+            self.terminal._enrich(instrument)
+            if not instrument.get('tick_value') and getattr(contract, 'tick_value', None):
+                instrument['tick_value'] = format(contract.tick_value, 'g')
             self._contract_security_ids[contract.key] = security_id
             self.terminal.watch[security_id] = instrument
             self.terminal.catalogue[security_id] = copy.deepcopy(instrument)

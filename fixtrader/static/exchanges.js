@@ -432,6 +432,12 @@ function prefillFromExplorer() {
   C_TEXT.concat(C_NUM).forEach((k) => {
     if (q.has(k) && q.get(k) !== '') cField(k).value = q.get(k);
   });
+  // As many decimals as the tick has: a tick of 1 shows 8825, not 8825.0000.
+  const tick = q.get('tick_size') || '';
+  if (tick && !q.get('decimals')) {
+    const dot = tick.indexOf('.');
+    cField('decimals').value = dot < 0 ? 0 : tick.length - dot - 1;
+  }
   // One venue configured is the only sensible choice; more than one is the
   // trader's to make.
   const venues = [...cField('venue').options].map((o) => o.value).filter(Boolean);

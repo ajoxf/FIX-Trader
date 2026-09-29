@@ -693,7 +693,7 @@ def test_a_halted_window_says_why(tmp_path):
     engine.poll(now=later)
     assert engine.state_of(rt, later) is ContractState.HALTED
     why = engine.halted_by(rt, later)
-    assert 'has not changed' in why and 'MAX_QUOTE_AGE_SEC' in why
+    assert 'price unchanged' in why and 'MAX_QUOTE_AGE_SEC' in why
     snap = [c for c in engine.snapshot(now=later)['contracts']
             if c['key'] == 'fef'][0]
     assert snap['state'] == 'HALTED' and snap['halted_by'] == why

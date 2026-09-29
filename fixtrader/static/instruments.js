@@ -173,7 +173,7 @@
       const state=ladderState.get(id), card=document.createElement('section');card.className='ladder';
       const heading=document.createElement('div');heading.className='ladder-title';
       heading.append(text('strong',i.display_name||i.symbol),button('×',()=>{pinned=pinned.filter(k=>k!==id);renderLadders();}));card.append(heading);
-      card.append(text('div',`${i.exchange} · ${i.security_type} · FIX prices`,'muted'));
+      card.append(text('div',[i.exchange,i.security_type,i.maturity,i.tick_size&&'tick '+i.tick_size,'FIX prices'].filter(Boolean).join(' · '),'muted'));
       card.append(text('div',`Bid ${fmt(q.bid)}   Ask ${fmt(q.ask)}   Spread ${fmt(q.spread)}`,'ladder-quote'));
       card.append(text('div',quoteStatus(q),q.stale?'stale':'quote-live'));
       const controls=document.createElement('div');controls.className='ladder-controls';

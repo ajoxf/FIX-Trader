@@ -75,3 +75,35 @@ def test_a_one_sided_tt_book_reaches_the_window_but_is_not_a_usable_book(tmp_pat
     assert book is not None
     assert (book.bid, book.ask) == (None, 307)
     assert book.usable is False and book.mid is None
+
+
+def test_putting_a_contract_on_the_algo_desk_keeps_tts_own_definition(tmp_path):
+    """subscribe() used to replace TT's definition with a stub, so the
+    ladder for every algo-desk contract waited for ever for a tick size."""
+    gateway = FixGateway(venue(), manual_path=str(tmp_path / 'manual.db'))
+    gateway.terminal.catalogue['777'] = {
+        'security_id': '777', 'symbol': 'CL', 'exchange': 'CME',
+        'security_type': 'FUT', 'maturity': '202612', 'tick_size': '1',
+        'parameters': {'16554': '10'}, 'legs': []}
+    contract = SimpleNamespace(key='cl', name='CL', symbol='CL',
+                               security_id='777', security_exchange='CME',
+                               tick_size=0.01, tick_value=10.0)
+    gateway.subscribe(contract)
+    watched = gateway.terminal.watch['777']
+    assert watched['tick_size'] == '1'                  # TT's, not the config's
+    assert watched['security_type'] == 'FUT'
+    assert watched['maturity'] == '202612'
+
+
+def test_a_contract_tt_has_not_defined_yet_takes_its_configured_tick(tmp_path):
+    """The control: with no TT definition cached, the contract's own tick
+    size stands in, so the ladder can still draw."""
+    gateway = FixGateway(venue(), manual_path=str(tmp_path / 'manual.db'))
+    contract = SimpleNamespace(key='es', name='ES', symbol='ES',
+                               security_id='888', security_exchange='CME',
+                               tick_size=25.0, tick_value=12.5)
+    gateway.subscribe(contract)
+    watched = gateway.terminal.watch['888']
+    assert watched['tick_size'] == '25'
+    assert watched['tick_value'] == '12.5'
+    assert watched['security_type'] == ''               # unknown, not "undefined"
