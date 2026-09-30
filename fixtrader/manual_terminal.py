@@ -472,7 +472,7 @@ class ManualTerminal:
                 self._execution(fields)
 
     def _market(self, fields, raw):
-        received_ms = time.time_ns() / 1_000_000
+        received_ms = fields.get('_received_ms') or time.time_ns() / 1_000_000
         header = {}
         groups, group = [], None
         in_groups = False
@@ -513,6 +513,7 @@ class ManualTerminal:
             price_factor = Decimal(str(self.watch.get(key, {}).get('display_factor') or '1'))
             touched.add(key)
             book['received_ms'] = received_ms
+            book['book_updated_at'] = datetime.fromtimestamp(received_ms / 1000, timezone.utc).isoformat()
             book['fix_message_type'] = fields.get('35', header.get('35', ''))
             book['fix_sequence'] = fields.get('34', header.get('34', ''))
             if header.get('35') == 'W' and key not in reset:

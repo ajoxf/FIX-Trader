@@ -1582,7 +1582,13 @@ function connectQuoteStream() {
     try {
       const frame = JSON.parse(event.data);
       const snap = window.__lastSnapshot;
-      if (!snap || !frame.connected) return;
+      if (!snap?.engine?.alive || snap.engine.simulated ||
+          snap.engine.session?.state !== 'LOGGED_ON' ||
+          frame.source !== 'TT_FIX_UAT' || frame.simulated !== false ||
+          !frame.connected ||
+          !Number.isFinite(frame.server_sent_ms) ||
+          !Number.isFinite(frame.published_ms) ||
+          frame.server_sent_ms - frame.published_ms > 3000) return;
       (snap.contracts || []).forEach((contract) => {
         const quote = (frame.quotes || {})[contract.security_id];
         if (!quote || !quote.timestamp) return;

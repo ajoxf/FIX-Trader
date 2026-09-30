@@ -293,7 +293,7 @@ class FixGateway:
         for key, mapped_id in self._contract_security_ids.items():
             if mapped_id != security_id:
                 continue
-            stamp = book.get('timestamp')
+            stamp = book.get('book_updated_at')
             try:
                 received_at = datetime.fromisoformat(stamp) if stamp else utcnow()
             except (TypeError, ValueError):
@@ -532,6 +532,9 @@ class NativeFixSession:
                 self.state.status = "DISCONNECTED"
 
     def _incoming(self, raw: str):
+        # Record receipt before audit logging and book reconstruction so the
+        # quote stream can measure our own FIX-to-screen delay accurately.
+        received_ms = time.time_ns() / 1_000_000
         fields = parse_fix_message(raw)
         checksum_start = raw.rfind(f"{SOH}10=") + 1
         body_start = raw.find(SOH, raw.find(SOH) + 1) + 1
@@ -561,6 +564,8 @@ class NativeFixSession:
             self.state.last_message = datetime.now(timezone.utc).isoformat()
         self.svc.log_fix(self.session_name, "IN", msg_type, seq, raw)
         if msg_type in ('d', 'W', 'X', 'Y', 'j', '3', '8', '9'):
+            if msg_type in ('W', 'X'):
+                fields['_received_ms'] = received_ms
             self.svc.terminal.on_message(self.session_name, fields, raw)
         if msg_type == "A":
             with self.state.lock:

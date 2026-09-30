@@ -22,10 +22,15 @@
     const age=Math.max(0,Math.floor((Date.now()-Date.parse(q.timestamp))/1000));
     const precise=Math.max(0,Date.now()-Date.parse(q.timestamp));
     const proof=q.fix_message_type?` · FIX ${q.fix_message_type}${q.fix_sequence?' seq '+q.fix_sequence:''}`:'';
-    return q.stale?`Not fresh · last update ${age}s ago${proof}`:`TT FIX UAT · age ${precise} ms${proof}`;
+    return q.stale?`Not fresh · bid/ask last changed ${age}s ago${proof}`:`TT FIX UAT · bid/ask age ${precise} ms${proof}`;
   }
   function applyQuoteFrame(frame) {
-    streamState=frame.source==='TT_FIX_UAT'&&frame.simulated===false&&frame.connected?'verified TT FIX stream':'disconnected';
+    const verified=frame.source==='TT_FIX_UAT'&&frame.simulated===false&&frame.connected&&
+      Number.isFinite(frame.server_sent_ms)&&Number.isFinite(frame.published_ms)&&
+      frame.server_sent_ms-frame.published_ms<=3000&&snapshot.engine?.alive&&
+      snapshot.engine?.simulated===false&&snapshot.engine?.session?.state==='LOGGED_ON';
+    streamState=verified?'verified TT FIX stream':'disconnected';
+    if(!verified){for(const row of data.watchlist||[])row.quote.stale=true;renderWatch();renderLadders();return;}
     const received=Object.values(frame.quotes||{}).reduce((latest,q)=>Math.max(latest,Number(q.received_ms)||0),0);
     if(received>latestReceived){latestReceived=received;streamLatency=Math.max(0,Math.round(Date.now()-received));}
     else if(streamLatency===null)streamLatency=Math.max(0,Math.round(Date.now()-Number(frame.published_ms)));
@@ -39,7 +44,7 @@
       row.quote.mid=quote.ask!==null&&quote.ask!==undefined&&quote.bid!==null&&quote.bid!==undefined?(quote.ask+quote.bid)/2:null;
     }
     const md=snapshot.engine?.fix_connection?.sessions?.find(s=>s.name==='Market Data');
-    $('feed-status').textContent=`Source: TT ${snapshot.engine?.environment||'UAT'} FIX · ${streamState} · FIX-to-screen ${streamLatency} ms · Last heartbeat: ${clock(md?.last_heartbeat)}. Quote age is measured in milliseconds from the last TT update.`;
+    $('feed-status').textContent=`Source: TT ${snapshot.engine?.environment||'UAT'} FIX · ${streamState} · FIX-to-screen ${streamLatency} ms · Last heartbeat: ${clock(md?.last_heartbeat)}. Bid/ask age measures the last price change; FIX messages can arrive without changing price.`;
     renderWatch();renderLadders();
   }
   function connectQuoteStream() {
@@ -371,7 +376,7 @@
         if(newer?.timestamp&&(!row.quote.timestamp||Date.parse(newer.timestamp)>Date.parse(row.quote.timestamp)))row.quote=newer;
       }
       const md=engine.fix_connection?.sessions?.find(s=>s.name==='Market Data');
-      $('feed-status').textContent=`Source: TT ${engine.environment||'UAT'} FIX · Market data: ${md?.status||'DISCONNECTED'} · quote stream: ${streamState}${streamLatency===null?'':` · FIX-to-screen ${streamLatency} ms`} · Last heartbeat: ${clock(md?.last_heartbeat)}. UAT is a test feed; quote age reflects actual TT updates.`;
+      $('feed-status').textContent=`Source: TT ${engine.environment||'UAT'} FIX · Market data: ${md?.status||'DISCONNECTED'} · quote stream: ${streamState}${streamLatency===null?'':` · FIX-to-screen ${streamLatency} ms`} · Last heartbeat: ${clock(md?.last_heartbeat)}. Quote age tracks bid/ask price changes.`;
       $('session').textContent=!engine.alive?'Engine offline':`${engine.environment||''} · ${engine.session?.state||'DOWN'}`;
       $('session').className='tag '+(engine.alive&&engine.session?.state==='LOGGED_ON'?'good':'error');
       $('review-order').disabled=!engine.alive||engine.session?.state!=='LOGGED_ON';

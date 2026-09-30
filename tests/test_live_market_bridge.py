@@ -92,6 +92,8 @@ def test_one_sided_book_and_unchanged_bid_ask_timestamp(tmp_path):
     gateway.terminal.on_message('Market Data', {'35': 'X'},
         f'35=X\x01262={request}\x01268=1\x01269=2\x01270=100\x01')
     assert gateway.terminal.books['101']['timestamp'] == stamp
+    assert gateway.terminal.books['101']['book_updated_at']
+    assert gateway.drain_market_data()[-1].received_at.isoformat() == gateway.terminal.books['101']['book_updated_at']
 
 
 def test_reconnect_resubscribes_all_ids_and_rejects_old_books(tmp_path):
