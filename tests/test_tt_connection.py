@@ -193,3 +193,28 @@ def test_separate_session_settings_survive_config_roundtrip(monkeypatch):
     assert loaded.md_sender_comp_id == 'MARKET'
     assert loaded.md_password_env == 'TEST_MD'
     assert loaded.on_behalf_of_sub_id == 'OPERATOR'
+
+
+def test_a_logon_in_progress_is_WAITING_not_a_failure(monkeypatch):
+    """Connect answers in 3 s; TT has 20 s to answer the Logon. A handshake
+    still CONNECTING was reported as FAIL with "check the credentials in
+    .env", which sends the operator after a password nobody refused."""
+    gateway = FixGateway(venue(monkeypatch))
+    gateway._sessions['Order Routing'] = SimpleNamespace(state=SimpleNamespace(
+        status='CONNECTING', error=''))
+    gateway._sessions['Market Data'] = SimpleNamespace(state=SimpleNamespace(
+        status='CONNECTING', error=''))
+    row = gateway.diagnose()[0]
+    assert row['ok'] is False and row['pending'] is True
+    assert 'waiting' in row['fix'].lower() and '.env' not in row['fix']
+
+
+def test_a_refused_logon_is_still_a_failure(monkeypatch):
+    """The control: an ERROR is not pending, and carries its remedy."""
+    gateway = FixGateway(venue(monkeypatch))
+    gateway._sessions['Order Routing'] = SimpleNamespace(state=SimpleNamespace(
+        status='ERROR', error='TT did not answer the Logon request within 20 seconds'),
+        cfg={'password': 'x'})
+    row = gateway.diagnose()[0]
+    assert row['ok'] is False and row['pending'] is False
+    assert 'never answered the logon' in row['fix'].lower()

@@ -492,6 +492,7 @@ body.page-body { overflow: auto; background: var(--desk); }
 .diag .dline { display: flex; gap: 8px; }
 .diag .dline.ok b { color: #7fd694; }
 .diag .dline.bad b { color: #ef8b8b; }
+.diag .dline.wait b { color: #f0c36a; }
 .diag .dcheck { min-width: 130px; color: #9fb4c2; }
 .diag .ddetail { color: #cfe3d3; }
 .diag .dfix { color: #e8b04b; padding-left: 46px; }

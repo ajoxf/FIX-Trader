@@ -348,9 +348,18 @@ class FixGateway:
         return []
 
     def diagnose(self):
-        return [{'check': 'TT FIX sessions', 'ok': self.state() == SessionState.LOGGED_ON,
+        state = self.state()
+        # CONNECTING is a handshake in progress, not a failure: the Logon is
+        # on the wire and TT has up to 20 s to answer it. Reporting it as FAIL
+        # with "check your credentials" sent the operator after a password
+        # that had not been refused.
+        pending = state == SessionState.CONNECTING
+        return [{'check': 'TT FIX sessions', 'ok': state == SessionState.LOGGED_ON,
+                 'pending': pending,
                  'detail': self.state_text(),
-                 'fix': self._connection_fix()},
+                 'fix': ('Logon sent — waiting for TT to answer (up to 20 seconds). '
+                         'This page keeps checking; nothing has failed yet.')
+                        if pending else self._connection_fix()},
                 {'check': 'Execution', 'ok': False, 'detail': self.NOT_WIRED,
                  'fix': 'Execution and reconciliation require a separate integration.'}]
 
@@ -376,6 +385,11 @@ class FixGateway:
                     'executable through the firewall/endpoint security for TT UAT ports '
                     '11502 (Order Routing) and 11503 (Market Data), or use a network that '
                     'permits those ports. Credentials are not involved in this error.')
+        if 'did not answer the logon' in errors:
+            return ('TT accepted the connection but never answered the Logon. TT usually '
+                    'stays silent when it does not recognise the session: confirm the '
+                    'SenderCompID / TargetCompID and the password in .env match what TT '
+                    'provisioned for this session, and that the session is enabled.')
         if 'timed out' in errors:
             return ('TT did not respond. Check VPN/proxy/firewall access to the configured '
                     'TT UAT hosts and ports, then verify TT session provisioning.')

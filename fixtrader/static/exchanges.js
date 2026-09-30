@@ -158,7 +158,18 @@ document.getElementById('v-delete').onclick = async () => {
 
 /* -- the three buttons --------------------------------------------------- */
 
-async function runAction(action) {
+// A Logon takes TT up to 20 s to answer, and Connect reports back within 3.
+// While the session is still CONNECTING the page reads the status again
+// every two seconds until TT accepts or refuses, rather than leaving a
+// handshake in progress on screen as a failure.
+const FOLLOW_EVERY_MS = 2000;
+const FOLLOW_MAX = 15;
+let followTimer = null;
+let followCount = 0;
+
+async function runAction(action, following) {
+  if (followTimer) { clearTimeout(followTimer); followTimer = null; }
+  if (!following) followCount = 0;
   if (!state.editing) {
     toast('REJECT', 'NO VENUE', 'Save the venue first.');
     return;
@@ -181,8 +192,8 @@ async function runAction(action) {
   rows.innerHTML = '';
   (body.rows || []).forEach((r) => {
     const line = document.createElement('div');
-    line.className = 'dline ' + (r.ok ? 'ok' : 'bad');
-    const mark = r.ok ? 'OK  ' : 'FAIL';
+    line.className = 'dline ' + (r.ok ? 'ok' : r.pending ? 'wait' : 'bad');
+    const mark = r.ok ? 'OK  ' : r.pending ? 'WAIT' : 'FAIL';
     line.innerHTML = '<b></b><span class="dcheck"></span>' +
       '<span class="ddetail"></span>';
     line.querySelector('b').textContent = mark;
@@ -198,6 +209,11 @@ async function runAction(action) {
     }
   });
   paintLink(body);
+  const pending = body.pending || (body.rows || []).some((r) => r.pending);
+  if (pending && followCount < FOLLOW_MAX) {
+    followCount += 1;
+    followTimer = setTimeout(() => runAction('test', true), FOLLOW_EVERY_MS);
+  }
 }
 
 document.getElementById('v-connect').onclick = () => runAction('connect');
@@ -209,6 +225,12 @@ function paintLink(body) {
   if (body.ok) {
     link.textContent = body.simulated ? 'SIMULATED' : 'CONNECTED';
     link.className = 'link ' + (body.simulated ? 'part' : 'ok');
+    return;
+  }
+  const waiting = (body.rows || []).find((r) => r.pending);
+  if (waiting) {
+    link.textContent = 'CONNECTING… ' + waiting.detail;
+    link.className = 'link part';
     return;
   }
   // One line naming the single thing standing in the way.

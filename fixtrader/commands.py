@@ -141,8 +141,10 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
                 gateway.stop()
             elif action == 'fix_reconnect':
                 gateway.reconnect()
+            rows = gateway.diagnose()[:1]
             return {'ok': True if action != 'fix_status' else gateway.state().value == 'LOGGED_ON',
-                    'simulated': False, 'rows': gateway.diagnose()[:1]}
+                    'pending': bool(rows and rows[0].get('pending')),
+                    'simulated': False, 'rows': rows}
         if action == 'algo_on':
             return engine.set_algo(key, True)
         if action == 'algo_off':
