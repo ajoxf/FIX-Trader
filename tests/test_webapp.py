@@ -414,10 +414,10 @@ def test_a_venue_form_round_trip_does_not_quietly_mask_the_password(client,
 
 
 def test_the_replay_prices_a_margin_target_off_the_margin_it_was_charged(tmp_path):
-    """The shipped exit waits on a target that is a percentage of MARGIN.
-    The route hands the replay what the venue charged this contract on the
-    positions it recorded — without it, no replayed position ever took
-    profit, and the card blamed an entry filter for it."""
+    """The target is a percentage of MARGIN. With none entered for the
+    contract, the route hands the replay what the venue charged on the
+    positions it recorded — and with neither, the card says the margin is
+    missing rather than blaming an entry filter."""
     import random
     from datetime import datetime, timedelta, timezone
     from fixtrader.config import ContractConfig
@@ -430,9 +430,9 @@ def test_the_replay_prices_a_margin_target_off_the_margin_it_was_charged(tmp_pat
         key='fef', name='Iron ore Oct/Nov', symbol='FEFV6-FEFX6',
         tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
         quantity=5, commission_per_contract=1.0, entry_threshold=2.0,
-        lookback=120, exit_signal_mode='profit', profit_target_pct=2.0,
-        profit_target_basis='MARGIN', stop_loss_z=99.0,
-        edge_filter_enabled=False, stats_update_interval_sec=0)
+        window_minutes=2.0, min_history_minutes=2.0, sample_interval_sec=1.0,
+        confirm_samples=1, max_entry_z=9.0, profit_target_pct=2.0,
+        stop_loss_z=99.0, stats_update_interval_sec=0)
     cfg.save()
     db = Database(str(tmp_path / 'r.db'))
     rng, px, rows = random.Random(7), 0.60, []

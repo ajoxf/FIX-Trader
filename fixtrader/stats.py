@@ -11,9 +11,10 @@ Three things worth knowing before changing anything in here:
   against — the trader is aiming at a number that has already gone. So the
   bands stand still for `stats_update_interval_sec` and the z runs live
   against them.
-- **The window must be FULL before anything trades.** A sigma from 40 samples
-  of a 400-sample window is not a small version of the right answer, it is a
-  different number, and entries priced off it fire at levels that do not exist.
+- **The window must be WARM before anything trades** — `min_history_minutes`
+  of continuous history. A sigma from ten minutes of a two-hour window is not
+  a small version of the right answer, it is a different number, and entries
+  priced off it fire at levels that do not exist.
 - **A touch is counted once per CROSSING**, not once per update. A z that sits
   at 2.1 for four minutes is one touch; counting it per update would make the
   quietest, stickiest level look like the most significant one in the study.
@@ -50,17 +51,33 @@ def _regime(hurst: Optional[float]) -> str:
 
 
 class StatsWindow:
-    """The rolling statistics for one contract."""
+    """The rolling statistics for one contract, over a window of TIME.
 
-    def __init__(self, contract_key: str, lookback: int = 400,
+    The window is the last `window_minutes` of prices, sampled at most once
+    every `sample_interval_sec` — the engine polls ten times a second, and a
+    window of polls would be a window of however fast the loop happened to
+    run. It is WARM once it holds `min_history_minutes` of CONTINUOUS history:
+    a gap longer than a few samples (a restart, a stalled feed) is not
+    history, and counting it would let a window that saw ten minutes of market
+    either side of a two-hour outage call itself two hours deep.
+    """
+
+    def __init__(self, contract_key: str, window_minutes: float = 150.0,
+                 min_history_minutes: float = 120.0,
+                 sample_interval_sec: float = 1.0,
                  stats_update_interval_sec: float = 300.0,
-                 entry_threshold: float = 2.0):
+                 entry_threshold: float = 2.5):
         self.contract_key = contract_key
-        self.lookback = int(lookback)
+        self.window_minutes = float(window_minutes)
+        self.min_history_minutes = float(min_history_minutes)
+        self.sample_interval_sec = max(0.0, float(sample_interval_sec))
         self.stats_update_interval_sec = float(stats_update_interval_sec)
         self.entry_threshold = float(entry_threshold)
 
-        self.prices: deque = deque(maxlen=self.lookback)
+        #: (ts, price), oldest first.
+        self.samples_ts: deque = deque()
+        #: Seconds of continuous history in the window — gaps excluded.
+        self.history_sec: float = 0.0
 
         self.mean: Optional[float] = None
         self.std: Optional[float] = None
@@ -71,7 +88,8 @@ class StatsWindow:
         self.last_price: Optional[float] = None
         self.last_ts: Optional[datetime] = None
         self._last_stats_ts: Optional[datetime] = None
-        #: Whether a computation has been done since the window filled.
+        self._last_shape_ts: Optional[datetime] = None
+        #: Whether a computation has been done since the window went warm.
         self._warm_stats_done: bool = False
         self._samples_seen: int = 0
 
@@ -86,37 +104,47 @@ class StatsWindow:
 
     # -- configuration ----------------------------------------------------
 
-    def update_config(self, lookback: Optional[int] = None,
+    def update_config(self, window_minutes: Optional[float] = None,
+                      min_history_minutes: Optional[float] = None,
+                      sample_interval_sec: Optional[float] = None,
                       stats_update_interval_sec: Optional[float] = None,
                       entry_threshold: Optional[float] = None) -> bool:
-        """Apply new settings. Returns True if the window was CLEARED.
+        """Apply new settings. Returns True if the window was RESHAPED.
 
-        A changed lookback resizes in place and keeps the samples — but the
+        A changed window length keeps the samples that still fit, but the
         cached mean and sigma were computed over a different window, so they
         are invalidated and recomputed on the next update rather than left
         standing as the answer to a question nobody asked.
         """
-        cleared = False
+        reshaped = False
         if entry_threshold is not None:
             self.entry_threshold = float(entry_threshold)
         if stats_update_interval_sec is not None:
             self.stats_update_interval_sec = float(stats_update_interval_sec)
-        if lookback is not None and int(lookback) != self.lookback:
-            self.lookback = int(lookback)
-            kept = list(self.prices)[-self.lookback:]
-            self.prices = deque(kept, maxlen=self.lookback)
+        if sample_interval_sec is not None:
+            self.sample_interval_sec = max(0.0, float(sample_interval_sec))
+        if min_history_minutes is not None and \
+                float(min_history_minutes) != self.min_history_minutes:
+            self.min_history_minutes = float(min_history_minutes)
+            self._warm_stats_done = False
+            reshaped = True
+        if window_minutes is not None and float(window_minutes) != self.window_minutes:
+            self.window_minutes = float(window_minutes)
+            self._trim()
             self._last_stats_ts = None       # force a recompute
             self._warm_stats_done = False
-            cleared = True
-        return cleared
+            reshaped = True
+        self._measure_history()      # the gap tolerance may have moved too
+        return reshaped
 
     def clear(self) -> None:
         """Start again from nothing — the contract changed underneath us."""
-        self.prices.clear()
+        self.samples_ts.clear()
+        self.history_sec = 0.0
         self.mean = self.std = self.z = None
         self.hurst = self.half_life = None
         self.last_price = self.last_ts = None
-        self._last_stats_ts = None
+        self._last_stats_ts = self._last_shape_ts = None
         self._warm_stats_done = False
         self._last_band = 0.0
         self._open_touches.clear()
@@ -125,26 +153,56 @@ class StatsWindow:
     # -- the window -------------------------------------------------------
 
     @property
+    def prices(self) -> List[float]:
+        return [p for _, p in self.samples_ts]
+
+    @property
     def samples(self) -> int:
-        return len(self.prices)
+        return len(self.samples_ts)
+
+    @property
+    def gap_tolerance_sec(self) -> float:
+        """The longest step between two samples that still counts as
+        continuous history. Beyond it, the market was not being watched."""
+        return max(5.0, 10.0 * self.sample_interval_sec)
+
+    @property
+    def history_minutes(self) -> float:
+        return self.history_sec / 60.0
 
     @property
     def is_warm(self) -> bool:
-        """The window is full. Nothing enters before this is True."""
-        return len(self.prices) >= self.lookback
+        """Enough continuous history. Nothing enters before this is True."""
+        return (self.samples >= 2
+                and self.history_sec >= self.min_history_minutes * 60.0)
 
     @property
     def warm_pct(self) -> float:
-        if self.lookback <= 0:
+        if self.min_history_minutes <= 0:
             return 100.0
-        return min(100.0, 100.0 * len(self.prices) / self.lookback)
+        return min(100.0, 100.0 * self.history_sec
+                   / (self.min_history_minutes * 60.0))
+
+    @property
+    def half_life_sec(self) -> Optional[float]:
+        """The half-life in SECONDS — samples times the sampling interval."""
+        if self.half_life is None:
+            return None
+        return self.half_life * (self.sample_interval_sec or 1.0)
+
+    def z_of(self, price: Optional[float]) -> Optional[float]:
+        """The z of ANY price against the standing bands — the bid, the
+        offer, a target. None where there are no bands yet."""
+        if price is None or self.mean is None or not self.std or self.std <= 0:
+            return None
+        return (float(price) - self.mean) / self.std
 
     def bands(self, threshold: Optional[float] = None
               ) -> Tuple[Optional[float], Optional[float]]:
         """The two entry levels as PRICES — (buy at, sell at).
 
         A trader checks a level against the book, not against a z. The low
-        band is where a BUY fires (the spread is cheap against its mean) and
+        band is where a BUY fires (the offer is cheap against the mean) and
         the high band is where a SELL does.
         """
         if self.mean is None or self.std is None or self.std <= 0:
@@ -159,24 +217,88 @@ class StatsWindow:
 
     # -- the update -------------------------------------------------------
 
+    def _trim(self) -> None:
+        """Drop samples older than the window, measured from the newest."""
+        if not self.samples_ts:
+            self.history_sec = 0.0
+            return
+        newest = self.samples_ts[-1][0]
+        span = self.window_minutes * 60.0
+        tol = self.gap_tolerance_sec
+        while self.samples_ts and \
+                (newest - self.samples_ts[0][0]).total_seconds() > span:
+            old_ts, _ = self.samples_ts.popleft()
+            if self.samples_ts:
+                step = (self.samples_ts[0][0] - old_ts).total_seconds()
+                if 0 < step <= tol:
+                    self.history_sec -= step
+        if not self.samples_ts or len(self.samples_ts) < 2:
+            self.history_sec = 0.0
+        self.history_sec = max(0.0, self.history_sec)
+
+    def _measure_history(self) -> None:
+        tol = self.gap_tolerance_sec
+        total, prev = 0.0, None
+        for ts, _ in self.samples_ts:
+            if prev is not None:
+                step = (ts - prev).total_seconds()
+                if 0 < step <= tol:
+                    total += step
+            prev = ts
+        self.history_sec = total
+
+    def prime(self, rows) -> int:
+        """Bulk-load recorded (ts, price) rows — a restart resuming its window.
+
+        One recomputation at the end rather than one per row: a 150-minute
+        window at one sample a second is nine thousand rows. Touches are not
+        replayed — they were recorded when they happened.
+        """
+        added = 0
+        for row in rows:
+            ts, price = row[0], row[1]
+            if price is None or not math.isfinite(float(price)):
+                continue
+            if self.samples_ts and ts <= self.samples_ts[-1][0]:
+                continue
+            self.samples_ts.append((ts, float(price)))
+            self.last_price, self.last_ts = float(price), ts
+            added += 1
+        if added:
+            self._trim()
+            self._measure_history()
+            self._samples_seen += added
+            self._last_stats_ts = None
+            self._recompute(self.last_ts, force=True)
+        return added
+
     def add(self, price: Optional[float], ts: datetime,
             algo_armed: bool = False) -> List[TouchEvent]:
         """Add one observation. Returns touch events created or resolved.
 
-        `price` is the MID OF THE BOOK. A None or non-positive price is not an
+        `price` is the MID OF THE BOOK. A None or non-finite price is not an
         observation and is dropped without disturbing the window — a zero
         appended here would drag the mean toward it and quietly move every
-        band on the screen.
+        band on the screen. The z is updated on every call; a SAMPLE is only
+        taken once per `sample_interval_sec`.
         """
         if price is None or not math.isfinite(price):
             return []
 
-        self.prices.append(float(price))
         self.last_price = float(price)
         self.last_ts = ts
-        self._samples_seen += 1
-
-        self._recompute(ts)
+        sampled = (not self.samples_ts
+                   or (ts - self.samples_ts[-1][0]).total_seconds()
+                   >= self.sample_interval_sec)
+        if sampled:
+            if self.samples_ts:
+                step = (ts - self.samples_ts[-1][0]).total_seconds()
+                if 0 < step <= self.gap_tolerance_sec:
+                    self.history_sec += step
+            self.samples_ts.append((ts, float(price)))
+            self._samples_seen += 1
+            self._trim()
+        self._recompute(ts, sampled=sampled)
 
         events: List[TouchEvent] = []
         events.extend(self._resolve_open_touches(ts))
@@ -185,44 +307,56 @@ class StatsWindow:
             events.append(touch)
         return events
 
-    def _recompute(self, ts: datetime) -> None:
-        n = len(self.prices)
+    #: Hurst and half-life are estimates of the window's SHAPE — readings on
+    #: the screen, not gates on an entry. They are expensive on a full window
+    #: and a minute does not change them, so they are recomputed at most this
+    #: often (and on the update that warms the window). Recomputing them with
+    #: every sample made a replay over an hour of mids take minutes.
+    SHAPE_EVERY_SEC = 60.0
+
+    #: And never over more than this many of the most recent samples.
+    SHAPE_MAX_SAMPLES = 4000
+
+    def _recompute(self, ts: datetime, sampled: bool = True,
+                   force: bool = False) -> None:
+        n = len(self.samples_ts)
         if n < 2:
             return
 
-        # While the window is still FILLING, recompute on every update. The
+        # While the window is still WARMING, recompute on every sample. The
         # interval exists to hold the bands still for a trader to aim at, and
-        # there is nothing to aim at yet — but freezing here computed the mean
-        # and sigma from the first two samples and stood by them for the whole
-        # interval, so a contract spent its first minute showing a sigma of
-        # about one tick and bands nothing could reach.
-        # ...and once MORE on the update that fills it, so the bands that then
-        # stand for the whole interval are drawn from the full window rather
-        # than from lookback-1 samples.
-        due = (not self.is_warm
-               or not self._warm_stats_done
-               or self._last_stats_ts is None
-               or self.stats_update_interval_sec <= 0
-               or (ts - self._last_stats_ts).total_seconds()
-               >= self.stats_update_interval_sec)
+        # there is nothing to aim at yet — freezing here would compute the
+        # mean and sigma from the first two samples and stand by them for the
+        # whole interval. And once MORE on the update that warms it, so the
+        # bands that then stand are drawn from the full history.
+        due = force or (sampled and (
+            not self.is_warm
+            or not self._warm_stats_done
+            or self._last_stats_ts is None
+            or self.stats_update_interval_sec <= 0
+            or (ts - self._last_stats_ts).total_seconds()
+            >= self.stats_update_interval_sec))
 
         if due:
-            values = list(self.prices)
+            values = [p for _, p in self.samples_ts]
             self.mean = sum(values) / n
             var = sum((v - self.mean) ** 2 for v in values) / (n - 1)
             self.std = math.sqrt(var)
-            if n >= 20:
-                self.hurst = self._hurst(values)
-                self.half_life = self._half_life(values)
+            shape_due = (force or self._last_shape_ts is None
+                         or (self.is_warm and not self._warm_stats_done)
+                         or (ts - self._last_shape_ts).total_seconds()
+                         >= self.SHAPE_EVERY_SEC)
+            if n >= 20 and shape_due:
+                recent = values[-self.SHAPE_MAX_SAMPLES:]
+                self.hurst = self._hurst(recent)
+                self.half_life = self._half_life(recent)
+                self._last_shape_ts = ts
             self._last_stats_ts = ts
             if self.is_warm:
                 self._warm_stats_done = True
 
         # z is ALWAYS current: the live price against the standing bands.
-        if self.mean is not None and self.std and self.std > 0:
-            self.z = (self.last_price - self.mean) / self.std
-        else:
-            self.z = None
+        self.z = self.z_of(self.last_price)
 
     # -- Hurst and half-life ----------------------------------------------
 
@@ -438,7 +572,10 @@ class StatsWindow:
             'regime': _regime(self.hurst),
             'half_life': self.half_life,
             'samples': self.samples,
-            'need': self.lookback,
+            'history_min': round(self.history_minutes, 1),
+            'need_min': self.min_history_minutes,
+            'window_min': self.window_minutes,
+            'half_life_sec': self.half_life_sec,
             'warm_pct': round(self.warm_pct, 1),
             'is_warm': self.is_warm,
             'unresolved_touches': self.unresolved_touches,

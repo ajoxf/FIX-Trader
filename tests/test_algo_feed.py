@@ -1,3 +1,4 @@
+import pytest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -65,7 +66,10 @@ def test_security_id_subscription_does_not_require_exchange(tmp_path):
     assert '123' in gateway.terminal.subscriptions
 
 
-def test_live_connection_only_cannot_arm_automatic_orders(tmp_path):
+def test_live_connection_only_arms_PAPER_trading_and_never_real_orders(tmp_path):
+    """TT cannot take an algo order yet. Automatic trading there is PAPER:
+    it arms, and every fill is made inside the process at the live bid or
+    offer — the gateway's order path is never reached."""
     venue = VenueConfig(name='test', environment='UAT', host='unused', port=1,
                         fix_version='FIX.4.2', sender_comp_id='OR', target_comp_id='TT',
                         password_env='TEST_OR')
@@ -74,6 +78,9 @@ def test_live_connection_only_cannot_arm_automatic_orders(tmp_path):
     config.contracts['x'] = ContractConfig(key='x', symbol='X', venue='test')
     engine = Engine(config, gateway)
     assert engine.auto_trade_enabled is False
+    assert engine.paper is True
     result = engine.set_auto_trade(True)
-    assert result['ok'] is False
-    assert engine.auto_trade_enabled is False
+    assert result['ok'] is True and result['paper'] is True
+    assert engine.auto_trade_enabled is True
+    with pytest.raises(NotImplementedError):     # and the order path stays shut
+        gateway.send(None)

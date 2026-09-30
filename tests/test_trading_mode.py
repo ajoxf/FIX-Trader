@@ -24,8 +24,10 @@ def desk(tmp_path, terminal, mode_path=None):
         key='fef', name='Iron ore Oct/Nov', symbol='FEFV6-FEFX6', venue='SIM',
         tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
         min_qty=1.0, qty_step=1.0, max_qty=50.0, enabled=True, algo_on=True,
-        lookback=30, stats_update_interval_sec=1e9, entry_threshold=2.0,
-        quantity=5.0, hurst_enabled=False, edge_filter_enabled=False,
+        window_minutes=1e6, min_history_minutes=29 / 60.0,
+        sample_interval_sec=1.0, stats_update_interval_sec=1e9,
+        entry_threshold=2.0, confirm_samples=1, margin_per_contract=260.0,
+        quantity=5.0, exit_at_mean=False, max_hold_minutes=0.0,
         entry_cooldown_seconds=0.0, entry_order_type='MARKET',
         exit_order_type='MARKET', commission_per_contract=1.0,
         profit_target_pct=2.0)

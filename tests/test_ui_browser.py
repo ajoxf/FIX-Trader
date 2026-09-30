@@ -373,10 +373,13 @@ def with_analysis(tmp_path, report=None, desk=None):
         key='fef', name='Iron ore Oct/Nov', symbol='FEFV6-FEFX6',
         tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
         quantity=5, commission_per_contract=1.0, slippage_budget_ticks=0.5,
-        entry_threshold=2.0, lookback=120, exit_signal_mode='zscore',
-        # The replay runs the contract's OWN settings, so the fixture has to
-        # be a contract whose edge filter actually lets a trade through.
-        edge_filter_enabled=False, stats_update_interval_sec=0)
+        entry_threshold=2.0,
+        # The replay runs the contract's OWN settings over ~66 minutes of
+        # recorded mids, so the window has to be warm well inside that, and
+        # the target needs a margin to be a percentage of.
+        window_minutes=30, min_history_minutes=10, sample_interval_sec=1,
+        confirm_samples=1, margin_per_contract=260.0,
+        stats_update_interval_sec=0)
     cfg.save()
 
     db = Database(str(tmp_path / 'a.db'))
@@ -673,10 +676,10 @@ def test_the_gear_opens_this_contracts_settings(analysis_server):
         assert 'own' in (cfg.locator('.cf-row:has(#cf-entry_threshold) .cf-eff')
                          .get_attribute('class'))
         # a field it does not set is BLANK, with the desk default in grey
-        blank = cfg.locator('#cf-stop_loss_z')
+        blank = cfg.locator('#cf-max_entry_z')
         assert blank.input_value() == ''
-        eff = cfg.locator('.cf-row:has(#cf-stop_loss_z) .cf-eff')
-        assert eff.inner_text() == '4'
+        eff = cfg.locator('.cf-row:has(#cf-max_entry_z) .cf-eff')
+        assert eff.inner_text() == '3.5'
         assert 'own' not in (eff.get_attribute('class') or '')
         browser.close()
     assert errors == []
@@ -693,17 +696,17 @@ def test_a_blank_box_clears_an_override_and_zero_sets_one(analysis_server):
         browser, page = open_page(p, url, errors)
         cfg = open_config(page)
         cfg.locator('#cf-entry_threshold').fill('')       # back to the default
-        cfg.locator('#cf-stop_loss_z').fill('0')          # a real number
+        cfg.locator('#cf-max_entry_z').fill('0')          # a real number
         cfg.locator('.cfg-save').click()
         page.wait_for_timeout(600)
 
         saved = TraderConfig.from_file(str(tmp / 'config.json'))
         overrides = saved.contracts['fef'].overrides
         assert overrides.get('entry_threshold') is None
-        assert overrides.get('stop_loss_z') == 0
+        assert overrides.get('max_entry_z') == 0
         # and the panel now reads back what was actually saved
         assert cfg.locator('#cf-entry_threshold').input_value() == ''
-        assert cfg.locator('#cf-stop_loss_z').input_value() == '0'
+        assert cfg.locator('#cf-max_entry_z').input_value() == '0'
         browser.close()
     assert errors == []
 
@@ -716,10 +719,11 @@ def test_every_group_of_settings_renders(analysis_server):
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
         cfg = open_config(page)
-        for group, probe in [('Filters', '#cf-min_std_multiple'),
+        for group, probe in [('Exit', '#cf-margin_per_contract'),
+                             ('Book', '#cf-max_book_spread_ticks'),
                              ('Size & risk', '#cf-max_position'),
                              ('Execution', '#cf-exit_on_timeout'),
-                             ('Costs', '#cf-profit_target_pct'),
+                             ('Costs', '#cf-commission_per_contract'),
                              ('Display', '#cf-decimals')]:
             cfg.locator('.cfg-tabs button', has_text=group).click()
             page.wait_for_selector('.cfgwin ' + probe)

@@ -104,6 +104,20 @@
      contract it describes. Sub-tabs: the named contract, and All contracts —
      because a win rate blended across eight of them cannot answer the only
      question this window exists for, which is which one to turn off. -->
+<template id="chart-template">
+  <section class="win chartwin">
+    <div class="titlebar">
+      <span class="swatch" style="background:#3a7bb8"></span>
+      <span class="title"></span>
+      <span class="winbtns"><button class="winbtn close" title="Close the chart">&times;</button></span>
+    </div>
+    <div class="wbody">
+      <svg class="chart" role="img" aria-label="price, mean and bands over the window"></svg>
+      <div class="hint chart-note">Loading…</div>
+    </div>
+  </section>
+</template>
+
 <template id="config-template">
   <section class="win cfgwin">
     <div class="titlebar">
@@ -279,10 +293,11 @@
       <span class="swatch"></span>
       <span class="title"></span>
       <span class="venue"></span>
-      <span class="winbtns"><button class="winbtn cog" title="This contract's settings">&#9881;</button><button class="winbtn close" title="Close this window">&times;</button></span>
+      <span class="winbtns"><button class="winbtn chart" title="Chart: price, mean and bands over the window"><svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><polyline points="1,10 4,6 7,8 11,2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button><button class="winbtn cog" title="This contract's settings">&#9881;</button><button class="winbtn close" title="Close this window">&times;</button></span>
     </div>
     <div class="badgebar">
       <span class="state">&mdash;</span>
+      <span class="dirbadge hidden" title="This contract enters in one direction only; exits are never restricted"></span>
       <span class="algo"><span class="lb">ALGO</span><button class="sw" title="Arm or stand down this contract's algo"><i></i><span>OFF</span></button></span>
     </div>
     <div class="wbody">
@@ -297,7 +312,9 @@
           <div class="kv"><span class="k">MEAN</span><span class="v f-mean">&mdash;</span></div>
           <div class="kv"><span class="k">SIGMA</span><span class="v f-std">&mdash;</span></div>
           <div class="kv"><span class="k">Z</span><span class="v em f-z">&mdash;</span></div>
-          <div class="kv"><span class="k">N</span><span class="v f-n">&mdash;</span></div>
+          <div class="kv"><span class="k">HIST</span><span class="v f-n" title="minutes of continuous history in the window">&mdash;</span></div>
+          <div class="kv"><span class="k">BID z</span><span class="v f-zbid" title="the z a SHORT is decided on">&mdash;</span></div>
+          <div class="kv"><span class="k">ASK z</span><span class="v f-zask" title="the z a LONG is decided on">&mdash;</span></div>
         </div>
         <div class="zstrip" title="Where z sits between the two entry thresholds">
           <div class="zone entry left"></div><div class="zone entry right"></div>
@@ -316,7 +333,8 @@
       </div>
 
       <div class="sect">
-        <div class="kv"><span class="k">EDGE</span><span class="v f-edge">&mdash;</span></div>
+        <div class="kv"><span class="k">TARGET</span><span class="v f-target" title="exit once NET P&amp;L, after the whole round trip, reaches this">&mdash;</span></div>
+        <div class="kv"><span class="k">EDGE</span><span class="v f-edge" title="sigma against the round trip, a reading">&mdash;</span></div>
         <div class="grid2">
           <div class="kv"><span class="k">H</span><span class="v f-hurst">&mdash;</span></div>
           <div class="kv"><span class="k">HL</span><span class="v f-hl">&mdash;</span></div>
@@ -335,8 +353,11 @@
           <div class="kv"><span class="k">Z IN</span><span class="v p-zin">&mdash;</span></div>
           <div class="kv"><span class="k">B/E</span><span class="v p-be">&mdash;</span></div>
           <div class="kv"><span class="k">TGT</span><span class="v p-tgt">&mdash;</span></div>
-          <div class="kv"><span class="k">STOP</span><span class="v p-stop">&mdash;</span></div>
+          <div class="kv"><span class="k">Z STOP</span><span class="v p-stop" title="the price where the closing side's z reaches the stop">&mdash;</span></div>
+          <div class="kv"><span class="k">$ STOP</span><span class="v p-mstop" title="net loss that closes it; off = the z stop stands alone">&mdash;</span></div>
           <div class="kv"><span class="k">HELD</span><span class="v p-held">&mdash;</span></div>
+          <div class="kv"><span class="k">LEFT</span><span class="v p-left" title="until the time stop">&mdash;</span></div>
+          <div class="kv"><span class="k">NET</span><span class="v em p-net" title="after the whole round trip, at the side it would close on">&mdash;</span></div>
           <div class="kv"><span class="k">MARGIN</span><span class="v p-margin">&mdash;</span></div>
         </div>
         <div class="hint p-missing hidden"></div>

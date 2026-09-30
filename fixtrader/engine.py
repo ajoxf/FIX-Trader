@@ -26,8 +26,8 @@ from . import costs as costs_mod
 from . import marketdata, signals as signals_mod, sizing
 from .executor import Executor
 from .marketdata import FeedGuard
-from .models import (ContractState, ExitReason, Intent, OrderType, Position,
-                     Side, TargetBasis, TouchState)
+from .models import (ContractState, ExitReason, Fill, Intent, OrderType,
+                     Position, Side, TargetBasis, TouchState)
 from .stats import StatsWindow
 
 logger = logging.getLogger(__name__)
@@ -47,9 +47,17 @@ class ContractRuntime:
     def __init__(self, contract, desk: Dict[str, Any]):
         self.contract = contract
         s = contract.settings_with_defaults(desk)
-        self.window = StatsWindow(contract.key, lookback=int(s['lookback']),
-                                  stats_update_interval_sec=s['stats_update_interval_sec'],
-                                  entry_threshold=s['entry_threshold'])
+        self.window = StatsWindow(
+            contract.key, window_minutes=s['window_minutes'],
+            min_history_minutes=s['min_history_minutes'],
+            sample_interval_sec=s['sample_interval_sec'],
+            stats_update_interval_sec=s['stats_update_interval_sec'],
+            entry_threshold=s['entry_threshold'])
+        #: Consecutive SAMPLES the same side has been through the entry
+        #: threshold — the confirmation. Counted per sample, not per poll: the
+        #: loop runs ten times a second and three polls is a third of one.
+        self.confirm_side: Optional[Side] = None
+        self.confirm_count: int = 0
         self.guard = FeedGuard(contract.key,
                                max_quote_age_sec=desk.get('MAX_QUOTE_AGE_SEC', 15.0),
                                max_jump_sigma=desk.get('MAX_PRICE_JUMP_SIGMA', 5.0),
@@ -100,6 +108,11 @@ class Engine:
             bool(config.settings.get('AUTO_TRADE_ENABLED', True))
             if not hasattr(gateway, 'venue') else False)
         self.killed: bool = False
+        #: PAPER: the gateway can see the market but cannot trade it — TT
+        #: today. The signal still runs end to end, filled at the live bid
+        #: or offer inside this process; no order is built for any venue.
+        self.paper: bool = bool(getattr(gateway, 'connection_only', False))
+        self._paper_seq: int = 0
         #: WHO is trading this desk: the algo or a person, never both. Two
         #: hands on one book fight — the algo closes a hand-placed position at
         #: its own target, or re-enters the moment the trader gets flat — and
@@ -156,10 +169,51 @@ class Engine:
         self.runtimes[contract.key] = rt
         self.gateway.subscribe(contract)
         self._fill_specs_from_venue(contract)
-        if self.db is not None and self.config.settings.get('PERSIST_STATS_SAMPLES', True):
-            for price in self.db.recent_samples(contract.key, rt.window.lookback):
-                rt.window.add(price, utcnow())
+        self._resume_window(rt, utcnow())
         return rt
+
+    def _resume_window(self, rt: ContractRuntime, now: datetime) -> None:
+        """Reload the recorded window after a restart — if it still reaches
+        now.
+
+        Resumed only when the engine was off for less than
+        RESUME_MAX_GAP_MINUTES: a quick restart trades again at once, a
+        longer gap starts afresh, so the bands never come from a market that
+        has since moved on. The rows kept are the last `window_minutes`
+        before the NEWEST recorded sample, not before now — anchoring on now
+        would let the outage eat the oldest end of the window.
+        """
+        if self.db is None or not self.config.settings.get(
+                'PERSIST_STATS_SAMPLES', True):
+            return
+        w = rt.window
+        max_gap = float(self.config.settings.get('RESUME_MAX_GAP_MINUTES',
+                                                 120.0) or 0.0)
+        from datetime import timedelta
+        since = now - timedelta(minutes=w.window_minutes + max_gap + 1)
+        try:
+            rows = self.db.samples_between(rt.contract.key, since=since)
+        except Exception:                                # noqa: BLE001
+            logger.exception("could not read the recorded window for %s",
+                             rt.contract.key)
+            return
+        if not rows:
+            return
+        newest = rows[-1][0]
+        if newest.tzinfo is None:
+            newest = newest.replace(tzinfo=timezone.utc)
+        off = (now - newest).total_seconds() / 60.0
+        if off > max_gap:
+            rt.last_event = (f"window started afresh — the recorded one "
+                             f"ended {off:.0f} min ago (limit {max_gap:.0f})")
+            return
+        start = newest - timedelta(minutes=w.window_minutes)
+        kept = [(ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc), px)
+                for ts, px, *_ in rows]
+        kept = [(ts, px) for ts, px in kept if ts >= start]
+        w.prime(kept)
+        rt.last_event = (f"window resumed — {w.history_minutes:.0f} min of "
+                         f"history, {off:.0f} min since the last sample")
 
     def _fill_specs_from_venue(self, contract) -> None:
         """Take tick size, value, multiplier and bounds from the venue where
@@ -247,7 +301,7 @@ class Engine:
     def _poll_contract(self, rt: ContractRuntime, now: datetime,
                        market_updated: bool = True) -> None:
         contract = rt.contract
-        settings = self.config.effective(contract.key)
+        settings = self._settings(contract)
         rt.roll_day(now)
         rt.proposal = None
 
@@ -257,13 +311,25 @@ class Engine:
 
         armed = bool(contract.algo_on and self.master_algo and not self.killed)
         if market_updated and book is not None and book.usable:
+            before = rt.window.samples_ts[-1][0] if rt.window.samples_ts else None
             touches = rt.window.add(book.mid, now, algo_armed=armed)
             if touches and self.db is not None:
                 for touch in touches:
                     self.db.save_touch(touch)
-            if self.db is not None and self.config.settings.get(
-                    'PERSIST_STATS_SAMPLES', True):
-                self.db.save_samples(contract.key, [(now, book.mid)])
+            sampled = (rt.window.samples_ts
+                       and rt.window.samples_ts[-1][0] != before)
+            if sampled:
+                # One sample, one confirmation step: the same side through
+                # the threshold again extends the run, anything else resets.
+                through = signals_mod.side_through(rt.window, book, settings)
+                if through is not None and through is rt.confirm_side:
+                    rt.confirm_count += 1
+                else:
+                    rt.confirm_side = through
+                    rt.confirm_count = 1 if through is not None else 0
+                if self.db is not None and self.config.settings.get(
+                        'PERSIST_STATS_SAMPLES', True):
+                    self.db.save_samples(contract.key, [(now, book.mid)])
 
         said = (self.executor.manage(contract, settings, book, now)
                 if self.auto_trade_enabled else [])
@@ -281,8 +347,8 @@ class Engine:
                 rt.proposal = self._proposal(sig, now)
             if (sig.action == "CLOSE" and self.auto_trade_enabled
                     and not self._has_working_close(contract.key)):
-                self._send_close(rt, settings, sig.side, sig.qty,
-                                 sig.exit_reason, sig.reason, book, now)
+                self._close(rt, settings, sig.side, sig.qty,
+                            sig.exit_reason, sig.reason, book, now)
             return
 
         # 2. and only then the way in
@@ -302,18 +368,24 @@ class Engine:
             open_qty=0.0, trades_today=rt.trades_today, pnl_today=rt.pnl_today,
             last_trade_at=rt.last_trade_at, quote_stale=status['stale'],
             jump_settling=status['settling'],
-            in_session=self._in_session(contract, settings, now))
+            in_session=self._in_session(contract, settings, now),
+            confirmed=rt.confirm_count)
         rt.blocked_by = sig.blocked_by
         if sig.action == 'OPEN':
             rt.proposal = self._proposal(sig, now)
         if (sig.action == "OPEN" and self.auto_trade_enabled
                 and not self.executor.working_for(contract.key)):
-            self.executor.place(contract, settings, sig.side, sig.qty,
-                                Intent.OPEN, book, now, reason=sig.reason,
-                                decision=self._decision(rt.window))
+            decision = self._decision(rt.window, book, sig.side)
+            if self.paper:
+                self._paper_fill(rt, sig.side, sig.qty, Intent.OPEN, book,
+                                 now, decision=decision)
+            else:
+                self.executor.place(contract, settings, sig.side, sig.qty,
+                                    Intent.OPEN, book, now, reason=sig.reason,
+                                    decision=decision)
+                self._say(rt, "ORDER",
+                          f"{sig.side.value} {sig.qty:g} — {sig.reason}")
             self._mark_touch_traded(rt, sig.side)
-            self._say(rt, "ORDER",
-                      f"{sig.side.value} {sig.qty:g} — {sig.reason}")
 
     @staticmethod
     def _proposal(sig, now):
@@ -322,7 +394,7 @@ class Engine:
                 'ts': now.isoformat()}
 
     @staticmethod
-    def _decision(window) -> Dict[str, Any]:
+    def _decision(window, book=None, side: Optional[Side] = None) -> Dict[str, Any]:
         """The window's state at the moment a signal fires.
 
         Stamped onto the position when the fill lands. Reading these off the
@@ -331,7 +403,13 @@ class Engine:
         every figure the Analysis window reports about why a trade happened
         would be the wrong one.
         """
-        return {'z': window.z, 'mean': window.mean, 'std': window.std,
+        z = window.z
+        if book is not None and side is not None:
+            # The z the rule actually fired on: the bid's for a sale, the
+            # offer's for a purchase. Not the mid's.
+            side_z = window.z_of(book.executable(side))
+            z = side_z if side_z is not None else z
+        return {'z': z, 'mean': window.mean, 'std': window.std,
                 'half_life': window.half_life}
 
     def _mark_touch_traded(self, rt: ContractRuntime, side: Side) -> None:
@@ -359,6 +437,58 @@ class Engine:
 
     def _has_working_close(self, key: str) -> bool:
         return any(w.is_close for w in self.executor.working_for(key))
+
+    def _close(self, rt, settings, side, qty, exit_reason, reason,
+               book, now) -> None:
+        """The one way out: on paper, a fill at the closing side now; at a
+        venue, an order that says it is closing."""
+        if self.paper:
+            self._paper_fill(rt, side, qty, Intent.CLOSE, book, now,
+                             decision=self._decision(rt.window, book, side),
+                             exit_reason=exit_reason or ExitReason.TARGET,
+                             reason=reason)
+            return
+        self._send_close(rt, settings, side, qty, exit_reason, reason,
+                         book, now)
+
+    def _paper_fill(self, rt, side: Side, qty: float, intent: Intent, book,
+                    now: datetime, decision: Optional[Dict[str, Any]] = None,
+                    exit_reason: Optional[ExitReason] = None,
+                    reason: str = "") -> bool:
+        """Fill on paper at the LIVE executable side — the bid for a sale,
+        the offer for a purchase, never the mid. Nothing is built for a
+        venue and nothing leaves the process: this is the signal measured on
+        a real market before the order path to it exists.
+
+        Applied through the SAME code that applies a venue fill, so a paper
+        position carries the same break-even, target and journal as a real
+        one would. There is no queue and no partial fill, and the round trip
+        charged is the configured one — the Analysis window says so.
+        """
+        price = book.executable(side) if book is not None else None
+        if price is None:
+            self._say(rt, "PAPER", f"no {('offer' if side is Side.BUY else 'bid')}"
+                      f" to paper-fill {side.value} {qty:g} at — waiting")
+            return False
+        self._paper_seq += 1
+        clordid = f"PAPER-{self._paper_seq}"
+        fill = Fill(venue='PAPER', exec_id=clordid, clordid=clordid,
+                    contract_key=rt.contract.key, side=side, qty=qty,
+                    price=price, our_ts=now, venue_ts=now)
+        self.executor.decisions[clordid] = dict(decision or {})
+        if exit_reason is not None:
+            self._exit_reasons[clordid] = exit_reason
+        if self.db is not None and hasattr(self.db, 'save_fill'):
+            try:
+                self.db.save_fill(fill)
+            except Exception:                            # noqa: BLE001
+                logger.exception("paper fill not journalled")
+        from types import SimpleNamespace
+        self._apply_fill(rt, SimpleNamespace(fill=fill, clordid=clordid),
+                         intent, now, simulated=True)
+        if reason and intent is Intent.CLOSE:
+            rt.last_event = f"{rt.last_event} · {reason}"
+        return True
 
     def _send_close(self, rt, settings, side, qty, exit_reason, reason,
                     book, now) -> None:
@@ -397,7 +527,7 @@ class Engine:
             self._say(rt, "ORDER", "cancelled")
 
     def _apply_fill(self, rt: ContractRuntime, event, intent: Intent,
-                    now: datetime) -> None:
+                    now: datetime, simulated: Optional[bool] = None) -> None:
         fill = event.fill
         contract = rt.contract
         settings = self.config.effective(contract.key)
@@ -407,7 +537,7 @@ class Engine:
 
         if intent is Intent.OPEN:
             if rt.position is None or not rt.position.is_open:
-                margin = self.gateway.margin_for(contract.key, fill.qty)
+                margin = self._margin(contract, settings, fill.qty)
                 rt.position = Position(
                     contract_key=contract.key, side=fill.side, qty=fill.qty,
                     opened_qty=fill.qty, avg_price=fill.price, opened_at=now,
@@ -416,7 +546,9 @@ class Engine:
                     entry_std=decided.get('std', rt.window.std),
                     entry_half_life=decided.get('half_life',
                                                 rt.window.half_life),
-                    margin_locked=margin, is_simulated=self.simulated,
+                    margin_locked=margin,
+                    is_simulated=(self.simulated if simulated is None
+                                  else bool(simulated)),
                     tickets=[fill.exec_id],
                     opened_session=now.date().isoformat())
             else:
@@ -427,7 +559,7 @@ class Engine:
                 pos.qty = total
                 pos.opened_qty = total
                 pos.tickets.append(fill.exec_id)
-                pos.margin_locked = self.gateway.margin_for(contract.key, total)
+                pos.margin_locked = self._margin(contract, settings, total)
 
             pos = rt.position
             pos.break_even = costs_mod.break_even(
@@ -504,6 +636,27 @@ class Engine:
         self.notify("CLOSED", contract.key,
                     f"closed {fill.qty:g} @ {fill.price:g} · {money}")
         rt.position = None
+
+    def _margin(self, contract, settings, qty) -> Optional[float]:
+        """The margin the target is a percentage of: the one the operator
+        ENTERED for the contract, and only where none was entered, what the
+        venue reports — TT reports none. One rule, used by the entry check
+        and the position alike, so the target the entry was judged on is the
+        target the position gets."""
+        entered = costs_mod.configured_margin(settings, qty)
+        if entered:
+            return entered
+        return self.gateway.margin_for(contract.key, qty) or None
+
+    def _settings(self, contract) -> Dict[str, Any]:
+        """This contract's effective settings, with the venue's margin
+        standing in where the operator entered none."""
+        settings = self.config.effective(contract.key)
+        if not costs_mod.configured_margin(settings, 1.0):
+            venue = self.gateway.margin_for(contract.key, 1.0)
+            if venue:
+                settings = dict(settings, margin_per_contract=venue)
+        return settings
 
     def _fees_for(self, tickets, settings, qty) -> Optional[float]:
         """What the venue charged, where it says. Falls back to the
@@ -627,6 +780,11 @@ class Engine:
         if on and self.trading_mode == 'MANUAL':
             return {'ok': False, 'error': 'The desk is in MANUAL mode. Switch '
                     'it to ALGO before turning automatic trading on.'}
+        if on and self.paper:
+            # Paper trading sends nothing, so there is no venue book to
+            # recover and no session it depends on.
+            self.auto_trade_enabled = True
+            return {'ok': True, 'auto_trade_enabled': True, 'paper': True}
         if on:
             if getattr(self.gateway, 'connection_only', False):
                 return {'ok': False, 'error':
@@ -670,9 +828,9 @@ class Engine:
             self.set_algo(key, False)
         settings = dict(self.config.effective(key), exit_order_type='MARKET')
         now = utcnow()
-        self._send_close(rt, settings, rt.position.side.opposite,
-                         rt.position.qty, ExitReason.CLOSE_NOW,
-                         "closed by hand", rt.book, now)
+        self._close(rt, settings, rt.position.side.opposite,
+                    rt.position.qty, ExitReason.CLOSE_NOW,
+                    "closed by hand", rt.book, now)
         return {'ok': True, 'algo_stood_down': was_armed}
 
     # -- picking up an edited configuration ---------------------------------
@@ -753,7 +911,9 @@ class Engine:
         for key, rt in self.runtimes.items():
             settings = self.config.effective(key)
             if rt.window.update_config(
-                    lookback=int(settings['lookback']),
+                    window_minutes=settings['window_minutes'],
+                    min_history_minutes=settings['min_history_minutes'],
+                    sample_interval_sec=settings['sample_interval_sec'],
                     stats_update_interval_sec=settings[
                         'stats_update_interval_sec'],
                     entry_threshold=settings['entry_threshold']):
@@ -866,16 +1026,33 @@ class Engine:
                                            contract.tick_value, settings)
             breakdown = costs_mod.cost_breakdown(qty, contract.tick_size,
                                                  contract.tick_value, settings)
-            min_mult = float(settings.get('min_std_multiple', 1.5) or 0)
-
             pos = rt.position
             open_pnl = None
-            if pos is not None and pos.is_open and book is not None:
-                close_px = book.executable(pos.side.opposite)
+            live = None
+            if pos is not None and pos.is_open:
+                close_px = (book.executable(pos.side.opposite)
+                            if book is not None else None)
                 if close_px is not None:
                     open_pnl = sizing.to_money(
                         (close_px - pos.avg_price) * pos.side.sign,
                         contract.tick_size, contract.tick_value, pos.qty)
+                held_min = ((now - pos.opened_at).total_seconds() / 60.0
+                            if pos.opened_at else None)
+                max_hold = float(settings.get('max_hold_minutes', 0) or 0)
+                stop_money = float(settings.get('stop_loss_money', 0) or 0)
+                live = {
+                    # NET: the whole round trip taken off, at the closing side.
+                    'net': costs_mod.open_net(pos.side, pos.qty, pos.avg_price,
+                                              close_px, contract.tick_size,
+                                              contract.tick_value, settings),
+                    'held_min': round(held_min, 1) if held_min is not None else None,
+                    'time_left_min': (round(max(0.0, max_hold - held_min), 1)
+                                      if max_hold and held_min is not None else None),
+                    'money_stop': -stop_money * pos.qty if stop_money else None,
+                    'z_close': rt.window.z_of(close_px),
+                }
+            z_bid, z_ask = signals_mod.side_z(rt.window, book)
+            margin = costs_mod.configured_margin(settings, qty)
 
             contracts.append({
                 'key': key,
@@ -891,13 +1068,16 @@ class Engine:
                 'market': (book.to_dict() if book is not None else
                            {'bid': None, 'ask': None, 'mid': None}),
                 'feed': status,
-                'stats': rt.window.to_dict(),
+                'stats': dict(rt.window.to_dict(), z_bid=z_bid, z_ask=z_ask,
+                              stop_lo=rt.window.price_at_z(-float(settings.get('stop_loss_z', 4) or 4)),
+                              stop_hi=rt.window.price_at_z(float(settings.get('stop_loss_z', 4) or 4))),
                 'filters': {
                     'edge_ratio': round(ratio, 2) if ratio is not None else None,
-                    'edge_ok': (ratio >= min_mult) if ratio is not None else None,
-                    'min_std_multiple': min_mult,
-                    'hurst_enabled': bool(settings.get('hurst_enabled')),
-                    'hurst_threshold': settings.get('hurst_threshold'),
+                    'confirm': {'side': rt.confirm_side.value if rt.confirm_side else None,
+                                'count': rt.confirm_count,
+                                'need': int(settings.get('confirm_samples', 1) or 1)},
+                    'trade_direction': settings.get('trade_direction', 'BOTH'),
+                    'margin': margin,
                     'blocked_by': rt.blocked_by,
                 },
                 'costs': {
@@ -908,12 +1088,17 @@ class Engine:
                 },
                 'settings': {
                     'entry_threshold': settings.get('entry_threshold'),
+                    'max_entry_z': settings.get('max_entry_z'),
                     'stop_loss_z': settings.get('stop_loss_z'),
+                    'profit_target_pct': settings.get('profit_target_pct'),
+                    'margin_per_contract': settings.get('margin_per_contract'),
+                    'window_minutes': settings.get('window_minutes'),
                     'quantity': qty,
                     'entry_order_type': settings.get('entry_order_type'),
                     'exit_order_type': settings.get('exit_order_type'),
                 },
-                'position': self._position_dict(pos, open_pnl),
+                'position': (dict(self._position_dict(pos, open_pnl), **live)
+                             if live is not None else None),
                 'orders': [w.to_dict() for w in
                            self.executor.working_for(key)],
                 'proposal': rt.proposal,
@@ -940,7 +1125,8 @@ class Engine:
                 'master_algo': self.master_algo,
                 'auto_trade_enabled': self.auto_trade_enabled,
                 'trading_mode': self.trading_mode,
-                'auto_trade_available': not getattr(self.gateway, 'connection_only', False),
+                'auto_trade_available': True,
+                'paper': self.paper,
                 'killed': self.killed,
                 'environment': self.config.environment_label,
                 'simulated': self.simulated,

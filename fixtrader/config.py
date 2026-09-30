@@ -78,34 +78,47 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     'MAX_OPEN_CONTRACTS': 0.0,
 
     # -- defaults a blank contract field falls back to --------------------
-    'DEFAULT_LOOKBACK': 400,
+    # -- the signal: a rolling window, entered at 2.5 sigma, left once the
+    # round trip AND a profit on the margin are covered ---------------------
+    #: The window is TIME, not a count of polls: the last N minutes of mids,
+    #: sampled at most once per `DEFAULT_SAMPLE_INTERVAL_SEC`.
+    'DEFAULT_WINDOW_MINUTES': 150.0,
+    #: Continuous history the window needs before its first entry. A gap —
+    #: a restart, a stalled feed — is not history.
+    'DEFAULT_MIN_HISTORY_MINUTES': 120.0,
+    'DEFAULT_SAMPLE_INTERVAL_SEC': 1.0,
+    #: The bands stand still between recomputes so there is a level to aim
+    #: at; the z runs live against them.
     'DEFAULT_STATS_UPDATE_INTERVAL_SEC': 300.0,
-    'DEFAULT_ENTRY_THRESHOLD': 2.0,
-    'DEFAULT_EXIT_THRESHOLD': 0.5,
+    #: SHORT when the z of the BID reaches +this; LONG when the z of the
+    #: OFFER reaches -this — each side on the price it could actually trade.
+    'DEFAULT_ENTRY_THRESHOLD': 2.5,
+    #: No entry beyond this |z|: a blow-out that far is more often a move
+    #: that keeps going than one that comes back.
+    'DEFAULT_MAX_ENTRY_Z': 3.5,
+    #: Consecutive samples the side's z must hold beyond the threshold.
+    'DEFAULT_CONFIRM_SAMPLES': 3,
+    #: BOTH, SELL_ONLY or BUY_ONLY. Entries only — never an exit.
+    'DEFAULT_TRADE_DIRECTION': 'BOTH',
     'DEFAULT_STOP_LOSS_Z': 4.0,
-    'DEFAULT_EXIT_SIGNAL_MODE': 'profit',
-    'DEFAULT_MAX_HOLD_MINUTES': 0.0,
-    #: OFF by default, deliberately. Hurst is an ESTIMATE, and on a spread
-    #: quantised to a coarse tick it reads high however well the series
-    #: reverts — runs of identical prices look persistent. Shipped on, with a
-    #: 0.5 threshold, it would silently withhold every entry on every
-    #: contract while looking like a filter that is merely strict. Read it on
-    #: the window for a few sessions, see what THIS contract does, then set a
-    #: threshold and turn it on. The edge filter, which is arithmetic rather
-    #: than an estimate, is the one that ships armed.
-    'DEFAULT_HURST_ENABLED': False,
-    'DEFAULT_HURST_THRESHOLD': 0.5,
-    'DEFAULT_EDGE_FILTER_ENABLED': True,
-    'DEFAULT_MIN_STD_MULTIPLE': 1.5,
-    'DEFAULT_HALF_LIFE_ENABLED': False,
-    'DEFAULT_MAX_HALF_LIFE': 60.0,
+    #: A money stop per contract on NET P&L. 0 = off (the z stop still
+    #: stands, so a position always has a stop).
+    'DEFAULT_STOP_LOSS_MONEY': 0.0,
+    'DEFAULT_MAX_HOLD_MINUTES': 240.0,
+    #: Close at the rolling mean when the trade is already net positive,
+    #: even if the profit target has not been reached.
+    'DEFAULT_EXIT_AT_MEAN': True,
+    #: The margin one contract ties up, as the operator enters it: TT does
+    #: not report it. The profit target is a percentage OF this, so a
+    #: contract without one has no target — and does not enter.
+    'DEFAULT_MARGIN_PER_CONTRACT': 0.0,
     'DEFAULT_MIN_BOOK_SIZE': 0.0,
     'DEFAULT_MAX_BOOK_SPREAD_TICKS': 0.0,
     'DEFAULT_QUANTITY': 1.0,
     'DEFAULT_MAX_POSITION': 0.0,
     'DEFAULT_MAX_TRADES_PER_DAY': 0.0,
     'DEFAULT_DAILY_MAX_LOSS': 0.0,
-    'DEFAULT_ENTRY_COOLDOWN_SECONDS': 60.0,
+    'DEFAULT_ENTRY_COOLDOWN_SECONDS': 300.0,
     'DEFAULT_ENTRY_ORDER_TYPE': OrderType.LIMIT.value,
     'DEFAULT_EXIT_ORDER_TYPE': OrderType.MARKET.value,
     'DEFAULT_ENTRY_LIMIT_OFFSET_TICKS': 1.0,
@@ -133,8 +146,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     #: A BUDGET, not a measurement. Default 0: a fabricated cost is charged
     #: against every trade and the operator cannot tell it was never theirs.
     'DEFAULT_SLIPPAGE_BUDGET_TICKS': 0.0,
+    #: Exit once NET P&L — after the whole round trip — reaches this % of
+    #: the margin entered for the contract.
     'DEFAULT_PROFIT_TARGET_PCT': 2.0,
-    'DEFAULT_PROFIT_TARGET_BASIS': TargetBasis.MARGIN.value,
 
     # -- notifications ----------------------------------------------------
     'NOTIFY_ORDERS': False,
@@ -148,6 +162,9 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     # -- storage ----------------------------------------------------------
     'DATABASE_PATH': 'fixtrader.db',
     'PERSIST_STATS_SAMPLES': True,
+    #: A restart reloads the recorded window when the engine was off for
+    #: less than this; a longer gap starts the window afresh.
+    'RESUME_MAX_GAP_MINUTES': 120.0,
     'EVENT_RETENTION_DAYS': 90,
 }
 
@@ -159,19 +176,19 @@ STRUCTURAL_SETTINGS = ('PRICE_REFRESH_SEC', 'ENGINE_POLL_SEC',
 
 #: Per-contract field -> the desk-wide default it falls back to when blank.
 CONTRACT_DEFAULTS: Dict[str, str] = {
-    'lookback': 'DEFAULT_LOOKBACK',
+    'window_minutes': 'DEFAULT_WINDOW_MINUTES',
+    'min_history_minutes': 'DEFAULT_MIN_HISTORY_MINUTES',
+    'sample_interval_sec': 'DEFAULT_SAMPLE_INTERVAL_SEC',
     'stats_update_interval_sec': 'DEFAULT_STATS_UPDATE_INTERVAL_SEC',
     'entry_threshold': 'DEFAULT_ENTRY_THRESHOLD',
-    'exit_threshold': 'DEFAULT_EXIT_THRESHOLD',
+    'max_entry_z': 'DEFAULT_MAX_ENTRY_Z',
+    'confirm_samples': 'DEFAULT_CONFIRM_SAMPLES',
+    'trade_direction': 'DEFAULT_TRADE_DIRECTION',
     'stop_loss_z': 'DEFAULT_STOP_LOSS_Z',
-    'exit_signal_mode': 'DEFAULT_EXIT_SIGNAL_MODE',
+    'stop_loss_money': 'DEFAULT_STOP_LOSS_MONEY',
     'max_hold_minutes': 'DEFAULT_MAX_HOLD_MINUTES',
-    'hurst_enabled': 'DEFAULT_HURST_ENABLED',
-    'hurst_threshold': 'DEFAULT_HURST_THRESHOLD',
-    'edge_filter_enabled': 'DEFAULT_EDGE_FILTER_ENABLED',
-    'min_std_multiple': 'DEFAULT_MIN_STD_MULTIPLE',
-    'half_life_enabled': 'DEFAULT_HALF_LIFE_ENABLED',
-    'max_half_life': 'DEFAULT_MAX_HALF_LIFE',
+    'exit_at_mean': 'DEFAULT_EXIT_AT_MEAN',
+    'margin_per_contract': 'DEFAULT_MARGIN_PER_CONTRACT',
     'min_book_size': 'DEFAULT_MIN_BOOK_SIZE',
     'max_book_spread_ticks': 'DEFAULT_MAX_BOOK_SPREAD_TICKS',
     'quantity': 'DEFAULT_QUANTITY',
@@ -195,7 +212,6 @@ CONTRACT_DEFAULTS: Dict[str, str] = {
     'clearing_fee_per_contract': 'DEFAULT_CLEARING_FEE_PER_CONTRACT',
     'slippage_budget_ticks': 'DEFAULT_SLIPPAGE_BUDGET_TICKS',
     'profit_target_pct': 'DEFAULT_PROFIT_TARGET_PCT',
-    'profit_target_basis': 'DEFAULT_PROFIT_TARGET_BASIS',
 }
 
 
@@ -406,10 +422,11 @@ class ContractConfig:
             out[field] = value
         # Booleans arrive from JSON as bools already; numbers may be strings
         # from a form post, so coerce the ones that are always numeric.
-        for numeric in ('lookback', 'stats_update_interval_sec',
-                        'entry_threshold', 'exit_threshold', 'stop_loss_z',
-                        'max_hold_minutes', 'hurst_threshold',
-                        'min_std_multiple', 'max_half_life', 'min_book_size',
+        for numeric in ('window_minutes', 'min_history_minutes',
+                        'sample_interval_sec', 'stats_update_interval_sec',
+                        'entry_threshold', 'max_entry_z', 'confirm_samples',
+                        'stop_loss_z', 'stop_loss_money', 'max_hold_minutes',
+                        'margin_per_contract', 'min_book_size',
                         'max_book_spread_ticks', 'quantity', 'max_position',
                         'max_trades_per_day', 'daily_max_loss',
                         'entry_cooldown_seconds', 'entry_limit_offset_ticks',
@@ -422,7 +439,13 @@ class ContractConfig:
                 out[numeric] = float(out[numeric]) if out[numeric] is not None else None
             except (TypeError, ValueError):
                 out[numeric] = DEFAULT_SETTINGS.get(CONTRACT_DEFAULTS[numeric])
-        out['lookback'] = int(out['lookback'] or 0)
+        out['confirm_samples'] = max(1, int(out['confirm_samples'] or 1))
+        # An unrecognised direction means BOTH — never a silent refusal to
+        # trade.
+        direction = str(out.get('trade_direction') or 'BOTH').upper()
+        out['trade_direction'] = (direction if direction in
+                                  ('BOTH', 'SELL_ONLY', 'BUY_ONLY') else 'BOTH')
+        out['exit_at_mean'] = bool(out.get('exit_at_mean'))
         return out
 
     def to_dict(self) -> Dict[str, Any]:

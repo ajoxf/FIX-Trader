@@ -25,8 +25,9 @@ manual UAT ticket remains the only live execution path.
 The Algo desk has separate **Master** and **Auto trade** controls. Master runs
 the strategy on live quotes and displays signal proposals. Auto trade controls
 automatic order placement and starts OFF on a live venue after every restart.
-The current TT gateway refuses to turn Auto trade ON because account-wide
-position recovery and automatic order execution are not yet implemented. The
+On the current TT gateway, which has no algo order path yet, Auto trade ON
+means **PAPER**: the signal runs end to end on live TT prices and fills are
+simulated at the live bid/offer, never sent. The screen says PAPER. The
 Positions banner remains explicit about unknown account positions. TT Order
 Routing and Market Data credentials alone do not provide that snapshot.
 
@@ -57,8 +58,8 @@ A **statistical-arbitrage monitor and execution terminal for exchange-listed
 spread contracts**, traded over **FIX** through Orient Futures.
 
 One screen, many contracts. Each contract gets a small window carrying the
-numbers that decide the trade — rolling mean, standard deviation, z-score, the
-edge filter, position and P&L — an **ALGO ON/OFF** switch, and a gear for that
+numbers that decide the trade — rolling mean, standard deviation, the z of the
+bid and of the offer, the profit target, position and P&L — an **ALGO ON/OFF** switch, and a gear for that
 contract's own settings. Prices refresh twice a second.
 
 This screen runs the algo and shows why it is or is not trading. Manual
@@ -70,6 +71,28 @@ time: what the standard-deviation touches at each level actually did next, how
 the trades ended, and what the costs really were against what was budgeted for
 them. That is the loop that tells you whether a contract's entry threshold is
 right, or whether it should be switched off.
+
+## The signal
+
+A Bollinger-style reversion on the spread's own mid:
+
+- **Window**: 150 minutes of one-second mid samples, rolling in time; trading
+  starts after 120 minutes of continuous history; bands recomputed every 5
+  minutes. A restart within `RESUME_MAX_GAP_MINUTES` resumes the recorded
+  window instead of collecting for two hours again.
+- **Entry**: SHORT when the **bid's** z ≥ +2.5, LONG when the **offer's**
+  z ≤ −2.5, held for 3 consecutive samples; refused beyond |z| 3.5, within
+  5 minutes of the last entry, against the contract's direction setting
+  (Both / Sell only / Buy only), or when the target cannot be reached before
+  the mean.
+- **Target**: net P&L after every cost ≥ `profit_target_pct` (2%) of the
+  **margin you enter per contract**. With no margin entered there is no
+  target and no entry, and the window says so.
+- **Exits**: z stop 4.0 on the closing side, money stop (off by default), time
+  stop 4 h, and back at the mean when net positive.
+
+The chart button on each window draws the recorded mid with the mean, the
+entry bands and the stop bands, and marks every entry and exit.
 
 ## Why it is simpler than a two-leg spread system
 
@@ -147,8 +170,8 @@ is installed.
 | `fixtrader/config.py` | Venues, contracts, settings; atomic saves; `.env` keys; blank-versus-zero |
 | `fixtrader/sizing.py` | `money = points × tick_value / tick_size × qty` — the one conversion |
 | `fixtrader/costs.py` | The round trip, break-even, and the target as a percentage of margin |
-| `fixtrader/stats.py` | Rolling mean, sigma and z; Hurst; half-life; and the SD touches |
-| `fixtrader/signals.py` | The algo: entry with its filters, exit with none |
+| `fixtrader/stats.py` | Rolling time window (150 min, 1 s samples): mean, sigma, z; half-life; the SD touches |
+| `fixtrader/signals.py` | The algo: 2.5σ entry on the bid/offer z, net-of-costs exits |
 | `fixtrader/gateway.py` | The venue seam — **the only module that may import FIX** |
 | `fixtrader/fake_gateway.py` | A real book, a real fill model, a real reject |
 | `fixtrader/marketdata.py` | The staleness and jump guards, and the session clock |

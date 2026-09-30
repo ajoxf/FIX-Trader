@@ -197,6 +197,61 @@ def create_app(config_path: str = "config.json",
         return jsonify(analysis.contract_report(_db(config), config, key,
                                                 period, mode))
 
+    @app.get('/api/series/<path:key>')
+    def api_series(key):
+        """The chart: the recorded mid over the window, and the entries and
+        exits inside it. Read from what the engine recorded, so the chart and
+        the statistics are drawn from the same prices. Thinned to at most
+        `points` so a 150-minute window at one sample a second stays light;
+        the thinning keeps each stretch's high and low, so a spike that
+        touched a band is not averaged away."""
+        from datetime import datetime, timedelta, timezone
+        config = load_config()
+        contract = config.contracts.get(key)
+        if contract is None:
+            return jsonify({'ok': False, 'error': f"no contract {key}"}), 404
+        settings = config.effective(key)
+        try:
+            minutes = float(request.args.get('minutes')
+                            or settings.get('window_minutes') or 150)
+        except ValueError:
+            minutes = 150.0
+        points = max(50, min(2000, int(request.args.get('points', 600))))
+        since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+        db = _db(config)
+        rows = db.samples_between(key, since=since)
+
+        series = []
+        if rows:
+            step = max(1, len(rows) // (points // 2))
+            for i in range(0, len(rows), step):
+                chunk = rows[i:i + step]
+                lo = min(chunk, key=lambda r: r[1])
+                hi = max(chunk, key=lambda r: r[1])
+                for r in sorted({lo, hi}, key=lambda r: r[0]):
+                    series.append([r[0].isoformat(), r[1]])
+
+        marks = []
+        def mark(ts, price, kind, side, reason=None):
+            if ts is None or price is None:
+                return
+            stamp = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+            if stamp >= since:
+                marks.append({'ts': stamp.isoformat(), 'price': price,
+                              'kind': kind, 'side': side, 'reason': reason})
+        for pos in db.closed_positions(key, limit=200):
+            mark(pos.opened_at, pos.avg_price, 'open', pos.side.value)
+            mark(pos.closed_at, pos.exit_price, 'close', pos.side.value,
+                 pos.exit_reason.value if pos.exit_reason else None)
+        for pos in db.open_positions():
+            if pos.contract_key == key:
+                mark(pos.opened_at, pos.avg_price, 'open', pos.side.value)
+        return jsonify({'ok': True, 'key': key, 'minutes': minutes,
+                        'series': series, 'marks': marks,
+                        'decimals': contract.decimals,
+                        'entry_threshold': settings.get('entry_threshold'),
+                        'stop_loss_z': settings.get('stop_loss_z')})
+
     @app.get('/api/replay/<path:key>')
     def api_replay(key):
         """What a DIFFERENT entry threshold would have done to the same

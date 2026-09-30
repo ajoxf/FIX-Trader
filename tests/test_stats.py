@@ -5,7 +5,7 @@ import pytest
 
 from fixtrader.models import TouchState
 from fixtrader.stats import StatsWindow
-from tests.conftest import at, warm
+from tests.conftest import at, warm, window
 
 
 def series_mean_std(values):
@@ -15,7 +15,7 @@ def series_mean_std(values):
 
 
 def test_mean_and_sigma_match_the_series():
-    w = StatsWindow('k', lookback=5, stats_update_interval_sec=0)
+    w = window(5)
     warm(w, [1.0, 2.0, 3.0, 4.0, 5.0])
     m, s = series_mean_std([1, 2, 3, 4, 5])
     assert w.mean == pytest.approx(m)
@@ -24,12 +24,12 @@ def test_mean_and_sigma_match_the_series():
 
 
 def test_the_window_is_not_warm_until_it_is_full():
-    """A sigma from 40 samples of a 400-sample window is a different number,
+    """A sigma from ten minutes of a two-hour window is a different number,
     not a rough version of the right one."""
-    w = StatsWindow('k', lookback=10, stats_update_interval_sec=0)
+    w = window(10)
     warm(w, [1.0] * 9)
     assert not w.is_warm
-    assert w.warm_pct == pytest.approx(90.0)
+    assert w.warm_pct == pytest.approx(100.0 * 8 / 9)   # 8 of 9 seconds
     w.add(1.0, at(9))
     assert w.is_warm
     assert w.warm_pct == 100.0
@@ -38,7 +38,7 @@ def test_the_window_is_not_warm_until_it_is_full():
 def test_bands_stand_still_between_recomputes_while_z_keeps_moving():
     """The whole reason for the interval: a band that moves under the price
     cannot be traded against."""
-    w = StatsWindow('k', lookback=20, stats_update_interval_sec=300)
+    w = window(20, interval=300)
     warm(w, [1.0 + 0.01 * i for i in range(20)], step=1.0)
     mean_before, std_before = w.mean, w.std
     z_before = w.z
@@ -53,7 +53,7 @@ def test_bands_stand_still_between_recomputes_while_z_keeps_moving():
 
 
 def test_zero_interval_recomputes_every_update():
-    w = StatsWindow('k', lookback=5, stats_update_interval_sec=0)
+    w = window(5)
     warm(w, [1.0, 2.0, 3.0, 4.0, 5.0])
     first = w.mean
     w.add(10.0, at(6))
@@ -62,7 +62,7 @@ def test_zero_interval_recomputes_every_update():
 
 def test_a_missing_price_is_not_an_observation():
     """A zero appended here drags the mean and moves every band on screen."""
-    w = StatsWindow('k', lookback=5, stats_update_interval_sec=0)
+    w = window(5)
     warm(w, [1.0, 2.0, 3.0])
     assert w.add(None, at(4)) == []
     assert w.samples == 3
@@ -71,8 +71,7 @@ def test_a_missing_price_is_not_an_observation():
 
 
 def test_bands_are_prices_and_name_the_side_they_fire():
-    w = StatsWindow('k', lookback=5, stats_update_interval_sec=0,
-                    entry_threshold=2.0)
+    w = window(5, threshold=2.0)
     warm(w, [0.4, 0.5, 0.6, 0.5, 0.5])
     lo, hi = w.bands()
     assert lo == pytest.approx(w.mean - 2 * w.std)
@@ -142,13 +141,13 @@ def test_a_series_with_no_variation_has_no_hurst():
 def test_half_life_is_none_on_a_trend_rather_than_a_large_number():
     """A large number would let a trending contract pass a 'half-life under
     60' filter."""
-    w = StatsWindow('t', lookback=60, stats_update_interval_sec=0)
+    w = window(60, key='t')
     warm(w, [float(i) for i in range(60)])
     assert w.half_life is None
 
 
 def test_half_life_exists_on_a_mean_reverting_series():
-    w = StatsWindow('r', lookback=60, stats_update_interval_sec=0)
+    w = window(60, key='r')
     warm(w, [0.5 + (0.05 if i % 2 else -0.05) for i in range(60)])
     assert w.half_life is not None
     assert w.half_life >= 1.0
@@ -160,7 +159,7 @@ def base_window():
     """Bands frozen after the first computation, so a price placed at z=2.2 is
     still at z=2.2 when it is read back. The interval behaviour has its own
     test above; here it would only make the arithmetic non-deterministic."""
-    w = StatsWindow('k', lookback=30, stats_update_interval_sec=1e9)
+    w = window(30, interval=1e9)
     warm(w, [0.5 + (0.1 if i % 2 else -0.1) for i in range(30)])
     return w
 
@@ -251,14 +250,69 @@ def test_whether_the_algo_was_armed_is_recorded_on_the_touch():
     assert off[0].algo_armed is False
 
 
-def test_changing_the_lookback_invalidates_the_cached_statistics():
-    w = StatsWindow('k', lookback=30, stats_update_interval_sec=300)
+def test_changing_the_window_invalidates_the_cached_statistics():
+    w = window(30, interval=300, span_minutes=10)
     warm(w, [0.5 + 0.01 * i for i in range(30)])
     before = w.mean
-    w.update_config(lookback=10)
-    w.add(0.5, at(500))
+    assert w.update_config(window_minutes=10 / 60.0) is True
+    w.add(0.5, at(31))
     assert w.mean != before
-    assert w.lookback == 10
+    assert w.samples <= 11                   # ten seconds, both ends counted
+
+
+# -- a window of TIME -------------------------------------------------------
+
+def test_the_window_holds_minutes_not_polls():
+    """The engine polls ten times a second. A window of polls is a window of
+    however fast the loop ran; this one samples once a second."""
+    w = StatsWindow('k', window_minutes=1.0, min_history_minutes=0.5,
+                    sample_interval_sec=1.0, stats_update_interval_sec=0)
+    warm(w, [0.5] * 300, step=0.1)           # thirty seconds of 10 Hz polls
+    assert w.samples == 30
+    assert w.history_sec == pytest.approx(29.0)
+
+
+def test_samples_older_than_the_window_fall_out():
+    w = StatsWindow('k', window_minutes=1.0, min_history_minutes=0.5,
+                    sample_interval_sec=1.0, stats_update_interval_sec=0)
+    warm(w, [0.5] * 200)                     # two hundred seconds
+    assert w.samples == 61                   # the last minute, both ends
+    assert (w.samples_ts[-1][0] - w.samples_ts[0][0]).total_seconds() == 60
+
+
+def test_a_gap_is_not_history():
+    """Ten minutes either side of a two-hour outage is not a two-hour
+    window. The control: the same samples without the gap are warm."""
+    w = StatsWindow('k', window_minutes=200, min_history_minutes=20,
+                    sample_interval_sec=1.0, stats_update_interval_sec=0)
+    warm(w, [0.5] * 600)                                  # 10 min
+    warm(w, [0.5] * 600, start=600 + 7200)                # 2 h later, 10 min
+    assert w.history_minutes == pytest.approx(20.0, abs=0.1)
+    assert not w.is_warm
+
+    control = StatsWindow('k', window_minutes=200, min_history_minutes=20,
+                          sample_interval_sec=1.0, stats_update_interval_sec=0)
+    warm(control, [0.5] * 1202)
+    assert control.is_warm
+
+
+def test_the_z_of_any_price_uses_the_standing_bands():
+    """So the bid and the offer can each be judged on their own."""
+    w = window(5)
+    warm(w, [1.0, 2.0, 3.0, 4.0, 5.0])
+    assert w.z_of(w.mean) == pytest.approx(0.0)
+    assert w.z_of(w.mean + 2 * w.std) == pytest.approx(2.0)
+    assert w.z_of(None) is None
+
+
+def test_prime_reloads_a_recorded_window_in_one_step():
+    w = StatsWindow('k', window_minutes=2, min_history_minutes=1,
+                    sample_interval_sec=1.0, stats_update_interval_sec=300)
+    rows = [(at(i), 0.5 + (0.1 if i % 2 else -0.1)) for i in range(100)]
+    assert w.prime(rows) == 100
+    assert w.is_warm
+    assert w.mean == pytest.approx(0.5, abs=1e-9)
+    assert w.std > 0
 
 
 def test_statistics_stay_live_until_the_window_is_warm():
@@ -266,7 +320,7 @@ def test_statistics_stay_live_until_the_window_is_warm():
     before the window is full it froze the mean and sigma computed from the
     first two samples — so a contract spent its first minute showing a sigma
     of about one tick and bands nothing could reach."""
-    w = StatsWindow('k', lookback=50, stats_update_interval_sec=300)
+    w = window(50, interval=300)
     warm(w, [0.5, 0.51], step=1.0)
     early_std = w.std
     warm(w, [0.5 + (0.1 if i % 2 else -0.1) for i in range(48)], start=2)
@@ -277,3 +331,18 @@ def test_statistics_stay_live_until_the_window_is_warm():
     frozen = w.std
     w.add(9.0, at(60))
     assert w.std == frozen
+
+
+def test_the_running_history_matches_a_full_measurement():
+    """History is kept incrementally — added on each sample, taken off as the
+    window trims — so a long replay is not quadratic. It must still agree
+    with measuring the window from scratch, gaps and trims included."""
+    w = StatsWindow('k', window_minutes=2, min_history_minutes=1,
+                    sample_interval_sec=1.0)
+    t = 0.0
+    for i in range(400):
+        t += 60.0 if i in (50, 170) else 1.0          # two gaps
+        w.add(0.5 + (i % 7) * 0.01, at(t))
+        running = w.history_sec
+        w._measure_history()
+        assert w.history_sec == pytest.approx(running)

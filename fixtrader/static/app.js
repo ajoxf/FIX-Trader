@@ -226,6 +226,7 @@ function windowFor(key) {
     if (ok) { await command('close_now', key); toast('ORDER', 'CLOSING', key); }
   };
   el.querySelector('.cog').onclick = () => configWindow(key);
+  el.querySelector('.chart').onclick = () => chartWindow(key);
   el.onmousedown = () => { state.focused = key; raise(el); };
   makeDraggable(el, key);
   document.getElementById('desktop').appendChild(el);
@@ -321,6 +322,12 @@ function makeResizable(el, key) {
   }).observe(el);
 }
 
+/* Minutes as a short figure: 84 not 84.0, 0.5 as 0.5. */
+function minutes(v) {
+  if (v === null || v === undefined || isNaN(v)) return DASH;
+  return v >= 10 ? Math.round(v).toString() : (Math.round(v * 10) / 10).toString();
+}
+
 function renderContract(c) {
   if (state.closed.has(c.key)) return;
   const el = windowFor(c.key);
@@ -351,20 +358,25 @@ function renderContract(c) {
   q('.f-mean').textContent = num(s.mean, d);
   q('.f-std').textContent = num(s.std, d);
   q('.f-z').textContent = signed(s.z, 2);
-  q('.f-n').textContent = s.samples + '/' + s.need;
+  q('.f-n').textContent = minutes(s.history_min) + '/' + minutes(s.need_min) + 'm';
+  q('.f-zbid').textContent = signed(s.z_bid, 2);
+  q('.f-zask').textContent = signed(s.z_ask, 2);
   q('.f-buyat').textContent = num(s.buy_at, d);
   q('.f-sellat').textContent = num(s.sell_at, d);
   q('.f-hurst').textContent = num(s.hurst, 2);
-  // An em dash always carries its reason. Hurst reads high on a coarsely
-  // quantised spread, so it ships OFF — and "off" and "could not be
-  // computed" are different statements about the same dash.
+  // An em dash always carries its reason.
   q('.f-hurst').title = (s.hurst !== null && s.hurst !== undefined)
-    ? 'Hurst on the increments; below ' +
-      num((c.filters || {}).hurst_threshold, 2) + ' is mean-reverting'
-    : ((c.filters || {}).hurst_enabled === false
-      ? 'the Hurst filter is off for this contract, so it is not computed'
-      : 'not enough of a window to estimate it yet');
-  q('.f-hl').textContent = s.half_life === null ? DASH : num(s.half_life, 1);
+    ? 'Hurst on the increments — a reading, not a filter; below 0.5 leans mean-reverting'
+    : 'not enough of a window to estimate it yet';
+  q('.f-hl').textContent = s.half_life_sec === null || s.half_life_sec === undefined
+    ? DASH : minutes(s.half_life_sec / 60) + 'm';
+
+  // The one-way badge: a contract that is armed and passes over half its
+  // signals otherwise looks broken.
+  const dir = (c.filters || {}).trade_direction || 'BOTH';
+  const badge = q('.dirbadge');
+  badge.classList.toggle('hidden', dir === 'BOTH');
+  badge.textContent = dir === 'SELL_ONLY' ? 'SELL ONLY' : dir === 'BUY_ONLY' ? 'BUY ONLY' : '';
 
   // the z strip, drawn between the two entry thresholds
   const threshold = (c.settings && c.settings.entry_threshold) || 2;
@@ -388,15 +400,23 @@ function renderContract(c) {
   q('.warmrow').classList.toggle('hidden', !!warmed);
   q('.warmbar i').style.width = (s.warm_pct || 0) + '%';
   q('.f-warm').textContent = (s.warm_pct || 0).toFixed(0) + '% · ' +
-    s.samples + '/' + s.need;
+    minutes(s.history_min) + ' of ' + minutes(s.need_min) + ' min';
 
   const f = c.filters || {};
-  const edge = q('.f-edge');
-  if (f.edge_ratio === null || f.edge_ratio === undefined) {
-    edge.innerHTML = '<span class="pill p-na">' + DASH + '</span>';
+  q('.f-edge').textContent = f.edge_ratio === null || f.edge_ratio === undefined
+    ? DASH : num(f.edge_ratio, 1) + '×';
+  // The target, in money: costs first, then the % of the margin entered.
+  // No margin is not a target of zero — it is no target, and no entries.
+  const st = c.settings || {};
+  const tgt = q('.f-target');
+  if (f.margin) {
+    tgt.textContent = (st.profit_target_pct || 0) + '% of $' +
+      Math.round(f.margin).toLocaleString() + ' = ' +
+      money((st.profit_target_pct || 0) / 100 * f.margin) + ' + costs';
+    tgt.classList.remove('warn-text');
   } else {
-    edge.innerHTML = num(f.edge_ratio, 1) + '× <span class="pill ' +
-      (f.edge_ok ? 'p-pass">PASS' : 'p-block">BLOCK') + '</span>';
+    tgt.textContent = 'no margin entered';
+    tgt.classList.add('warn-text');
   }
   const blocked = q('.f-blocked');
   const why = c.halted_by ? 'Halted: ' + c.halted_by
@@ -427,7 +447,14 @@ function renderContract(c) {
     q('.p-be').textContent = num(pos.break_even, d);
     q('.p-tgt').textContent = num(pos.target, d);
     q('.p-stop').textContent = num(pos.stop, d);
+    q('.p-mstop').textContent = pos.money_stop === null || pos.money_stop === undefined
+      ? 'off' : money(pos.money_stop);
     q('.p-held').textContent = held(pos.opened_at);
+    q('.p-left').textContent = pos.time_left_min === null || pos.time_left_min === undefined
+      ? DASH : minutes(pos.time_left_min) + 'm';
+    const net = q('.p-net');
+    net.textContent = money(pos.net);
+    net.className = 'v em p-net ' + (pos.net > 0 ? 'up' : pos.net < 0 ? 'dn' : '');
     q('.p-margin').textContent = pos.margin_locked === null ? DASH
       : '$' + Math.round(pos.margin_locked).toLocaleString();
     // Where the target cannot be priced, say WHICH figure is missing.
@@ -1306,7 +1333,10 @@ function renderChrome(snap) {
   mode.dataset.mode = engine.trading_mode || '';
   mode.classList.toggle('manual', engine.trading_mode === 'MANUAL');
   const auto = document.getElementById('auto-trade-toggle');
-  auto.textContent = 'Auto trade: ' + (engine.auto_trade_enabled ? 'ON' : 'OFF');
+  // On a venue whose order path is not wired (TT today) automatic trading is
+  // PAPER: filled at the live bid/offer inside the engine, nothing sent.
+  auto.textContent = 'Auto trade: ' + (engine.auto_trade_enabled
+    ? (engine.paper ? 'PAPER' : 'ON') : 'OFF');
   auto.classList.toggle('act', !!engine.auto_trade_enabled);
   auto.title = engine.auto_trade_available
     ? 'Turn automatic order placement on or off'
@@ -1345,21 +1375,24 @@ function renderChrome(snap) {
 
 const CFG_GROUPS = [
   { name: 'Signal', fields: [
-    ['lookback', 'Lookback', 'samples in the rolling window', 'number', { step: 10, min: 2 }],
-    ['stats_update_interval_sec', 'Recompute mean and σ every', 'seconds; 0 = every update. Stable bands are easier to aim at', 'number', { step: 10, min: 0 }],
-    ['entry_threshold', 'Enter at |z|', '', 'number', { step: 0.1, min: 0 }],
-    ['exit_signal_mode', 'Exit on', '', 'select', { options: [['profit', 'Profit target'], ['zscore', 'z-score'], ['hybrid', 'Whichever comes first']] }],
-    ['exit_threshold', 'Exit at |z|', 'used by z-score and hybrid', 'number', { step: 0.1, min: 0 }],
-    ['stop_loss_z', 'Stop at |z|', 'emergency exit', 'number', { step: 0.5, min: 0 }],
-    ['max_hold_minutes', 'Time stop', 'minutes; 0 = no time stop', 'number', { step: 5, min: 0 }],
+    ['window_minutes', 'Window', 'minutes of mid prices the mean and σ are taken over', 'number', { step: 10, min: 1 }],
+    ['min_history_minutes', 'Warm-up', 'minutes of CONTINUOUS history before the first entry; a gap is not history', 'number', { step: 10, min: 0 }],
+    ['sample_interval_sec', 'Sample every', 'seconds &mdash; the window holds samples, not polls', 'number', { step: 0.5, min: 0.1 }],
+    ['stats_update_interval_sec', 'Recompute mean and σ every', 'seconds; the z runs live against bands that stand still between', 'number', { step: 30, min: 0 }],
+    ['entry_threshold', 'Enter at |z|', 'SHORT when the BID z reaches +this, LONG when the OFFER z reaches &minus;this', 'number', { step: 0.1, min: 0 }],
+    ['max_entry_z', 'No entry beyond |z|', 'a blow-out, not an entry', 'number', { step: 0.1, min: 0 }],
+    ['confirm_samples', 'Confirm for', 'consecutive samples through the level', 'number', { step: 1, min: 1 }],
+    ['trade_direction', 'Enter', 'entries only &mdash; an exit is never restricted', 'select', { options: [['BOTH', 'Both ways'], ['SELL_ONLY', 'Sell only'], ['BUY_ONLY', 'Buy only']] }],
   ] },
-  { name: 'Filters', fields: [
-    ['edge_filter_enabled', 'Edge filter', '', 'check'],
-    ['min_std_multiple', 'σ must be at least', '× the round-trip cost', 'number', { step: 0.1, min: 0 }],
-    ['hurst_enabled', 'Hurst filter', 'off by default: on a coarsely quantised spread it reads high', 'check'],
-    ['hurst_threshold', 'Hurst below', 'H under this is mean-reverting', 'number', { step: 0.05, min: 0 }],
-    ['half_life_enabled', 'Half-life filter', '', 'check'],
-    ['max_half_life', 'Half-life at most', 'samples; slower reversion than the intended hold is refused', 'number', { step: 1, min: 0 }],
+  { name: 'Exit', fields: [
+    ['margin_per_contract', 'Margin per contract', 'money; TT does not report it. The target is a % of this &mdash; no margin, no entries', 'number', { step: 50, min: 0 }],
+    ['profit_target_pct', 'Profit target', '% of the margin, taken AFTER the whole round trip', 'number', { step: 0.5, min: 0 }],
+    ['stop_loss_z', 'Stop at |z|', 'on the side it would close on', 'number', { step: 0.5, min: 0 }],
+    ['stop_loss_money', 'Money stop', 'net loss per contract; 0 = off, the z stop stands alone', 'number', { step: 10, min: 0 }],
+    ['max_hold_minutes', 'Time stop', 'minutes, whatever the P&amp;L; 0 = none', 'number', { step: 15, min: 0 }],
+    ['exit_at_mean', 'Exit at the mean when paid', 'closes short of the target once back at the mean and net positive', 'check'],
+  ] },
+  { name: 'Book', fields: [
     ['min_book_size', 'Book size at least', 'contracts on the touch, both sides', 'number', { step: 1, min: 0 }],
     ['max_book_spread_ticks', 'Book no wider than', 'ticks', 'number', { step: 1, min: 0 }],
   ] },
@@ -1368,7 +1401,7 @@ const CFG_GROUPS = [
     ['max_position', 'Maximum position', 'contracts; the hard ceiling', 'number', { step: 1, min: 0 }],
     ['max_trades_per_day', 'Trades per day', '0 = no limit', 'number', { step: 1, min: 0 }],
     ['daily_max_loss', 'Daily loss limit', 'money; hitting it turns THIS contract off and says so', 'number', { step: 50, min: 0 }],
-    ['entry_cooldown_seconds', 'Cooldown after an entry', 'seconds', 'number', { step: 5, min: 0 }],
+    ['entry_cooldown_seconds', 'Cooldown after a trade', 'seconds before the next entry on this contract', 'number', { step: 30, min: 0 }],
   ] },
   { name: 'Execution', fields: [
     ['entry_order_type', 'Entry', '', 'select', { options: [['LIMIT', 'Limit'], ['MARKET', 'Market']] }],
@@ -1388,8 +1421,6 @@ const CFG_GROUPS = [
     ['exchange_fee_per_contract', 'Exchange fee', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
     ['clearing_fee_per_contract', 'Clearing fee', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
     ['slippage_budget_ticks', 'Slippage budget', 'ticks per side &mdash; a BUDGET. Analysis shows the measured figure beside it', 'number', { step: 0.1, min: 0 }],
-    ['profit_target_pct', 'Profit target', '% &mdash; taken AFTER the round trip above', 'number', { step: 0.5, min: 0 }],
-    ['profit_target_basis', 'as a % of', 'margin is the default. A basis with no number behind it renders the target as —, never as 0.00', 'select', { options: [['MARGIN', 'Initial margin'], ['NOTIONAL', 'Notional'], ['ENTRY_SIGMA', 'Entry sigma']] }],
   ] },
   { name: 'Display', fields: [
     ['name', 'Window title', '', 'text', { plain: true }],
@@ -1457,6 +1488,143 @@ function configWindow(key) {
   raise(el);
   loadConfig(key);
   return el;
+}
+
+/* -- the chart ----------------------------------------------------------- */
+
+/* One contract's price over its window, with the mean and the bands the
+ * signal is reading NOW, and the entries and exits inside the window. The
+ * bands are the standing ones — recomputed every few minutes — drawn across
+ * the whole window, and the footnote says so: they are today's levels, not a
+ * history of where the levels were. */
+const charts = {};
+
+function chartWindow(key) {
+  const wkey = '__chart__' + key;
+  let el = document.querySelector('.win[data-key="' + wkey + '"]');
+  if (el) { raise(el); return el; }
+  const tpl = document.getElementById('chart-template');
+  el = tpl.content.firstElementChild.cloneNode(true);
+  el.dataset.key = wkey;
+  el.dataset.contract = key;
+  el.querySelector('.close').onclick = () => {
+    clearInterval((charts[key] || {}).timer);
+    delete charts[key];
+    el.remove();
+    renderTabs();
+  };
+  el.onmousedown = () => raise(el);
+  makeDraggable(el, wkey);
+  const desk = document.getElementById('desktop');
+  desk.appendChild(el);
+  const place = state.places[wkey];
+  if (place) {
+    placeWindow(el, place.x, place.y);
+  } else {
+    el.classList.add('floating');
+    const owner = document.querySelector('.win[data-key="' + key + '"]');
+    const box = desk.getBoundingClientRect();
+    const from = owner ? owner.getBoundingClientRect() : box;
+    el.style.left = Math.max(8, Math.min(from.left - box.left + 40,
+                                         desk.clientWidth - 620)) + 'px';
+    el.style.top = (from.top - box.top + desk.scrollTop + 30) + 'px';
+  }
+  raise(el);
+  charts[key] = { timer: setInterval(() => loadChart(key), 5000) };
+  loadChart(key);
+  return el;
+}
+
+async function loadChart(key) {
+  const el = document.querySelector('.win[data-key="__chart__' + key + '"]');
+  if (!el) return;
+  try {
+    const data = await (await fetch('/api/series/' + encodeURIComponent(key),
+      { cache: 'no-store' })).json();
+    const snap = window.__lastSnapshot || {};
+    const c = (snap.contracts || []).find((x) => x.key === key) || {};
+    drawChart(el, data, c);
+  } catch (e) {
+    el.querySelector('.chart-note').textContent = 'The chart could not be loaded.';
+  }
+}
+
+function svgEl(tag, attrs) {
+  const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  Object.entries(attrs || {}).forEach(([k, v]) => n.setAttribute(k, v));
+  return n;
+}
+
+function drawChart(el, data, c) {
+  el.querySelector('.title').textContent = (c.name || data.key) + ' · chart';
+  const note = el.querySelector('.chart-note');
+  const svg = el.querySelector('svg.chart');
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const pts = (data.series || []).map(([t, p]) => [Date.parse(t), p]);
+  if (pts.length < 2) {
+    note.textContent = 'Nothing recorded for this contract in the last ' +
+      Math.round(data.minutes || 0) + ' minutes yet.';
+    return;
+  }
+  const s = c.stats || {};
+  const d = c.decimals === undefined ? (data.decimals || 4) : c.decimals;
+  const k = Number(data.entry_threshold) || 2.5;
+  const stop = Number(data.stop_loss_z) || 4;
+  const levels = [];
+  if (s.mean !== null && s.mean !== undefined && s.std) {
+    levels.push(['mean', s.mean, 'mean']);
+    levels.push(['entry', s.mean + k * s.std, '+' + k + 'σ sell']);
+    levels.push(['entry', s.mean - k * s.std, '−' + k + 'σ buy']);
+    levels.push(['stop', s.mean + stop * s.std, '+' + stop + 'σ stop']);
+    levels.push(['stop', s.mean - stop * s.std, '−' + stop + 'σ stop']);
+  }
+  const marks = data.marks || [];
+  const ys = pts.map((p) => p[1]).concat(levels.map((l) => l[1]),
+    marks.map((m) => m.price));
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  if (hi === lo) { hi += 1; lo -= 1; }
+  const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
+  const t0 = pts[0][0], t1 = Math.max(pts[pts.length - 1][0], t0 + 1);
+  const W = 600, H = 300, L = 8, R = 88, T = 8, B = 20;
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+  const x = (t) => L + (t - t0) / (t1 - t0) * (W - L - R);
+  const y = (p) => T + (hi - p) / (hi - lo) * (H - T - B);
+
+  levels.forEach(([kind, v, label]) => {
+    svg.appendChild(svgEl('line', { x1: L, x2: W - R, y1: y(v), y2: y(v),
+      class: 'lvl lvl-' + kind }));
+    const t = svgEl('text', { x: W - R + 4, y: y(v) + 3, class: 'lvl-label' });
+    t.textContent = label + ' ' + num(v, d);
+    svg.appendChild(t);
+  });
+  svg.appendChild(svgEl('polyline', { class: 'px',
+    points: pts.map((p) => x(p[0]).toFixed(1) + ',' + y(p[1]).toFixed(1)).join(' ') }));
+  marks.forEach((m) => {
+    const cx = x(Date.parse(m.ts)), cy = y(m.price);
+    if (cx < L || cx > W - R) return;
+    const up = (m.kind === 'open') === (m.side === 'BUY');
+    const tri = up
+      ? [cx, cy - 6, cx - 5, cy + 3, cx + 5, cy + 3]
+      : [cx, cy + 6, cx - 5, cy - 3, cx + 5, cy - 3];
+    const shape = svgEl('polygon', { points: tri.join(' '),
+      class: 'mark ' + m.kind + ' ' + m.side });
+    const tip = svgEl('title');
+    tip.textContent = (m.kind === 'open' ? 'entry ' : 'exit ') + m.side +
+      ' @ ' + num(m.price, d) + (m.reason ? ' · ' + m.reason : '');
+    shape.appendChild(tip);
+    svg.appendChild(shape);
+  });
+  const fmt = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  [[t0, 'start'], [t1, 'end']].forEach(([t, a]) => {
+    const lab = svgEl('text', { x: a === 'start' ? L : W - R, y: H - 5,
+      class: 'axis', 'text-anchor': a === 'start' ? 'start' : 'end' });
+    lab.textContent = fmt(t);
+    svg.appendChild(lab);
+  });
+  note.textContent = 'The last ' + Math.round(data.minutes) + ' minutes of the ' +
+    'recorded mid. The mean and bands are the ones the signal is reading now ' +
+    '(recomputed every few minutes), drawn across the window — not a history ' +
+    'of where they were. ▲ buy · ▼ sell; hover a mark for its reason.';
 }
 
 async function loadConfig(key) {
@@ -1573,6 +1741,7 @@ async function tick() {
       // sweep below removes windows for contracts that are gone; it must not
       // remove the panel of one that is still here.
       seen.add('__config__' + c.key);
+      seen.add('__chart__' + c.key);
       renderContract(c);
     });
     renderPositions(snap);

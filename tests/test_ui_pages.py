@@ -82,8 +82,9 @@ def test_settings_loads_every_field_from_the_config(server):
         assert page.locator('[data-key="PRICE_REFRESH_SEC"]').input_value() == '0.5'
         assert page.locator('[data-key="MAX_QUOTE_AGE_SEC"]').input_value() == '15'
         assert page.locator('[data-key="ALGO_MASTER_ENABLED"]').is_checked()
-        # the Hurst default ships OFF, deliberately
-        assert not page.locator('[data-key="DEFAULT_HURST_ENABLED"]').is_checked()
+        # the signal's own defaults: 2.5 sigma, exit at the mean when paid
+        assert page.locator('[data-key="DEFAULT_ENTRY_THRESHOLD"]').input_value() == '2.5'
+        assert page.locator('[data-key="DEFAULT_EXIT_AT_MEAN"]').is_checked()
         browser.close()
     assert errors == []
 

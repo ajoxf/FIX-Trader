@@ -124,6 +124,11 @@ class ExitReason(str, Enum):
     CLOSE_NOW = "CLOSE_NOW"
     KILL_ALL = "KILL_ALL"
     LIMIT_BREACH = "LIMIT_BREACH"
+    #: The money stop: net P&L at or below -stop_loss_money per contract.
+    MONEY_STOP = "MONEY_STOP"
+    #: Back at the rolling mean while already net positive — short of the
+    #: profit target, but paid.
+    MEAN = "MEAN"
 
 
 class TargetBasis(str, Enum):

@@ -670,3 +670,26 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
  * trading must never be mistaken for one that is. */
 .tk.mode { font-weight: 700; }
 .tk.mode.manual { background: var(--warn-soft); border-color: var(--warn); color: #5e4204; }
+
+/* The one-way badge, the missing-margin warning and the NET figure. */
+.dirbadge { font: 600 calc(9px * var(--fs))/1 var(--mono); letter-spacing: .08em;
+  padding: 3px 6px; border-radius: 2px; background: var(--warn-soft); color: #5e4204;
+  border: 1px solid #dcc389; }
+.warn-text { color: #7a2020; }
+.kv .v.up { color: var(--good); }
+.kv .v.dn { color: var(--ask); }
+
+/* The chart window. */
+.chartwin.placed, .chartwin.floating { width: calc(560px * var(--fs)); }
+.chartwin.floating { position: absolute; }
+.chartwin svg.chart { width: 100%; height: auto; background: #fff;
+  border: 1px solid var(--line-soft); display: block; }
+.chartwin .px { fill: none; stroke: #2c3036; stroke-width: 1.2; }
+.chartwin .lvl { stroke-width: 1; }
+.chartwin .lvl-mean { stroke: #8a8a8a; }
+.chartwin .lvl-entry { stroke: var(--warn); stroke-dasharray: 5 3; }
+.chartwin .lvl-stop { stroke: var(--ask); stroke-dasharray: 2 3; }
+.chartwin .lvl-label, .chartwin .axis { font: 400 9px var(--mono); fill: #5c6066; }
+.chartwin .mark.BUY { fill: var(--bid); }
+.chartwin .mark.SELL { fill: var(--ask); }
+.chartwin .mark.close { stroke: #2c3036; stroke-width: 1; }

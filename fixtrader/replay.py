@@ -114,10 +114,15 @@ def replay(samples: Sequence[Tuple[datetime, float]],
     """
     tick_size = float(tick_size or 0.0)
     qty = float(settings.get('quantity', 1.0) or 1.0)
-    margin_locked = (float(margin_per_contract) * qty
-                     if margin_per_contract and margin_per_contract > 0
-                     else None)
-    lookback = int(settings.get('lookback', 400) or 400)
+    # The margin the operator entered for the contract is the target's base;
+    # a margin the venue charged on a recorded position stands in only where
+    # none was entered.
+    if not costs_mod.configured_margin(settings, qty) and \
+            margin_per_contract and margin_per_contract > 0:
+        settings = dict(settings, margin_per_contract=float(margin_per_contract))
+    margin_locked = costs_mod.configured_margin(settings, qty)
+    if margin_locked:
+        margin_per_contract = margin_locked / qty
 
     result: Dict[str, Any] = {
         'contract_key': contract_key,
@@ -136,18 +141,16 @@ def replay(samples: Sequence[Tuple[datetime, float]],
                                 'period' if not samples else
                                 'this contract has no tick size')
         return result
-    if len(samples) <= lookback:
-        result['blocked_by'] = (
-            f'{len(samples)} samples recorded, and the window needs '
-            f'{lookback} before it produces a single statistic. Record more, '
-            f'or replay a shorter lookback.')
-        return result
-
-    window = StatsWindow(contract_key or 'replay', lookback=lookback,
-                         stats_update_interval_sec=float(
-                             settings.get('stats_update_interval_sec', 0) or 0),
-                         entry_threshold=float(
-                             settings.get('entry_threshold', 2.0) or 2.0))
+    window = StatsWindow(
+        contract_key or 'replay',
+        window_minutes=float(settings.get('window_minutes', 150) or 150),
+        min_history_minutes=float(settings.get('min_history_minutes', 120) or 0),
+        sample_interval_sec=float(settings.get('sample_interval_sec', 1) or 0),
+        stats_update_interval_sec=float(
+            settings.get('stats_update_interval_sec', 0) or 0),
+        entry_threshold=float(settings.get('entry_threshold', 2.5) or 2.5))
+    confirm_side = None
+    confirm_count = 0
     position: Optional[Position] = None
     #: Why entries were withheld while the window was warm, counted. A
     #: cooldown between trades is not the same finding as a filter that
@@ -166,6 +169,13 @@ def replay(samples: Sequence[Tuple[datetime, float]],
     for ts, mid in samples:
         book = _book(float(mid), tick_size, assumed_spread_ticks, ts)
         window.add(book.mid, ts, algo_armed=True)
+        # The confirmation, counted per recorded sample exactly as the engine
+        # counts it per live one.
+        through = signals_mod.side_through(window, book, settings)
+        if through is not None and through is confirm_side:
+            confirm_count += 1
+        else:
+            confirm_side, confirm_count = through, (1 if through else 0)
         if not window.is_warm:
             continue
         result['warm'] = True
@@ -203,7 +213,8 @@ def replay(samples: Sequence[Tuple[datetime, float]],
             window, book, settings, tick_size, tick_value, ts,
             algo_on=True, master_on=True, open_qty=0.0,
             last_trade_at=(datetime.fromisoformat(trades[-1]['closed_at'])
-                           if trades else None))
+                           if trades else None),
+            confirmed=confirm_count)
         if sig.action != 'OPEN':
             # Why NOT, in the signal's own words. Without this a replay
             # blocked by a filter reports "nothing crossed the threshold",
@@ -238,23 +249,19 @@ def replay(samples: Sequence[Tuple[datetime, float]],
     result['summary'] = summarise(trades, round_trip)
     result['withheld'] = dict(sorted(withheld.items(), key=lambda kv: -kv[1]))
     result['assumptions']['margin'] = _margin_note(margin_per_contract)
-    exit_mode = str(settings.get('exit_signal_mode', 'profit')
-                    or 'profit').lower()
-    if (result['warm'] and not trades and result['still_open']
-            and result['target_missing'] and exit_mode == 'profit'):
-        # It DID enter, and the one exit it is waiting on can never fire.
-        # Headlining a withheld entry here — "long entries are off" on a
-        # short-only contract — sends the desk to the wrong setting.
+    if not result['warm']:
         result['blocked_by'] = (
-            f"no profit target — {result['target_missing']}, so a replayed "
-            f"position in the 'profit' exit mode never takes profit; it "
-            f"entered and was still open at the end")
+            f"{window.history_minutes:.0f} minutes of continuous history "
+            f"recorded, and the window needs {window.min_history_minutes:.0f} "
+            f"before its first entry. Record more, or replay a shorter "
+            f"warm-up.")
         return result
     if result['warm'] and not trades:
         # A cooldown is a consequence of trading, so it is never the headline
         # reason for having taken no trades at all.
+        # Nor is a confirmation still counting: it is a step on the way in.
         reasons = [(n, why) for why, n in withheld.items()
-                   if 'cooling down' not in why]
+                   if 'cooling down' not in why and 'confirming' not in why]
         if reasons:
             result['blocked_by'] = max(reasons)[1]
         else:

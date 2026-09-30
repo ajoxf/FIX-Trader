@@ -95,10 +95,34 @@ the drawing wins.
   Aliasing made a queued ACK report the order's current state, the reader
   marked it done, and the fill that followed was applied as an open — doubling
   the position instead of closing it.
-- **Hurst is computed on the INCREMENTS, not the levels.** R/S over a price
-  series reads ~1.0 for everything, a random walk included, and a 0.5 threshold
-  then withholds every entry on every contract for ever. It also ships **off**:
-  it is an estimate, and on a coarsely quantised spread it reads high.
+- **The signal is a Bollinger-style 2.5-sigma reversion on the spread's own
+  mid, over a rolling TIME window** — 150 minutes of one-second samples,
+  trading only after 120 minutes of CONTINUOUS history (a gap longer than
+  `max(5 s, 10 × interval)` is not history), bands recomputed every 5 minutes.
+  An entry reads the EXECUTABLE side's z — SHORT when the bid's z ≥ +2.5,
+  LONG when the offer's z ≤ −2.5 — never the mid's, and it needs
+  `confirm_samples` consecutive SAMPLES through the level, not polls: ten
+  polls inside one second are one sample. Its filters are the ceiling
+  (`min(max_entry_z, stop_loss_z)`), the per-contract direction, the cooldown
+  and can-it-pay: the target must lie between the entry and the mean, or the
+  trade is refused before it is taken.
+- **The profit target is NET, and a % of the margin the trader ENTERS.** TT
+  reports no margin, so `margin_per_contract` wins over the venue's figure,
+  and with neither there is no target and therefore no entry — the window
+  says so. It is never read as zero. Exits, on the side that closes: z stop,
+  money stop (0 = off), target, time stop, and back at the mean only if the
+  net is positive.
+- **With no algo order path the algo trades on PAPER** (`Engine.paper`,
+  from `gateway.connection_only`): fills simulated at the live bid/offer the
+  trade would cross, `PAPER-n` tickets, `is_simulated` on the position, and
+  nothing reaches the venue. The screen says PAPER; the same signal drives
+  real orders once the path exists.
+- **The window resumes across a restart only if the gap is short**
+  (`RESUME_MAX_GAP_MINUTES`); older samples belong to a market that has moved
+  on, and the window starts afresh and says so.
+- **Hurst is computed on the INCREMENTS, not the levels**, and is a reading
+  only — it no longer gates an entry. R/S over a price series reads ~1.0 for
+  everything, a random walk included.
 - **Statistics stay live until the window is warm.** The update interval holds
   the bands still for a trader to aim at; applied during warm-up it froze a
   sigma computed from two samples.

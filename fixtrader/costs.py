@@ -55,6 +55,51 @@ def round_trip_money(qty: float, tick_value: Optional[float],
     return fees
 
 
+def configured_margin(settings: Dict[str, Any], qty: float) -> Optional[float]:
+    """The margin `qty` contracts tie up, as the OPERATOR entered it.
+
+    TT does not report margin, so the profit target's base is a number the
+    trader types per contract. None where it has not been entered — 0 is not
+    a margin, it is a blank that would make every target read "leave at
+    break-even".
+    """
+    per = settings.get('margin_per_contract')
+    try:
+        per = float(per) if per is not None else None
+    except (TypeError, ValueError):
+        per = None
+    if not per or per <= 0 or not qty or qty <= 0:
+        return None
+    return per * float(qty)
+
+
+def round_trip_for(qty: float, tick_value: Optional[float],
+                   settings: Dict[str, Any]) -> Optional[float]:
+    """The configured round trip for `qty` contracts."""
+    return round_trip_money(
+        qty, tick_value,
+        settings.get('commission_per_contract', 0.0),
+        settings.get('exchange_fee_per_contract', 0.0),
+        settings.get('clearing_fee_per_contract', 0.0),
+        settings.get('slippage_budget_ticks', 0.0))
+
+
+def open_net(side: Side, qty: float, entry_price: Optional[float],
+             close_price: Optional[float], tick_size: Optional[float],
+             tick_value: Optional[float],
+             settings: Dict[str, Any]) -> Optional[float]:
+    """What an open position would make NET if closed at `close_price` — the
+    executable side — after the whole round trip. None where either price or
+    the cost cannot be priced."""
+    if entry_price is None or close_price is None:
+        return None
+    fees = round_trip_for(qty, tick_value, settings)
+    if fees is None:
+        return None
+    return net_pnl(side, qty, entry_price, close_price, tick_size,
+                   tick_value, fees_paid=fees)['net']
+
+
 def cost_breakdown(qty: float, tick_size: Optional[float],
                    tick_value: Optional[float],
                    settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -184,7 +229,8 @@ def missing_for_target(settings: Dict[str, Any],
     raw = settings.get('profit_target_basis', TargetBasis.MARGIN)
     basis = raw if isinstance(raw, TargetBasis) else TargetBasis(raw)
     if basis is TargetBasis.MARGIN and not margin_locked:
-        return "the venue has not reported the margin this position ties up"
+        return ("no margin entered for this contract — the profit target "
+                "is a % of it; set Margin per contract")
     if basis is TargetBasis.NOTIONAL and not contract_multiplier:
         return "the venue has not reported this contract's multiplier"
     if basis is TargetBasis.ENTRY_SIGMA and not entry_std:

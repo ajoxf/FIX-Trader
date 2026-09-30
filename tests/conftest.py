@@ -47,5 +47,16 @@ def warm(window: StatsWindow, values, start=0.0, step=1.0, armed=False):
     return events
 
 
+def window(n, interval=0.0, threshold=2.0, key='k', span_minutes=1e6):
+    """A window that goes warm at its n-th one-second sample — the old
+    "lookback of n" — with a span wide enough that a test jumping forward in
+    time does not trim it. Tests about the span itself pass `span_minutes`."""
+    return StatsWindow(key, window_minutes=span_minutes,
+                       min_history_minutes=(n - 1) / 60.0,
+                       sample_interval_sec=1.0,
+                       stats_update_interval_sec=interval,
+                       entry_threshold=threshold)
+
+
 def flat_series(n, value=0.5):
     return [value] * n
