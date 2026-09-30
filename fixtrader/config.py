@@ -356,6 +356,7 @@ class ContractConfig:
                  venue: str = "", security_id: str = "",
                  security_exchange: str = "",
                  tick_size: Any = None, tick_value: Any = None,
+                 raw_tick_size: Any = None, display_factor: Any = None,
                  contract_multiplier: Any = None, currency: str = "USD",
                  min_qty: Any = None, qty_step: Any = None, max_qty: Any = None,
                  session_open: str = "", session_close: str = "",
@@ -372,6 +373,8 @@ class ContractConfig:
 
         self.tick_size = _blank_to_none(tick_size)
         self.tick_value = _blank_to_none(tick_value)
+        self.raw_tick_size = _blank_to_none(raw_tick_size)
+        self.display_factor = _blank_to_none(display_factor)
         self.contract_multiplier = _blank_to_none(contract_multiplier)
         self.currency = currency or "USD"
         self.min_qty = _blank_to_none(min_qty)
@@ -431,6 +434,8 @@ class ContractConfig:
             'security_id': self.security_id,
             'security_exchange': self.security_exchange,
             'tick_size': self.tick_size, 'tick_value': self.tick_value,
+            'raw_tick_size': self.raw_tick_size,
+            'display_factor': self.display_factor,
             'contract_multiplier': self.contract_multiplier,
             'currency': self.currency, 'min_qty': self.min_qty,
             'qty_step': self.qty_step, 'max_qty': self.max_qty,

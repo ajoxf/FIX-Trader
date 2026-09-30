@@ -21,8 +21,17 @@ if (-not $python) {
 }
 
 $env:PYTHONUNBUFFERED = '1'
+# Python's logging writes to STDERR. Under Windows PowerShell 5.1, a native
+# command's stderr merged with 2>&1 arrives as an ErrorRecord, and with
+# $ErrorActionPreference = 'Stop' the FIRST such line - Flask's development
+# server warning - terminates this script. The web process it had already
+# started kept running with no engine behind it, and the launcher that
+# should have started the engine was gone. So errors are not fatal from
+# here on, and every line is passed on as plain text.
+$ErrorActionPreference = 'Continue'
 & $python start.py --fix --no-browser --config config.tt-uat.json `
     --status (Join-Path $runtimeDirectory 'status.tt-uat.json') `
     --commands (Join-Path $runtimeDirectory 'commands.tt-uat.jsonl') `
     --results (Join-Path $runtimeDirectory 'results.tt-uat.json') `
-    --port 8000 2>&1 | Tee-Object -FilePath $sessionLog
+    --port 8000 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $sessionLog
+exit $LASTEXITCODE

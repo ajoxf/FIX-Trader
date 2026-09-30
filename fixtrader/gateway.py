@@ -6,6 +6,7 @@ The strategy protocol still reports unknown account positions/orders as None.
 """
 
 import copy
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterator, List, Optional, Protocol, runtime_checkable
 
@@ -13,6 +14,9 @@ from .models import (BookTop, Fill, GatewayEvent, OrderRequest, SecurityDef,
                      SessionState, VenueOrder, VenuePosition)
 from .manual_terminal import ManualTerminal
 from .fix_audit import FixAuditLog
+from .algo_feed import AlgoDataFeed, MarketDataEvent
+
+logger = logging.getLogger(__name__)
 
 #: Every order we send carries this. Anything at the venue without it belongs
 #: to somebody else — a hand order in TT, most likely — and is never
@@ -71,6 +75,7 @@ class FixGateway:
         # Disk IO never runs on the latency-sensitive FIX receiver threads.
         self.audit = FixAuditLog(async_write=True)
         self._contract_security_ids = {}
+        self.algo_feed = AlgoDataFeed()
         self.terminal = ManualTerminal(self, manual_path)
 
     def start(self):
@@ -129,6 +134,7 @@ class FixGateway:
             for session in self._sessions.values():
                 session.thread.join(timeout=17)
             self._sessions.clear()
+            self.algo_feed.clear()
             self._text = 'Disconnected'
             self._connect_not_before = time.monotonic() + 10
 
@@ -231,14 +237,28 @@ class FixGateway:
         security_id = str(getattr(contract, 'security_id', '') or '').strip()
         symbol = str(getattr(contract, 'symbol', '') or '').strip()
         exchange = str(getattr(contract, 'security_exchange', '') or '').strip()
-        if not security_id or not symbol or not exchange:
+        if not security_id or not symbol:
+            logger.warning('cannot subscribe contract %s: missing TT Security ID or FIX symbol',
+                           getattr(contract, 'key', '?'))
             return None
         with self.terminal.lock:
-            instrument = {
-                'security_id': security_id, 'symbol': symbol,
-                'exchange': exchange, 'description': getattr(contract, 'name', symbol),
-                'full_depth': False,
-            }
+            # The TT definition is authoritative. A configured strategy
+            # contract supplies only fields that the definition lacks.
+            instrument = copy.deepcopy(self.terminal.catalogue.get(security_id)
+                                       or self.terminal.watch.get(security_id) or {})
+            instrument['security_id'] = security_id
+            for field, value in (
+                    ('symbol', symbol), ('exchange', exchange),
+                    ('description', getattr(contract, 'name', '') or symbol),
+                    ('raw_tick_size', getattr(contract, 'raw_tick_size', None)),
+                    ('tick_size', getattr(contract, 'tick_size', None)),
+                    ('tick_value', getattr(contract, 'tick_value', None)),
+                    ('display_factor', getattr(contract, 'display_factor', None)),
+                    ('multiplier', getattr(contract, 'contract_multiplier', None)),
+                    ('full_depth', False)):
+                if instrument.get(field) in (None, '') and value is not None:
+                    instrument[field] = value
+            self.terminal._enrich(instrument)
             self._contract_security_ids[contract.key] = security_id
             self.terminal.watch[security_id] = instrument
             self.terminal.catalogue[security_id] = copy.deepcopy(instrument)
@@ -250,10 +270,14 @@ class FixGateway:
         return None
 
     def top_of_book(self, key):
+        md = self._sessions.get('Market Data')
+        if md is None or md.state.status != 'CONNECTED' or not md.is_running():
+            return None
         security_id = self._contract_security_ids.get(key, key)
         with self.terminal.lock:
             book = self.terminal.books.get(security_id)
-            if not book or book.get('bid') is None or book.get('ask') is None:
+            if (not book or book.get('integrity_ok') is False
+                    or (book.get('bid') is None and book.get('ask') is None)):
                 return None
             stamp = book.get('timestamp')
             try:
@@ -263,6 +287,29 @@ class FixGateway:
             return BookTop(bid=book.get('bid'), ask=book.get('ask'),
                            bid_size=book.get('bid_size'), ask_size=book.get('ask_size'),
                            ts=ts)
+
+    def on_market_book(self, security_id, book):
+        """Called after the existing FIX parser updates a book, under its lock."""
+        for key, mapped_id in self._contract_security_ids.items():
+            if mapped_id != security_id:
+                continue
+            stamp = book.get('timestamp')
+            try:
+                received_at = datetime.fromisoformat(stamp) if stamp else utcnow()
+            except (TypeError, ValueError):
+                received_at = utcnow()
+            event = MarketDataEvent(
+                contract_key=key, security_id=security_id,
+                symbol=self.terminal.watch.get(security_id, {}).get('symbol', ''),
+                bid=book.get('bid'), ask=book.get('ask'), last=book.get('last'),
+                bid_size=book.get('bid_size'), ask_size=book.get('ask_size'),
+                received_at=received_at, sequence=str(book.get('fix_sequence') or ''))
+            if self.algo_feed.publish(event):
+                logger.debug('normalized FIX quote %s seq=%s bid=%s ask=%s last=%s',
+                             key, event.sequence, event.bid, event.ask, event.last)
+
+    def drain_market_data(self):
+        return self.algo_feed.drain()
 
     def security_definition(self, contract):
         return None
@@ -307,6 +354,15 @@ class FixGateway:
         password change is both misleading and delays the actual repair.
         """
         errors = ' '.join(str(session.state.error) for session in self._sessions.values()).lower()
+        if 'sequence mismatch' in errors:
+            return ('TT FIX sequence numbers are out of sync. Do not reconnect or reset them '
+                    'until TT confirms the Order Routing sequence/reset procedure and all '
+                    'working orders and fills have been reconciled. The gateway cannot '
+                    'safely skip a missing order-session message.')
+        if 'delayed logon processing' in errors:
+            return ('TT rejected the Order Routing logon as delayed. Verify the host clock is '
+                    'synchronized, then ask TT to confirm the session latency limit before '
+                    'retrying the logon.')
         if 'winerror 10013' in errors or 'access permissions' in errors:
             return ('Windows is blocking outbound TCP before FIX Logon. Allow the Python '
                     'executable through the firewall/endpoint security for TT UAT ports '
@@ -489,9 +545,16 @@ class NativeFixSession:
         msg_type, seq = fields.get("35", "?"), fields.get("34", "?")
         if not seq.isdigit() or int(seq) != self.state.in_seq + 1:
             expected = self.state.in_seq + 1
+            # A sequenced Logout still carries the server's actual rejection
+            # reason in tag 58. Keep that evidence before reporting the gap;
+            # previously the strict sequence check hid the most useful clue.
+            remote_reason = fields.get('58', '') if msg_type == '5' else ''
+            if msg_type == '5':
+                self.svc.log_fix(self.session_name, "IN", msg_type, seq, raw)
+            detail = (f' TT Logout reason: {remote_reason}' if remote_reason else '')
             raise ConnectionError(
                 f'FIX sequence mismatch on {msg_type}: expected {expected}, received {seq}. '
-                'Session stopped; verify order status in TT before reconnecting.')
+                f'Session stopped; verify order status in TT before reconnecting.{detail}')
         with self.state.lock:
             self.state.incoming_count += 1
             self.state.in_seq = int(seq) if seq.isdigit() else self.state.in_seq

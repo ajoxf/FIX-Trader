@@ -57,6 +57,29 @@ def test_exact_ids_separate_expiries_and_full_snapshot_clears_missing_side(termi
     assert terminal.books['102']['bid'] is None
 
 
+def test_tt_display_factor_normalizes_quotes_orders_and_fills(terminal):
+    instrument = terminal.watch['101']
+    instrument.update(raw_tick_size='25', display_factor='0.01',
+                      tick_size='0.25', tick_value='12.5')
+    terminal.catalogue['101'].update(instrument)
+
+    request = terminal.subscriptions['101']
+    raw = (f'35=W\x01262={request}\x01268=2\x01269=0\x01270=768475\x01271=3'
+           '\x01269=1\x01270=768500\x01271=4\x01')
+    terminal.on_message('Market Data', {'35': 'W'}, raw)
+    assert terminal.books['101']['bid'] == 7684.75
+    assert terminal.books['101']['ask'] == 7685.0
+
+    preview = terminal.preview(ticket(price='7684.75', quantity='1'))
+    assert dict(preview['fields'])['44'] == '768475'
+    order_id = terminal.submit({'token': preview['token'], 'confirmed': True})['order_id']
+    report(terminal, {'35': '8', '11': order_id, '37': 'TT-PRICE', '39': '2',
+                      '150': '2', '17': 'EXEC-PRICE', '14': '1', '151': '0',
+                      '32': '1', '31': '768475', '6': '768475'})
+    assert terminal.orders[order_id]['avg_price'] == 7684.75
+    assert terminal.snapshot()['fills'][0]['price'] == '7684.75'
+
+
 def test_review_is_required_idempotent_and_allows_zero_negative_prices(terminal):
     with pytest.raises(ValueError): terminal.submit({'token':'bogus','confirmed':True})
     preview = terminal.preview(ticket(price='0'))

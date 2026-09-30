@@ -1,10 +1,13 @@
 import socket
+import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from fixtrader.config import VenueConfig
-from fixtrader.gateway import FixGateway, SessionState, encode_fix_message, parse_fix_message
+from fixtrader.gateway import (FixGateway, NativeFixSession, SessionState,
+    encode_fix_message, parse_fix_message)
 
 
 class Peer:
@@ -139,6 +142,47 @@ def test_socket_permission_denied_has_a_network_remedy(monkeypatch):
     assert diagnostic['ok'] is False
     assert 'firewall' in diagnostic['fix'].lower()
     assert '.env' not in diagnostic['fix']
+
+
+def test_sequence_gap_diagnosis_requires_venue_reconciliation(monkeypatch):
+    gateway = FixGateway(venue(monkeypatch))
+    gateway._sessions['Order Routing'] = SimpleNamespace(state=SimpleNamespace(
+        error='FIX sequence mismatch on 5: expected 1, received 2'))
+
+    remedy = gateway._connection_fix()
+
+    assert 'Do not reconnect or reset' in remedy
+    assert 'working orders and fills' in remedy
+    assert 'missing order-session message' in remedy
+
+
+def test_out_of_sequence_logout_preserves_tt_reason_for_diagnosis():
+    logged = []
+    service = SimpleNamespace(log_fix=lambda *args: logged.append(args))
+    state = SimpleNamespace(lock=threading.RLock(), in_seq=0)
+    session = NativeFixSession(service, state, 'Order Routing', {
+        'sender_comp_id': 'ORDER', 'target_comp_id': 'TT'})
+    logout = encode_fix_message([
+        ('35', '5'), ('34', '8'), ('49', 'TT'), ('56', 'ORDER'),
+        ('58', 'session reset not authorized')]).decode('ascii')
+
+    with pytest.raises(ConnectionError, match='expected 1, received 8') as raised:
+        session._incoming(logout)
+
+    assert 'session reset not authorized' in str(raised.value)
+    assert logged and logged[0][2:4] == ('5', '8')
+
+
+def test_delayed_logon_diagnosis_calls_out_clock_and_venue_limit(monkeypatch):
+    gateway = FixGateway(venue(monkeypatch))
+    gateway._sessions['Order Routing'] = SimpleNamespace(state=SimpleNamespace(
+        error='Delayed logon processing detected'))
+
+    remedy = gateway._connection_fix()
+
+    assert 'host clock' in remedy
+    assert 'TT' in remedy
+    assert 'latency limit' in remedy
 
 
 def test_separate_session_settings_survive_config_roundtrip(monkeypatch):

@@ -152,7 +152,10 @@ def first_run(config_path: str, env_path: str) -> None:
 
 def spawn(argv, name):
     print(f"[start] {name}: {' '.join(argv)}")
-    return subprocess.Popen(argv, cwd=HERE)
+    # Marks the child as having a launcher behind it: an engine asked to
+    # restart from the screen exits, and this loop starts it again.
+    env = dict(os.environ, FIXTRADER_SUPERVISED='1')
+    return subprocess.Popen(argv, cwd=HERE, env=env)
 
 
 def main(argv=None) -> int:
@@ -165,9 +168,10 @@ def main(argv=None) -> int:
     parser.add_argument('--port', type=int, default=8000)
     parser.add_argument('--no-browser', action='store_true')
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--simulated', action='store_true', default=True)
+    mode.add_argument('--simulated', action='store_true', default=False,
+                      help='Use the simulator for development only; never sends FIX orders')
     mode.add_argument('--fix', dest='simulated', action='store_false',
-                      help='Use configured TT UAT FIX sessions')
+                      help='Use configured TT FIX sessions (default)')
     args = parser.parse_args(argv)
 
     # Before anything is started, and before any file is written.

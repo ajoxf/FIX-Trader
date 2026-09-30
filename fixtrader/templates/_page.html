@@ -5,27 +5,17 @@
 <title>{% block title %}Nexus FIX{% endblock %}</title>
 <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}?v={{ asset_version }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app_nav.css') }}?v={{ asset_version }}">
 </head>
 <body class="page-body">
 
-<div id="brand">
-  <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-    <rect x="6.5" y="10.9" width="11" height="2.2" fill="#1c1c1c"></rect>
-    <circle cx="7" cy="12" r="3.4" fill="#1f7ac2"></circle>
-    <circle cx="17" cy="12" r="3.4" fill="#b83232"></circle>
-  </svg>
-  <span class="brand-name">NEXUS FIX</span>
-  <span class="brand-note">{% block subtitle %}{% endblock %}</span>
-  <span id="env-badge" class="env">&mdash;</span>
-</div>
+{% include "_topnav.html" %}
 
 <div class="pgbar">
   <h4>{% block heading %}{% endblock %}</h4>
   <span class="crumb">{% block crumb %}{% endblock %}</span>
   <span class="pgbar-right">
     {% block actions %}{% endblock %}
-    <a class="tk" href="/connection">FIX connection</a>
-    <a class="tk" href="/desk">Back to the desk</a>
   </span>
 </div>
 

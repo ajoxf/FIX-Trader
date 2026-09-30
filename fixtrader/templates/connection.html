@@ -6,13 +6,11 @@
   <title>FIX Connection | Nexus FIX</title>
   <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='connection.css') }}?v={{ asset_version }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='fix_pages.css') }}?v={{ asset_version }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='app_nav.css') }}?v={{ asset_version }}">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="/connection"><span class="brand-icon">↔</span> NEXUS FIX</a>
-    <nav aria-label="Main navigation"><a class="active" href="/connection">Connection</a><a href="/instruments">Instruments &amp; orders</a><a href="/logs">FIX Logs</a><a href="/desk">Algo desk</a><a href="/exchanges">Configuration</a></nav>
-    <span id="environment" class="tag">Checking environment</span>
-  </header>
+  {% include '_topnav.html' %}
   <main>
     <div class="heading"><div><p class="eyebrow">SESSION CONTROL</p><h1>FIX connection dashboard</h1><p class="subtitle">Manage your TT order-routing and market-data connections in one place.</p></div><span id="engine-health" class="health">Checking engine…</span></div>
     <section class="summary" aria-label="Connection controls">

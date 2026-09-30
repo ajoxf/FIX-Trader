@@ -295,3 +295,58 @@ def test_a_command_publishes_the_snapshot_at_once(tmp_path):
     # well inside one 5s screen refresh, and one 2s engine pass, measured
     # from the send rather than from the start of the process
     assert time.monotonic() - sent['at'] < 2.0
+
+
+def test_a_restart_asked_for_from_the_screen_stops_cleanly_and_can_start_again(
+        tmp_path, monkeypatch):
+    """A new contract is taken on when the engine starts. The screen asks the
+    engine to restart; it stops the way it always stops, says so in its last
+    snapshot, and the launcher's next start is NOT refused as a second
+    engine — which it would be for five seconds on a bare heartbeat."""
+    from fixtrader.commands import CommandBridge
+    monkeypatch.setenv('FIXTRADER_SUPERVISED', '1')
+    a_config(tmp_path)
+    bridge = CommandBridge(str(tmp_path / 'commands.jsonl'),
+                           str(tmp_path / 'results.json'))
+    started = time.monotonic()
+    sent = {'id': None}
+
+    def ask_once_then_time_out():
+        if sent['id'] is None and (tmp_path / 'status.json').exists():
+            sent['id'] = bridge.submit('restart_engine', '', {})
+        return time.monotonic() - started > 20.0      # a bounded failure
+
+    paths = dict(config_path=str(tmp_path / 'config.json'),
+                 status_path=str(tmp_path / 'status.json'),
+                 command_path=str(tmp_path / 'commands.jsonl'),
+                 result_path=str(tmp_path / 'results.json'), simulated=True)
+    runner.run(should_stop=ask_once_then_time_out, **paths)
+    assert time.monotonic() - started < 20.0          # it stopped on the ask
+    assert bridge.result(sent['id'])['ok'] is True
+    snap = json.loads((tmp_path / 'status.json').read_text())
+    assert snap['engine']['stopped'] is True
+    # a start a second later is not refused as a second engine
+    assert runner.another_engine_is_running(paths['status_path']) is None
+    runner.run(once=True, **paths)
+
+
+def test_an_engine_nobody_will_start_again_refuses_to_restart(tmp_path,
+                                                             monkeypatch):
+    """The control: without a launcher behind it, a restart is a stop."""
+    from fixtrader.commands import apply_command
+    monkeypatch.delenv('FIXTRADER_SUPERVISED', raising=False)
+    engine = type('E', (), {'restart_requested': False})()
+    answer = apply_command(engine, {'action': 'restart_engine'})
+    assert answer['ok'] is False and 'start it by hand' in answer['error']
+    assert engine.restart_requested is False
+
+
+def test_a_live_heartbeat_still_refuses_a_second_engine(tmp_path):
+    """The control for the stopped marker: a snapshot that does NOT say it
+    stopped, written just now, is still a running engine."""
+    status = tmp_path / 'status.json'
+    from datetime import datetime, timezone
+    atomicfile.write_json(str(status), {
+        'ts': datetime.now(timezone.utc).isoformat(),
+        'engine': {'alive': True}})
+    assert runner.another_engine_is_running(str(status)) is not None

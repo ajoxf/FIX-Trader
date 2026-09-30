@@ -17,8 +17,10 @@
     const engine = current?.engine || {};
     const connection = engine.fix_connection;
     const ready = engine.alive && connection && !busy;
-    $('connect').disabled = !ready || ['LOGGED_ON','CONNECTING'].includes(connection?.state);
-    $('reconnect').disabled = !ready || connection?.state === 'CONNECTING';
+    const sequenceMismatch = (connection?.sessions || []).some(session =>
+      String(session.error || '').toLowerCase().includes('sequence mismatch'));
+    $('connect').disabled = !ready || sequenceMismatch || ['LOGGED_ON','CONNECTING'].includes(connection?.state);
+    $('reconnect').disabled = !ready || sequenceMismatch || connection?.state === 'CONNECTING';
     $('disconnect').disabled = !ready || connection?.state === 'DOWN';
   }
 

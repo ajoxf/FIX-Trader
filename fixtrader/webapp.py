@@ -85,7 +85,12 @@ def create_app(config_path: str = "config.json",
 
     @app.get('/desk')
     def desk():
-        return render_template('index.html', asset_version=ASSET_VERSION)
+        # A long-running web process must serve a fresh script after a desk
+        # update, even when its process startup version has not changed.
+        version = str(os.stat(os.path.join(app.static_folder, 'app.js')).st_mtime_ns)
+        response = app.make_response(render_template('index.html', asset_version=version))
+        response.headers['Cache-Control'] = 'no-cache'
+        return response
 
     @app.get('/instruments')
     def instruments():
@@ -144,6 +149,15 @@ def create_app(config_path: str = "config.json",
         action = data.get('action')
         if not action:
             return jsonify({'ok': False, 'error': 'no action'}), 400
+        if action in ('fix_connect', 'fix_reconnect'):
+            sessions = (read_status().get('engine', {}).get('fix_connection', {})
+                        .get('sessions', []))
+            if any('sequence mismatch' in str(session.get('error', '')).lower()
+                   for session in sessions):
+                return jsonify({'ok': False, 'error':
+                    'TT FIX sequence mismatch. Connect/reconnect is blocked until TT '
+                    'confirms the sequence reset or recovery procedure and working '
+                    'orders and fills have been reconciled.'}), 409
         command_id = bridge.submit(action, data.get('contract', ''),
                                    data.get('args') or {})
         return jsonify({'ok': True, 'id': command_id})
@@ -224,7 +238,8 @@ def create_app(config_path: str = "config.json",
             rows, settings, contract.tick_size, contract.tick_value,
             thresholds=levels,
             contract_multiplier=contract.contract_multiplier,
-            contract_key=key)
+            contract_key=key,
+            margin_per_contract=_db(config).margin_per_contract(key))
         out.update({'ok': True, 'key': key, 'symbol': contract.symbol,
                     'period': period, 'samples': len(rows),
                     'decimals': contract.decimals,
@@ -324,8 +339,20 @@ def create_app(config_path: str = "config.json",
         if venue and venue not in config.venues:
             return jsonify({'ok': False,
                             'error': f"no venue {venue!r}"}), 400
-        key = data.get('key') or re.sub(r'[^a-z0-9]+', '_',
-                                        symbol.lower()).strip('_')
+        def slug(text):
+            return re.sub(r'[^a-z0-9]+', '_', str(text).lower()).strip('_')
+        key = data.get('key') or slug(symbol)
+        # A TT product symbol is shared by every contract in it — `CL` is the
+        # December future AND every CL calendar AND every CL|BZ spread. The
+        # TT Security ID is what tells them apart, so a DIFFERENT instrument
+        # under a taken key gets its own key; the SAME one is still refused.
+        security_id = str(data.get('security_id') or '').strip()
+        taken = config.contracts.get(key)
+        if (taken is not None and not data.get('key') and security_id
+                and str(getattr(taken, 'security_id', '') or '') != security_id):
+            key = slug(data.get('name') or symbol) or key
+            if key in config.contracts:
+                key = f"{key}_{slug(security_id)[-6:]}"
         if key in config.contracts:
             return jsonify({'ok': False,
                             'error': f"{key} already exists"}), 409

@@ -24,6 +24,7 @@ const state = {
   focused: null,
   free: false,
   notify: { orders: false, fills: true, positions: true, rejects: true },
+  quoteStream: null,
 };
 
 /* -- formatting ---------------------------------------------------------- */
@@ -180,6 +181,23 @@ async function commandResult(id, timeoutMs) {
   return null;
 }
 
+/* The engine takes on a new contract when it starts. It stops the way it
+ * always stops — this system's own working orders cancelled, the book
+ * already on disk — and the launcher starts it again. */
+async function restartEngine() {
+  const ok = await ask('Restart the engine',
+    'The engine stops — cancelling any working orders this system sent — ' +
+    'and the launcher starts it again with the saved changes. Open ' +
+    'positions are kept and recovered. Prices pause and the TT sessions ' +
+    'log on again: allow about 15 seconds.', 'Restart engine');
+  if (!ok) return;
+  const answer = await command('restart_engine');
+  if (answer && answer.ok) {
+    toast('OK', 'RESTARTING', 'the engine is restarting — the desk comes ' +
+      'back within about 15 seconds');
+  }
+}
+
 /* -- one window ----------------------------------------------------------- */
 
 function windowFor(key) {
@@ -283,6 +301,7 @@ function renderContract(c) {
   q('.venue').textContent = c.symbol || '';
   q('.state').textContent = c.state;
   q('.state').className = 'state s-' + c.state;
+  q('.state').title = c.halted_by ? 'Halted: ' + c.halted_by : '';
   el.classList.toggle('stale', !!(c.feed && c.feed.stale));
 
   const sw = q('.sw');
@@ -350,8 +369,14 @@ function renderContract(c) {
       (f.edge_ok ? 'p-pass">PASS' : 'p-block">BLOCK') + '</span>';
   }
   const blocked = q('.f-blocked');
-  blocked.classList.toggle('hidden', !f.blocked_by);
-  if (f.blocked_by) blocked.textContent = 'Withheld: ' + f.blocked_by;
+  const why = c.halted_by ? 'Halted: ' + c.halted_by
+    : f.blocked_by ? 'Withheld: ' + f.blocked_by : '';
+  blocked.classList.toggle('hidden', !why);
+  if (why) blocked.textContent = why;
+  const proposal = q('.f-proposal');
+  proposal.classList.toggle('hidden', !c.proposal);
+  if (c.proposal) proposal.textContent = 'Proposal: ' + c.proposal.side +
+    ' ' + c.proposal.qty + ' · ' + c.proposal.reason;
 
   // position
   const pos = c.position;
@@ -528,18 +553,24 @@ function renderPositions(snap) {
   const p = snap.portfolio || { rows: [], venue_readable: true };
   const el = positionsWindow();
   const rows = p.rows || [];
+  const localOnly = p.position_scope === 'algo_local' || p.venue_readable === false;
+  const unsupported = p.account_status === 'unavailable' || snap.engine?.connection_only;
+  el.querySelector('.title').textContent = localOnly ? 'Algo positions' : 'Positions';
 
   el.querySelector('.pv-count').textContent =
-    rows.length + (rows.length === 1 ? ' open' : ' open');
+    rows.length + (localOnly ? ' tracked' : ' open');
   el.querySelector('.pv-empty').classList.toggle('hidden', rows.length > 0);
+  el.querySelector('.pv-empty').textContent = localOnly
+    ? 'No open algo positions recorded by this app.' : 'No open positions reported.';
 
   // "could not read" is not "flat", and the table must not imply it is.
   const banner = el.querySelector('.pv-banner');
   const unreadable = p.venue_readable === false;
   banner.classList.toggle('hidden', !unreadable);
+  banner.classList.toggle('critical', unreadable && !unsupported);
   if (unreadable) {
-    banner.textContent = snap.engine?.connection_only
-      ? 'Account positions are unavailable in connection-only mode. This table does not confirm that the account is flat.'
+    banner.textContent = unsupported
+      ? 'Showing this app\'s algo book. Account-wide positions are not verified. Live quotes and strategy monitoring remain available.'
       : 'The venue could not be read, so what is shown is ' +
       'this book alone. It is NOT confirmation that the account is flat.';
   }
@@ -609,7 +640,8 @@ function renderPositions(snap) {
     'realised today ' + money(p.realised_today) + ' · ' +
     (p.trades_today || 0) + ' trades';
   el.querySelector('.pv-day').textContent = p.venue_readable
-    ? 'book and venue agree' : 'venue unreadable';
+    ? (rows.every((r) => r.agrees) ? 'book and venue agree' : 'position reconciliation required')
+    : 'account verification unavailable';
 }
 
 /* -- the Analysis window --------------------------------------------------
@@ -994,7 +1026,9 @@ function renderReplay(el, report, live) {
   const a = report.assumptions || {};
   note.innerHTML = 'This is a <b>signal</b> replay, not a fill simulator. ' +
     'The book was ' + (a.book || 'assumed') + '; ' + (a.fills || '') + '; ' +
-    (a.costs || '') + '. Read against ' + (report.samples || 0) +
+    (a.costs || '') + '. ' +
+    (a.margin ? '<b>Margin:</b> ' + a.margin + '. ' : '') +
+    'Read against ' + (report.samples || 0) +
     ' recorded prices.';
 }
 
@@ -1009,6 +1043,9 @@ async function loadAnalysis() {
   const current = () => mine === analysis.seq;
   const el = analysisWindow();
   const contracts = (window.__lastSnapshot || {}).contracts || [];
+  if (analysis.key && !contracts.some((c) => c.key === analysis.key)) {
+    analysis.key = contracts.length ? contracts[0].key : null;
+  }
   if (analysis.key === undefined) analysis.key = null;
   if (analysis.key === null && contracts.length && analysis.key !== null) { /* noop */ }
   if (analysis.key === null && !el.dataset.touched) {
@@ -1178,7 +1215,7 @@ function renderChrome(snap) {
       'our working orders are cancelled. Positions are untouched.';
   } else if (engine.connection_only) {
     banner.classList.remove('hidden', 'critical');
-    banner.textContent = 'Account recovery and automated execution are unavailable. Open Instruments & orders for manual UAT trading.';
+    banner.textContent = 'Live FIX market data and algo proposals are available. Automatic orders require account recovery and FIX execution integration. Reviewed manual UAT orders remain under Instruments & orders.';
   } else if (engine.book_complete === false) {
     banner.classList.remove('hidden');
     banner.classList.add('critical');
@@ -1202,9 +1239,24 @@ function renderChrome(snap) {
   const waiting = engine.config_restart_needed || [];
   restart.classList.toggle('hidden', waiting.length === 0);
   if (waiting.length) {
-    restart.textContent = 'SAVED, NOT IN FORCE — ' + waiting.join(', ') +
+    const said = 'SAVED, NOT IN FORCE — ' + waiting.join(', ') +
       '. These change something the running engine already holds; restart it ' +
       'for them to take effect. Everything else you saved is live now.';
+    // Rebuilt only when the list changes, or the button would be replaced
+    // under the pointer twice a second.
+    if (restart.dataset.said !== said) {
+      restart.dataset.said = said;
+      restart.textContent = said + ' ';
+      if (engine.supervised) {
+        const b = document.createElement('button');
+        b.className = 'btn sm';
+        b.textContent = 'Restart engine now';
+        b.onclick = restartEngine;
+        restart.appendChild(b);
+      }
+    }
+  } else {
+    restart.dataset.said = '';
   }
 
   const link = document.getElementById('link-badge');
@@ -1218,6 +1270,12 @@ function renderChrome(snap) {
   const master = document.getElementById('master-toggle');
   master.textContent = 'Master: ' + (engine.master_algo ? 'ON' : 'OFF');
   master.classList.toggle('act', !!engine.master_algo);
+  const auto = document.getElementById('auto-trade-toggle');
+  auto.textContent = 'Auto trade: ' + (engine.auto_trade_enabled ? 'ON' : 'OFF');
+  auto.classList.toggle('act', !!engine.auto_trade_enabled);
+  auto.title = engine.auto_trade_available
+    ? 'Turn automatic order placement on or off'
+    : 'Automatic FIX orders require account recovery and execution integration';
 
   const stat = document.getElementById('loop-stat');
   stat.textContent = 'loop ' + (engine.loop_ms === undefined ? DASH
@@ -1506,6 +1564,47 @@ function restartTimer() {
   state.timer = setInterval(tick, state.refresh);
 }
 
+/* Market prices bypass the 500 ms account/status snapshot. The engine's
+ * latest-value SSE stream is written off the FIX receiver thread, so a slow
+ * browser skips frames without ever applying backpressure to FIX. Strategy
+ * statistics and order/account state continue to come from the authoritative
+ * engine snapshot. */
+function connectQuoteStream() {
+  if (!window.EventSource || state.quoteStream) return;
+  const source = new EventSource('/api/quotes/stream');
+  state.quoteStream = source;
+  source.onmessage = (event) => {
+    try {
+      const frame = JSON.parse(event.data);
+      const snap = window.__lastSnapshot;
+      if (!snap || !frame.connected) return;
+      (snap.contracts || []).forEach((contract) => {
+        const quote = (frame.quotes || {})[contract.security_id];
+        if (!quote || !quote.timestamp) return;
+        const market = contract.market || (contract.market = {});
+        for (const field of ['bid', 'ask', 'last', 'bid_size', 'ask_size', 'last_size', 'timestamp']) {
+          if (quote[field] !== undefined) market[field] = quote[field];
+        }
+        market.mid = market.bid !== null && market.bid !== undefined &&
+          market.ask !== null && market.ask !== undefined
+          ? (market.bid + market.ask) / 2 : null;
+        market.width = market.mid === null ? null : market.ask - market.bid;
+        const age = Math.max(0, (Date.now() - Date.parse(quote.timestamp)) / 1000);
+        contract.feed = Object.assign({}, contract.feed, {
+          age_sec: Number(age.toFixed(1)),
+          stale: quote.integrity_ok === false || age > 15,
+        });
+        renderContract(contract);
+      });
+    } catch (e) { /* the regular snapshot remains the recovery path */ }
+  };
+  source.onerror = () => {
+    // EventSource reconnects automatically. Clear this only when the browser
+    // has permanently closed it so a later page lifecycle can reconnect.
+    if (source.readyState === EventSource.CLOSED) state.quoteStream = null;
+  };
+}
+
 /* -- wiring --------------------------------------------------------------- */
 
 document.getElementById('kill').onclick = async () => {
@@ -1518,6 +1617,10 @@ document.getElementById('kill').onclick = async () => {
 document.getElementById('master-toggle').onclick = async () => {
   const on = document.getElementById('master-toggle').classList.contains('act');
   await command('master_algo', '', { on: !on });
+};
+document.getElementById('auto-trade-toggle').onclick = async () => {
+  const on = document.getElementById('auto-trade-toggle').classList.contains('act');
+  await command('auto_trade', '', { on: !on });
 };
 
 document.getElementById('sound-toggle').onclick = (e) => {
@@ -1569,3 +1672,4 @@ document.addEventListener('keydown', (e) => {
 
 tick();
 restartTimer();
+connectQuoteStream();

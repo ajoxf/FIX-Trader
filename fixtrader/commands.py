@@ -89,6 +89,11 @@ class CommandBridge:
         atomicfile.write_json(self.result_path, results)
 
 
+#: Set by start.py on the processes it launches and restarts. An engine that
+#: has it can be asked to restart; one without it has nobody to start it.
+SUPERVISED_ENV = "FIXTRADER_SUPERVISED"
+
+
 def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
     """Run one command against the engine. Never raises: a bad command from
     the UI must not take the engine down with it."""
@@ -118,6 +123,18 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
                     'detail': 'This venue is not owned by the running FIX engine.',
                     'fix': 'Restart with --fix and the intended venue enabled.'}],
                     'simulated': engine.simulated}
+            if action in ('fix_connect', 'fix_reconnect'):
+                sessions = getattr(gateway, '_sessions', {}).values()
+                sequence_error = any(
+                    'sequence mismatch' in str(
+                        getattr(getattr(session, 'state', None), 'error', '')
+                    ).lower()
+                    for session in sessions)
+                if sequence_error:
+                    raise ValueError(
+                        'TT FIX sequence mismatch. Connect/reconnect is blocked until '
+                        'TT confirms the sequence reset or recovery procedure and '
+                        'working orders and fills have been reconciled.')
             if action == 'fix_connect':
                 gateway.start()
             elif action == 'fix_disconnect':
@@ -132,6 +149,8 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
             return engine.set_algo(key, False)
         if action == 'master_algo':
             return engine.set_master(bool(args.get('on', True)))
+        if action == 'auto_trade':
+            return engine.set_auto_trade(bool(args.get('on', False)))
         if action == 'close_now':
             return engine.close_now(key)
         if action == 'cancel_all':
@@ -141,6 +160,18 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
             return engine.kill_all(bool(args.get('close_positions', False)))
         if action == 'resume':
             return engine.resume()
+        if action == 'restart_engine':
+            # The engine stops the way it always stops — our own working
+            # orders cancelled, the book already persisted — and the launcher
+            # that started it starts it again, reading config.json afresh.
+            # Without a launcher behind it, it would simply stop: refused.
+            if not os.environ.get(SUPERVISED_ENV):
+                return {'ok': False, 'error': 'this engine was not started by '
+                        'start.py / run_fix.bat, so nothing would start it '
+                        'again — stop it and start it by hand'}
+            engine.restart_requested = True
+            return {'ok': True, 'text': 'the engine is restarting to take on '
+                    'the saved changes'}
         return {'ok': False, 'error': f"unknown action {action!r}"}
     except Exception as e:                       # noqa: BLE001
         return {'ok': False, 'error': f"{type(e).__name__}: {e}"}

@@ -64,3 +64,19 @@ def test_the_version_check_runs_before_anything_is_written(tmp_path, monkeypatch
     assert not (tmp_path / 'config.json').exists()
     assert not (tmp_path / '.env').exists()
     assert 'cannot run here' in capsys.readouterr().out
+
+
+def test_the_windows_launcher_does_not_die_on_the_first_log_line():
+    """Python's logging writes to stderr. Under Windows PowerShell 5.1 a
+    native command's stderr merged with 2>&1 is an ErrorRecord, and with
+    $ErrorActionPreference = 'Stop' the first one — Flask's development-server
+    warning — killed the launcher before it started the engine, leaving a web
+    page with no engine behind it."""
+    import os
+    import re
+    path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'run_fix.ps1')
+    script = open(path, encoding='utf-8').read()
+    launch = script.index('& $python start.py')
+    settings = re.findall(r"\$ErrorActionPreference\s*=\s*'(\w+)'", script[:launch])
+    assert settings and settings[-1] == 'Continue'
+    assert 'ForEach-Object' in script[launch:]

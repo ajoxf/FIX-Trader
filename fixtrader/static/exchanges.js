@@ -169,9 +169,15 @@ async function runAction(action) {
   rows.textContent = action + '…';
   const body = await getJSON('/api/venues/' +
     encodeURIComponent(state.editing) + '/' + action);
+  const label = action === 'test' ? 'Status check' : action;
   document.getElementById('diag-when').textContent =
-    action + ' · ' + new Date().toLocaleTimeString([], { hour12: false }) +
+    label + ' · ' + new Date().toLocaleTimeString([], { hour12: false }) +
     (body.simulated ? ' · SIMULATED' : '');
+  const help = document.getElementById('diag-help');
+  help.hidden = action !== 'test';
+  help.textContent = action === 'test'
+    ? 'Status check only: this reads the engine’s existing FIX state and does not send a Logon. Use Connect to request a new session.'
+    : '';
   rows.innerHTML = '';
   (body.rows || []).forEach((r) => {
     const line = document.createElement('div');
@@ -331,8 +337,12 @@ document.getElementById('c-save').onclick = async () => {
     toast('REJECT', 'NOT SAVED', res.data.error || 'refused');
     return;
   }
-  toast('OK', 'SAVED', (body.name || body.symbol) +
-    ' saved — its window appears within a few seconds');
+  // An EDIT is adopted by the running engine; a NEW contract is not — the
+  // engine subscribes and sizes its contracts when it starts.
+  toast('OK', 'SAVED', (body.name || body.symbol) + (state.editingContract
+    ? ' saved — in force within a few seconds'
+    : ' saved — restart the engine (Ctrl+C, then run_fix.bat) and its ' +
+      'window appears on the Algo desk'));
   document.getElementById('contract-form-card').hidden = true;
   await loadContracts();
 };
@@ -413,7 +423,26 @@ document.getElementById('c-read').onclick = async () => {
 
 /* -- go ------------------------------------------------------------------ */
 
+/* A contract picked in the instrument explorer arrives here as a query
+   string. It only FILLS the form: nothing is saved until Save is pressed. */
+function prefillFromExplorer() {
+  const q = new URLSearchParams(window.location.search);
+  if (q.get('prefill') !== '1') return;
+  showContract(null);
+  C_TEXT.concat(C_NUM).forEach((k) => {
+    if (q.has(k) && q.get(k) !== '') cField(k).value = q.get(k);
+  });
+  // One venue configured is the only sensible choice; more than one is the
+  // trader's to make.
+  const venues = [...cField('venue').options].map((o) => o.value).filter(Boolean);
+  if (venues.length === 1) cField('venue').value = venues[0];
+  document.getElementById('contract-form-title').textContent =
+    'New contract from TT — check it, confirm the venue, then Save';
+  document.getElementById('contract-form-card').scrollIntoView({block: 'start'});
+}
+
 (async function load() {
   await loadVenues();
   await loadContracts();
+  prefillFromExplorer();
 })();

@@ -8,20 +8,11 @@
      network is what failed. -->
 <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}?v={{ asset_version }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='app_nav.css') }}?v={{ asset_version }}">
 </head>
 <body>
 
-<div id="brand">
-  <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-    <rect x="6.5" y="10.9" width="11" height="2.2" fill="#1c1c1c"></rect>
-    <circle cx="7" cy="12" r="3.4" fill="#1f7ac2"></circle>
-    <circle cx="17" cy="12" r="3.4" fill="#b83232"></circle>
-  </svg>
-  <span class="brand-name">NEXUS FIX</span>
-  <span class="brand-note">spread terminal</span>
-  <a class="tk" href="/connection">FIX connection</a>
-  <span id="env-badge" class="env">&mdash;</span>
-</div>
+{% include "_topnav.html" %}
 
 <!-- A dead engine must never be mistaken for a quiet market. -->
 <div id="engine-banner" class="banner hidden" role="status"></div>
@@ -39,7 +30,9 @@
   <div id="tabs"></div>
   <div class="taskbar-right">
     <span id="link-badge" class="link unknown" title="The venue session, and whether prices are arriving">checking&hellip;</span>
+    <a class="tk" href="/desk" title="Open the algorithm desk">Algo desk</a>
     <button id="master-toggle" class="tk" title="The one switch that stands every contract's algo down at once">Master: &mdash;</button>
+    <button id="auto-trade-toggle" class="tk" title="Enable or disable automatic order placement; the algo can still display proposals when off">Auto trade: OFF</button>
     <button id="sound-toggle" class="tk" title="A blip when an order is sent, two rising notes on a fill, a low note on a reject">Sound: on</button>
     <button id="tidy" class="tk" title="Put every window back in a row">Tidy</button>
     <a class="tk" href="/settings" title="How the system runs">Settings</a>
@@ -326,6 +319,7 @@
           <div class="kv"><span class="k">HL</span><span class="v f-hl">&mdash;</span></div>
         </div>
         <div class="hint f-blocked hidden"></div>
+        <div class="hint f-proposal hidden"></div>
       </div>
 
       <div class="sect">

@@ -53,6 +53,41 @@ def put_book_at_z(engine, gw, z):
     return px
 
 
+def test_unknown_account_is_explicitly_scoped_to_local_algo_positions(tmp_path):
+    engine, gw, db, cfg = build(tmp_path)
+    assert engine.snapshot()['portfolio']['position_scope'] == 'account_verified'
+    gw.positions = lambda: None
+    gw.connection_only = True
+    portfolio = engine.snapshot()['portfolio']
+    assert portfolio['position_scope'] == 'algo_local'
+    assert portfolio['account_status'] == 'unavailable'
+    assert portfolio['venue_readable'] is False
+
+
+def test_auto_trade_off_still_produces_signal_proposal(tmp_path):
+    engine, gw, db, cfg = build(tmp_path)
+    assert engine.set_auto_trade(False)['ok']
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now)
+    assert rt.proposal['action'] == 'OPEN'
+    assert rt.proposal['side'] == 'SELL'
+    assert not engine.executor.working
+    assert rt.position is None
+    assert engine.snapshot()['engine']['auto_trade_enabled'] is False
+    assert engine.set_auto_trade(True)['ok']
+    engine.poll(now=gw.now)
+    assert engine.executor.working
+
+
+def test_auto_trade_off_disarms_pending_market_escalation(tmp_path):
+    engine, gw, db, cfg = build(tmp_path)
+    engine.executor.escalating['old-order'] = {'intent': 'OPEN'}
+    assert engine.set_auto_trade(False)['ok']
+    assert engine.executor.escalating == {}
+    assert engine.auto_trade_enabled is False
+
+
 def test_it_warms_before_it_trades(tmp_path):
     engine, gw, db, cfg = build(tmp_path)
     rt = engine.runtimes['fef']
@@ -656,3 +691,23 @@ def test_an_unmeasured_net_is_published_as_none_never_as_zero(tmp_path):
     engine.close_now('fef')
     engine.poll(now=gw.now); engine.poll(now=gw.now)
     assert rt.last_close['net'] is None
+
+
+def test_a_halted_window_says_why(tmp_path):
+    """HALTED alone reads as a fault. On a quiet book the cause is a price
+    that has not moved, and the window says so — with the limit it hit."""
+    engine, gw, db, cfg = build(tmp_path)
+    rt = warm_the_window(engine, gw)
+    assert engine.halted_by(rt, gw.now) is None          # the control
+
+    later = gw.now + __import__('datetime').timedelta(seconds=120)
+    engine.poll(now=later)
+    assert engine.state_of(rt, later) is ContractState.HALTED
+    why = engine.halted_by(rt, later)
+    assert 'has not changed' in why and 'MAX_QUOTE_AGE_SEC' in why
+    snap = [c for c in engine.snapshot(now=later)['contracts']
+            if c['key'] == 'fef'][0]
+    assert snap['state'] == 'HALTED' and snap['halted_by'] == why
+
+    engine.kill_all()
+    assert 'KILL ALL' in engine.halted_by(rt, later)

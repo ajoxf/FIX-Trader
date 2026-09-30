@@ -87,7 +87,7 @@
 
       <div class="rowactions">
         <button id="v-connect" class="btn">Connect</button>
-        <button id="v-test" class="btn">Test</button>
+        <button id="v-test" class="btn" title="Reads the current engine session status; does not reconnect">Status</button>
         <button id="v-diagnose" class="btn">Diagnose</button>
         <span class="grow"></span>
         <button id="v-delete" class="btn danger">Delete</button>
@@ -99,6 +99,7 @@
   <!-- ── the three buttons' answer ───────────────────────────────────── -->
   <section class="card" id="diag-card" hidden>
     <h5>Result <span class="note" id="diag-when"></span></h5>
+    <p class="hint" id="diag-help" hidden></p>
     <div class="diag" id="diag-rows"></div>
   </section>
 
