@@ -218,3 +218,16 @@ def test_a_refused_logon_is_still_a_failure(monkeypatch):
     row = gateway.diagnose()[0]
     assert row['ok'] is False and row['pending'] is False
     assert 'never answered the logon' in row['fix'].lower()
+
+
+def test_a_session_already_logged_on_elsewhere_names_the_other_copy(monkeypatch):
+    """TT's words: 'Session is already connected on host ...'. The password
+    was accepted — sending the operator to .env is the wrong errand."""
+    gateway = FixGateway(venue(monkeypatch))
+    gateway._sessions['Order Routing'] = SimpleNamespace(state=SimpleNamespace(
+        status='ERROR', error='Session is already connected on host sg2vm102 '
+                              'at 20260930-12:06:04.837955'),
+        cfg={'password': 'x'})
+    row = gateway.diagnose()[0]
+    assert row['ok'] is False
+    assert 'another copy' in row['fix'] and 'credentials are fine' in row['fix']

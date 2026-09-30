@@ -15,6 +15,7 @@ configured must still reach the screen that configures one.
 
 import argparse
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -158,6 +159,47 @@ def spawn(argv, name):
     return subprocess.Popen(argv, cwd=HERE, env=env)
 
 
+#: How long a child gets to stop on its own. The engine needs it: its
+#: shutdown cancels our working orders and sends TT a Logout. Killed before
+#: that, TT keeps the sessions logged on — "Session is already connected on
+#: host ..." — and refuses the next start until its own timeout drops them.
+GRACEFUL_STOP_SEC = 25.0
+
+
+def stop_children(children, graceful=GRACEFUL_STOP_SEC, windows=None):
+    """Stop the children the way they can shut down cleanly, and only then
+    by force.
+
+    `Popen.terminate()` on Windows is TerminateProcess: no handler runs, so
+    the engine never logged out of TT. There, Ctrl+C has already reached the
+    children (they share this console), so they are WAITED for; elsewhere
+    they are sent SIGINT, which the runner handles. Whatever is still alive
+    after `graceful` seconds is terminated, then killed.
+    """
+    windows = (os.name == 'nt') if windows is None else windows
+    if not windows:
+        for proc in children.values():
+            if proc.poll() is None:
+                try:
+                    proc.send_signal(signal.SIGINT)
+                except OSError:
+                    pass
+    deadline = time.monotonic() + graceful
+    for proc in children.values():
+        try:
+            proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            pass
+    for proc in children.values():
+        if proc.poll() is None:
+            proc.terminate()
+    for proc in children.values():
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Start FIX-Trader")
     parser.add_argument('--config', default='config.json')
@@ -249,14 +291,8 @@ def main(argv=None) -> int:
     except KeyboardInterrupt:
         print("\n[start] stopping")
     finally:
-        for name, proc in children.items():
-            if proc.poll() is None:
-                proc.terminate()
-        for proc in children.values():
-            try:
-                proc.wait(timeout=8)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        print("[start] waiting for the engine to log out of TT…")
+        stop_children(children)
     return 0
 
 

@@ -80,3 +80,51 @@ def test_the_windows_launcher_does_not_die_on_the_first_log_line():
     settings = re.findall(r"\$ErrorActionPreference\s*=\s*'(\w+)'", script[:launch])
     assert settings and settings[-1] == 'Continue'
     assert 'ForEach-Object' in script[launch:]
+
+
+def test_stopping_lets_the_engine_log_out_before_any_force():
+    """TerminateProcess on Windows ran no handler, so TT kept the sessions
+    and refused the next start: "Session is already connected on host". A
+    child that exits on its own inside the grace period is never forced."""
+    import subprocess as sp
+    import start
+
+    class Child:
+        def __init__(self, exits_after):
+            self.exits_after, self.waited, self.forced = exits_after, 0.0, []
+            self.alive = True
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def send_signal(self, sig):
+            self.forced.append('signal')
+
+        def wait(self, timeout=None):
+            if self.alive and self.exits_after <= timeout:
+                self.alive = False
+                return 0
+            if self.alive:
+                raise sp.TimeoutExpired('engine', timeout)
+            return 0
+
+        def terminate(self):
+            self.forced.append('terminate')
+            self.alive = False
+
+        def kill(self):
+            self.forced.append('kill')
+
+    polite = Child(exits_after=3.0)
+    start.stop_children({'engine': polite}, graceful=10.0, windows=True)
+    assert polite.forced == []                   # waited for, never forced
+
+    # the control: one that never exits is forced once the grace runs out
+    stuck = Child(exits_after=1e9)
+    start.stop_children({'engine': stuck}, graceful=0.2, windows=True)
+    assert stuck.forced == ['terminate']
+
+    # off Windows it is ASKED first, with the signal the runner handles
+    asked = Child(exits_after=3.0)
+    start.stop_children({'engine': asked}, graceful=10.0, windows=False)
+    assert asked.forced == ['signal']

@@ -385,6 +385,14 @@ class FixGateway:
                     'executable through the firewall/endpoint security for TT UAT ports '
                     '11502 (Order Routing) and 11503 (Market Data), or use a network that '
                     'permits those ports. Credentials are not involved in this error.')
+        if 'already connected' in errors:
+            return ('TT already has these sessions logged on from somewhere else — '
+                    'usually another copy of this program still running (an older '
+                    'start.py window, or a second PC using the same .env). Close it, '
+                    'then press Connect. If nothing else is running, the last run was '
+                    'closed without logging out and TT still holds the session: wait '
+                    'about a minute for TT to drop it, then Connect. The credentials '
+                    'are fine — TT recognised them.')
         if 'did not answer the logon' in errors:
             return ('TT accepted the connection but never answered the Logon. TT usually '
                     'stays silent when it does not recognise the session: confirm the '
