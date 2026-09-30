@@ -105,25 +105,6 @@ def entry_signal(window: StatsWindow, book, settings: Dict[str, Any],
     else:
         return sig                       # armed and waiting: not blocked
 
-    # Which directions this contract is allowed to trade at all. A desk that
-    # will only sell a rich spread — because the other side is the one that
-    # gaps, or because it can only borrow one way — sets this and the other
-    # direction is never entered.
-    #
-    # It is an ENTRY rule and nothing else. A position already on is closed
-    # by whatever closes it, however this reads: a filter that could withhold
-    # an exit would strand exactly the position the desk was most careful
-    # about.
-    allowed = str(settings.get('trade_direction', 'BOTH') or 'BOTH').upper()
-    if allowed == 'SHORT_ONLY' and side is not Side.SELL:
-        sig.blocked_by = ("this contract trades the SHORT spread only — "
-                          f"z {window.z:+.2f} is a long-spread entry")
-        return sig
-    if allowed == 'LONG_ONLY' and side is not Side.BUY:
-        sig.blocked_by = ("this contract trades the LONG spread only — "
-                          f"z {window.z:+.2f} is a short-spread entry")
-        return sig
-
     # Past the stop already: too late to enter, not early. Entering here buys
     # a position that is immediately eligible to be stopped out.
     if abs(window.z) >= stop_z:

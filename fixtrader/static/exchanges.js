@@ -50,28 +50,10 @@ async function loadVenues() {
 
 function vField(name) { return document.getElementById('v-' + name); }
 
-/* A field this build's form does not carry. The lists below and the template
- * are edited separately, and a mismatch used to throw on the FIRST field it
- * reached — which aborted the handler and left the whole page dead, with
- * every later field unset and no visible reason. Skipping is not silence:
- * the console says which name has no box. */
-function eachField(names, fn) {
-  names.forEach((name) => {
-    const el = vField(name);
-    if (!el) {
-      console.warn('no form field for venue setting: ' + name);
-      return;
-    }
-    fn(el, name);
-  });
-}
-
 const VENUE_TEXT = ['broker', 'host', 'md_host', 'sender_comp_id',
-  'target_comp_id', 'sender_sub_id', 'on_behalf_of_comp_id',
-  'on_behalf_of_sub_id', 'md_sender_comp_id', 'md_target_comp_id',
-  'dc_host', 'dc_sender_comp_id', 'dc_target_comp_id', 'username',
+  'target_comp_id', 'sender_sub_id', 'on_behalf_of_comp_id', 'username',
   'account', 'data_dictionary', 'fix_version'];
-const VENUE_NUM = ['port', 'md_port', 'dc_port', 'heartbeat_sec'];
+const VENUE_NUM = ['port', 'md_port', 'heartbeat_sec'];
 const VENUE_BOOL = ['reset_seq_on_logon', 'use_tls', 'enabled'];
 
 function showVenue(v) {
@@ -88,14 +70,14 @@ function showVenue(v) {
   });
   paintEnvRadios();
 
-  eachField(VENUE_TEXT, (el, k) => { el.value = (v && v[k]) || ''; });
+  VENUE_TEXT.forEach((k) => { vField(k).value = (v && v[k]) || ''; });
   // A select whose value matches no option renders BLANK, which reads as "no
   // FIX version" rather than "the usual one".
   if (!vField('fix_version').value) vField('fix_version').value = 'FIX.4.4';
-  eachField(VENUE_NUM, (el, k) => {
-    el.value = (v && v[k] !== null && v[k] !== undefined) ? v[k] : '';
+  VENUE_NUM.forEach((k) => {
+    vField(k).value = (v && v[k] !== null && v[k] !== undefined) ? v[k] : '';
   });
-  eachField(VENUE_BOOL, (el, k) => { el.checked = v ? !!v[k] : true; });
+  VENUE_BOOL.forEach((k) => { vField(k).checked = v ? !!v[k] : true; });
   if (!v) vField('heartbeat_sec').value = 30;
 
   const pw = document.getElementById('v-password');
@@ -130,11 +112,11 @@ document.getElementById('v-save').onclick = async () => {
   if (!name) { toast('REJECT', 'NOT SAVED', 'a name is required'); return; }
   const chosen = document.querySelector('[name="env"]:checked');
   const body = { environment: chosen ? chosen.value : '' };
-  eachField(VENUE_TEXT, (el, k) => { body[k] = el.value.trim(); });
-  eachField(VENUE_NUM, (el, k) => {
-    body[k] = el.value === '' ? null : Number(el.value);
+  VENUE_TEXT.forEach((k) => { body[k] = vField(k).value.trim(); });
+  VENUE_NUM.forEach((k) => {
+    body[k] = vField(k).value === '' ? null : Number(vField(k).value);
   });
-  eachField(VENUE_BOOL, (el, k) => { body[k] = el.checked; });
+  VENUE_BOOL.forEach((k) => { body[k] = vField(k).checked; });
   const pw = document.getElementById('v-password').value;
   if (pw) body.password = pw;              // blank leaves the stored one alone
 
@@ -187,9 +169,15 @@ async function runAction(action) {
   rows.textContent = action + '…';
   const body = await getJSON('/api/venues/' +
     encodeURIComponent(state.editing) + '/' + action);
+  const label = action === 'test' ? 'Status check' : action;
   document.getElementById('diag-when').textContent =
-    action + ' · ' + new Date().toLocaleTimeString([], { hour12: false }) +
+    label + ' · ' + new Date().toLocaleTimeString([], { hour12: false }) +
     (body.simulated ? ' · SIMULATED' : '');
+  const help = document.getElementById('diag-help');
+  help.hidden = action !== 'test';
+  help.textContent = action === 'test'
+    ? 'Status check only: this reads the engine’s existing FIX state and does not send a Logon. Use Connect to request a new session.'
+    : '';
   rows.innerHTML = '';
   (body.rows || []).forEach((r) => {
     const line = document.createElement('div');
@@ -251,7 +239,7 @@ function paintCounts() {
     (state.contracts.length === 1 ? ' contract' : ' contracts');
 }
 
-const num = (v, d) => (v === null || v === undefined) ? DASH : Number(v).toFixed(d);
+const num = (v, d) => (v === null || v === undefined) ? DASH : String(Number(Number(v).toFixed(d)));
 
 async function loadContracts() {
   state.contracts = await getJSON('/api/contracts');
@@ -349,8 +337,12 @@ document.getElementById('c-save').onclick = async () => {
     toast('REJECT', 'NOT SAVED', res.data.error || 'refused');
     return;
   }
-  toast('OK', 'SAVED', (body.name || body.symbol) +
-    ' saved — its window appears within a few seconds');
+  // An EDIT is adopted by the running engine; a NEW contract is not — the
+  // engine subscribes and sizes its contracts when it starts.
+  toast('OK', 'SAVED', (body.name || body.symbol) + (state.editingContract
+    ? ' saved — in force within a few seconds'
+    : ' saved — restart the engine (Ctrl+C, then run_fix.bat) and its ' +
+      'window appears on the Algo desk'));
   document.getElementById('contract-form-card').hidden = true;
   await loadContracts();
 };
@@ -431,7 +423,26 @@ document.getElementById('c-read').onclick = async () => {
 
 /* -- go ------------------------------------------------------------------ */
 
+/* A contract picked in the instrument explorer arrives here as a query
+   string. It only FILLS the form: nothing is saved until Save is pressed. */
+function prefillFromExplorer() {
+  const q = new URLSearchParams(window.location.search);
+  if (q.get('prefill') !== '1') return;
+  showContract(null);
+  C_TEXT.concat(C_NUM).forEach((k) => {
+    if (q.has(k) && q.get(k) !== '') cField(k).value = q.get(k);
+  });
+  // One venue configured is the only sensible choice; more than one is the
+  // trader's to make.
+  const venues = [...cField('venue').options].map((o) => o.value).filter(Boolean);
+  if (venues.length === 1) cField('venue').value = venues[0];
+  document.getElementById('contract-form-title').textContent =
+    'New contract from TT — check it, confirm the venue, then Save';
+  document.getElementById('contract-form-card').scrollIntoView({block: 'start'});
+}
+
 (async function load() {
   await loadVenues();
   await loadContracts();
+  prefillFromExplorer();
 })();

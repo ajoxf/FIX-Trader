@@ -52,36 +52,17 @@ MIN_TRADES_FOR_A_VERDICT = 10
 
 def assumptions(settings: Dict[str, Any], tick_size: float,
                 tick_value: float,
-                assumed_spread_ticks: float = DEFAULT_ASSUMED_SPREAD_TICKS,
-                recorded: Optional[int] = None,
-                assumed: Optional[int] = None) -> Dict[str, Any]:
+                assumed_spread_ticks: float = DEFAULT_ASSUMED_SPREAD_TICKS
+                ) -> Dict[str, Any]:
     """What the replay had to assume, in words, for the page it prints on.
 
     Attached to every result. A figure whose assumptions are not beside it is
     a figure somebody will quote without them.
     """
     qty = float(settings.get('quantity', 1.0) or 1.0)
-    # What the book actually was, where the recording knows. The engine
-    # records bid and ask now; rows written before it did carry only a mid,
-    # and those — and only those — get the assumption.
-    if recorded is None and assumed is None:
-        book = (f'assumed {assumed_spread_ticks:g} tick wide around the '
-                f'recorded mid where the book was not recorded')
-    elif not assumed:
-        book = ('the REAL book, as recorded, on every sample — nothing about '
-                'the spread was assumed')
-    elif not recorded:
-        book = (f'assumed {assumed_spread_ticks:g} tick wide around the '
-                f'recorded mid: none of these {assumed:,} samples carries a '
-                f'book, so every exit here is priced off a guess')
-    else:
-        book = (f'the real recorded book on {recorded:,} of '
-                f'{recorded + assumed:,} samples; the other {assumed:,} '
-                f'carry only a mid and assume {assumed_spread_ticks:g} tick')
     return {
-        'book': book,
-        'book_recorded': recorded,
-        'book_assumed': assumed,
+        'book': (f'assumed {assumed_spread_ticks:g} tick wide around the '
+                 f'recorded mid — the book itself was not recorded'),
         'fills': ('every order is treated as filled at the price its signal '
                   'fired on; there is no queue here, which flatters a limit '
                   'entry'),
@@ -91,6 +72,15 @@ def assumptions(settings: Dict[str, Any], tick_size: float,
         'round_trip_money': costs_mod.cost_breakdown(
             qty, tick_size, tick_value, settings)['round_trip_money'],
     }
+
+
+def _margin_note(margin_per_contract: Optional[float]) -> str:
+    """Which margin a MARGIN target was priced off, in words."""
+    if margin_per_contract and margin_per_contract > 0:
+        return (f'{margin_per_contract:,.2f} per contract, as the venue '
+                f'charged it on positions this contract recorded')
+    return ('not recorded for this contract — a target that is a '
+            'percentage of margin cannot be priced')
 
 
 def _book(mid: float, tick_size: float, spread_ticks: float,
@@ -106,7 +96,8 @@ def replay(samples: Sequence[Tuple[datetime, float]],
            tick_size: float, tick_value: float,
            contract_multiplier: Optional[float] = None,
            contract_key: str = "",
-           assumed_spread_ticks: float = DEFAULT_ASSUMED_SPREAD_TICKS
+           assumed_spread_ticks: float = DEFAULT_ASSUMED_SPREAD_TICKS,
+           margin_per_contract: Optional[float] = None
            ) -> Dict[str, Any]:
     """Run one set of settings over one recorded series.
 
@@ -114,9 +105,18 @@ def replay(samples: Sequence[Tuple[datetime, float]],
     after the configured round trip — with the assumptions it ran under
     attached, because a figure whose assumptions are not on the page is a
     figure somebody will quote without them.
+
+    `margin_per_contract` is what the venue actually charged this contract,
+    read off positions it has recorded. The shipped target is a percentage
+    of MARGIN, so without it a replayed position has no target — and in the
+    `profit` exit mode it then never takes profit at all. None is not
+    guessed at: the result says the target was missing instead.
     """
     tick_size = float(tick_size or 0.0)
     qty = float(settings.get('quantity', 1.0) or 1.0)
+    margin_locked = (float(margin_per_contract) * qty
+                     if margin_per_contract and margin_per_contract > 0
+                     else None)
     lookback = int(settings.get('lookback', 400) or 400)
 
     result: Dict[str, Any] = {
@@ -129,6 +129,7 @@ def replay(samples: Sequence[Tuple[datetime, float]],
         'assumptions': assumptions(settings, tick_size, tick_value,
                                    assumed_spread_ticks),
         'blocked_by': None,
+        'target_missing': None,
     }
     if not tick_size or not samples:
         result['blocked_by'] = ('nothing recorded for this contract over that '
@@ -148,11 +149,6 @@ def replay(samples: Sequence[Tuple[datetime, float]],
                          entry_threshold=float(
                              settings.get('entry_threshold', 2.0) or 2.0))
     position: Optional[Position] = None
-    #: How many samples came with a real book, and how many needed the
-    #: assumption. The difference is the difference between a measurement and
-    #: a guess, so it is reported rather than averaged away.
-    recorded = 0
-    assumed = 0
     #: Why entries were withheld while the window was warm, counted. A
     #: cooldown between trades is not the same finding as a filter that
     #: withheld every entry there was.
@@ -167,19 +163,8 @@ def replay(samples: Sequence[Tuple[datetime, float]],
         float(settings.get('clearing_fee_per_contract', 0.0) or 0.0),
         float(settings.get('slippage_budget_ticks', 0.0) or 0.0))
 
-    for row in samples:
-        ts, mid = row[0], row[1]
-        # The RECORDED book where the recording carries one; the assumption
-        # only where it does not. Counted either way, because a report whose
-        # exits came off a real book and one whose exits came off a guess are
-        # not the same report and must not look alike.
-        bid, ask = getattr(row, 'bid', None), getattr(row, 'ask', None)
-        if bid is not None and ask is not None and ask >= bid:
-            book = BookTop(bid=bid, ask=ask, ts=ts)
-            recorded += 1
-        else:
-            book = _book(float(mid), tick_size, assumed_spread_ticks, ts)
-            assumed += 1
+    for ts, mid in samples:
+        book = _book(float(mid), tick_size, assumed_spread_ticks, ts)
         window.add(book.mid, ts, algo_armed=True)
         if not window.is_warm:
             continue
@@ -241,17 +226,30 @@ def replay(samples: Sequence[Tuple[datetime, float]],
             entry_px, sig.side, qty, tick_size, tick_value, settings)
         position.target_price = costs_mod.target_price(
             entry_px, sig.side, qty, tick_size, tick_value, settings,
-            margin_locked=None, contract_multiplier=contract_multiplier,
-            entry_std=entry_std)
+            margin_locked=margin_locked,
+            contract_multiplier=contract_multiplier, entry_std=entry_std)
+        if position.target_price is None:
+            result['target_missing'] = costs_mod.missing_for_target(
+                settings, margin_locked, contract_multiplier, entry_std,
+                tick_value)
 
     result['trades'] = trades
-    result['book'] = {'recorded': recorded, 'assumed': assumed}
-    result['assumptions'] = assumptions(
-        settings, tick_size, tick_value, assumed_spread_ticks,
-        recorded=recorded, assumed=assumed)
     result['still_open'] = 1 if (position is not None and position.is_open) else 0
     result['summary'] = summarise(trades, round_trip)
     result['withheld'] = dict(sorted(withheld.items(), key=lambda kv: -kv[1]))
+    result['assumptions']['margin'] = _margin_note(margin_per_contract)
+    exit_mode = str(settings.get('exit_signal_mode', 'profit')
+                    or 'profit').lower()
+    if (result['warm'] and not trades and result['still_open']
+            and result['target_missing'] and exit_mode == 'profit'):
+        # It DID enter, and the one exit it is waiting on can never fire.
+        # Headlining a withheld entry here — "long entries are off" on a
+        # short-only contract — sends the desk to the wrong setting.
+        result['blocked_by'] = (
+            f"no profit target — {result['target_missing']}, so a replayed "
+            f"position in the 'profit' exit mode never takes profit; it "
+            f"entered and was still open at the end")
+        return result
     if result['warm'] and not trades:
         # A cooldown is a consequence of trading, so it is never the headline
         # reason for having taken no trades at all.
@@ -306,7 +304,8 @@ def sweep(samples: Sequence[Tuple[datetime, float]],
           thresholds: Sequence[float],
           contract_multiplier: Optional[float] = None,
           contract_key: str = "",
-          assumed_spread_ticks: float = DEFAULT_ASSUMED_SPREAD_TICKS
+          assumed_spread_ticks: float = DEFAULT_ASSUMED_SPREAD_TICKS,
+          margin_per_contract: Optional[float] = None
           ) -> Dict[str, Any]:
     """The same series at several entry thresholds.
 
@@ -316,15 +315,11 @@ def sweep(samples: Sequence[Tuple[datetime, float]],
     a different answer.
     """
     rows = []
-    # Every threshold reads the SAME recording, so what it had to assume
-    # about the book is a property of the recording and not of the run. Taken
-    # from the first, rather than recomputed without the counts.
-    ran: Dict[str, Any] = {}
     for threshold in thresholds:
         run = replay(samples, dict(settings, entry_threshold=float(threshold)),
                      tick_size, tick_value, contract_multiplier,
-                     contract_key, assumed_spread_ticks)
-        ran = ran or run.get('assumptions', {})
+                     contract_key, assumed_spread_ticks,
+                     margin_per_contract=margin_per_contract)
         rows.append({
             'entry_threshold': float(threshold),
             'trades': run['summary']['trades'],
@@ -336,6 +331,7 @@ def sweep(samples: Sequence[Tuple[datetime, float]],
             'enough_to_judge': run['summary']['enough_to_judge'],
             'blocked_by': run['blocked_by'],
             'withheld': run.get('withheld', {}),
+            'target_missing': run.get('target_missing'),
         })
     # Every threshold blocked for the same reason is a statement about the
     # RECORDING, not about the thresholds. Said once, at the top, rather
@@ -344,9 +340,10 @@ def sweep(samples: Sequence[Tuple[datetime, float]],
     blocked = (rows[0]['blocked_by']
                if rows and len(reasons) == 1 and rows[0]['blocked_by']
                and not any(r['trades'] for r in rows) else None)
+    stated = assumptions(settings, tick_size, tick_value, assumed_spread_ticks)
+    stated['margin'] = _margin_note(margin_per_contract)
     return {'rows': rows, 'best': best_of(rows), 'blocked_by': blocked,
-            'assumptions': ran or assumptions(settings, tick_size, tick_value,
-                                              assumed_spread_ticks)}
+            'assumptions': stated}
 
 
 def best_of(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

@@ -10,7 +10,6 @@ import argparse
 import logging
 import os
 import signal
-import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -25,7 +24,7 @@ from .engine import Engine
 logger = logging.getLogger("fixtrader.runner")
 
 
-def build_gateway(config, simulated: bool):
+def build_gateway(config, simulated: bool, runtime_dir: str = ""):
     """The simulator, or the real session once it is wired.
 
     Until a venue is configured this runs against `FakeGateway` and the
@@ -37,7 +36,14 @@ def build_gateway(config, simulated: bool):
     # FIX session pointed at nothing, which looks like a connection failure
     # somebody could waste an afternoon retyping a port to fix.
     reachable = [v for v in config.venues.values() if v.host and v.enabled]
-    if simulated or not reachable:
+    require_live = config.settings.get('REQUIRE_LIVE_FIX') is True
+    if require_live and simulated:
+        raise RuntimeError('This configuration requires live FIX; simulated mode is refused')
+    if require_live and not reachable:
+        raise RuntimeError('This configuration requires live FIX but has no enabled FIX venue')
+    if not simulated and not reachable:
+        raise RuntimeError('Live FIX mode has no enabled FIX venue; simulated fallback is refused')
+    if simulated:
         from .fake_gateway import FakeGateway, SimContract
         sims = []
         for c in config.contracts.values():
@@ -49,7 +55,10 @@ def build_gateway(config, simulated: bool):
         return FakeGateway(sims), True
     from .gateway import FixGateway
     venue = reachable[0]
-    return FixGateway(venue, list(config.contracts.values())), False
+    state_dir = runtime_dir or os.path.dirname(os.path.abspath(config.path))
+    manual_name = os.path.splitext(os.path.basename(config.path))[0] + '.manual.db'
+    return FixGateway(venue, list(config.contracts.values()),
+                      manual_path=os.path.join(state_dir, manual_name)), False
 
 
 #: How fresh a snapshot has to be for us to conclude another engine is alive
@@ -81,63 +90,13 @@ def another_engine_is_running(status_path: str,
                - _dt.fromisoformat(raw['ts'])).total_seconds()
     except Exception:                                    # noqa: BLE001
         return None
-    if not (0 <= age <= within):
+    # An engine that stopped CLEANLY says so in its last snapshot. A fresh
+    # file from an engine that has shut down is not a live engine, and
+    # treating it as one refused every restart made within seconds — the
+    # restart button's, and the launcher's after a clean exit.
+    if (raw.get('engine') or {}).get('stopped'):
         return None
-
-    # The heartbeat says the file is FRESH. It does not say the process that
-    # wrote it is alive — and an engine that has just crashed leaves a file
-    # seconds old. Refusing then costs the launcher its restarts on a guard
-    # rather than on the fault, which is what happened to a desk whose
-    # database needed migrating: three strikes, two of them spent here.
-    engine = raw.get('engine') or {}
-    pid, host = engine.get('pid'), engine.get('host')
-    if pid and host == socket.gethostname() and not _process_is_alive(pid):
-        return None                     # a dead engine's last words
-    return age
-
-
-def _process_is_alive(pid: int) -> bool:
-    """Whether a process id is still running on THIS machine.
-
-    Returns True when it cannot tell. Being wrong towards "alive" refuses a
-    start; being wrong the other way runs two engines against one book, and
-    only one of those is recoverable.
-
-    NOT `os.kill(pid, 0)`. That is the usual answer and it is correct on
-    POSIX, but on Windows CPython maps any signal other than CTRL_C_EVENT /
-    CTRL_BREAK_EVENT onto TerminateProcess — so the "harmless liveness
-    probe" kills the very engine it was asking about.
-    """
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return True
-    if pid <= 0:
-        return True
-    if os.name == 'nt':
-        try:
-            import ctypes
-            SYNCHRONIZE = 0x00100000
-            WAIT_TIMEOUT = 0x00000102
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-            if not handle:
-                return False            # gone, or not ours to look at
-            try:
-                return kernel32.WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
-            finally:
-                kernel32.CloseHandle(handle)
-        except Exception:                                # noqa: BLE001
-            return True                 # cannot tell — assume it is alive
-    try:
-        os.kill(pid, 0)                 # POSIX: signal 0 really is a probe
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True                     # somebody else's process, so alive
-    except OSError:
-        return True
-    return True
+    return age if 0 <= age <= within else None
 
 
 def run(config_path: str = "config.json", status_path: str = "status.json",
@@ -160,12 +119,22 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
             f"cannot explain. Stop that one first, or point this at a "
             f"different --status and --config.")
     config = TraderConfig.from_file(config_path)
-    db = Database(config.settings.get('DATABASE_PATH', 'fixtrader.db'))
-    gateway, is_sim = build_gateway(config, simulated)
+    runtime_dir = os.path.dirname(os.path.abspath(status_path))
+    os.makedirs(runtime_dir, exist_ok=True)
+    database_path = config.settings.get('DATABASE_PATH', 'fixtrader.db')
+    if not os.path.isabs(database_path):
+        database_path = os.path.join(runtime_dir, os.path.basename(database_path))
+    db = Database(database_path)
+    gateway, is_sim = build_gateway(config, simulated, runtime_dir)
     engine = Engine(config, gateway, db=db, simulated=is_sim)
     bridge = CommandBridge(command_path, result_path)
     bridge.prime()                    # a restart never replays a KILL ALL
     engine.start()
+    quote_publisher = None
+    if not is_sim and getattr(gateway, 'terminal', None) is not None:
+        from .quote_stream import QuotePublisher
+        quote_publisher = QuotePublisher(gateway.terminal, status_path)
+        quote_publisher.start()
 
     stopping = {'now': False}
 
@@ -241,7 +210,8 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
     logger.info("engine up — %d contracts, %s", len(engine.runtimes),
                 "simulated" if is_sim else "live gateway")
     try:
-        while not stopping['now'] and not (should_stop and should_stop()):
+        while not stopping['now'] and not (should_stop and should_stop()) \
+                and not engine.restart_requested:
             started = time.monotonic()
             if is_sim:
                 gateway.advance(seconds=interval)
@@ -277,17 +247,37 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
                 break
             # Wait out the rest of the pass in slices, draining commands in
             # each one. The engine's own work stays on its interval.
-            while not stopping['now'] and not (should_stop and should_stop()):
+            while not stopping['now'] and not (should_stop and should_stop()) \
+                    and not engine.restart_requested:
                 left = interval - (time.monotonic() - started)
                 if left <= 0:
                     break
-                time.sleep(min(command_every, left))
+                feed = getattr(gateway, 'algo_feed', None)
+                if feed is not None:
+                    # A FIX tick wakes the strategy pass immediately. Keep
+                    # the command cadence for UI actions on quiet markets.
+                    if feed.changed.wait(min(command_every, left)):
+                        break
+                else:
+                    time.sleep(min(command_every, left))
                 if drain_commands():
                     publish()
     finally:
+        if quote_publisher:
+            quote_publisher.stop()
         # Sweep our own working orders at shutdown, scoped to our own ids.
         engine.stop()
-        logger.info("engine down")
+        # The last word: nobody is behind this file any more. Written only
+        # after the sweep, so a snapshot that says "stopped" never has a
+        # working order of ours still being managed behind it.
+        try:
+            last = engine.snapshot()
+            last.setdefault('engine', {})['stopped'] = True
+            atomicfile.write_json(status_path, last)
+        except Exception:                                    # noqa: BLE001
+            pass
+        logger.info("engine down%s", " — restarting to take on saved changes"
+                    if engine.restart_requested else "")
 
 
 def main(argv=None) -> int:

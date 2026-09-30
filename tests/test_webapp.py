@@ -227,14 +227,12 @@ def test_a_contract_the_venue_does_not_know_is_a_failure_with_a_step():
     assert 'FIX_NOTES' in row['fix']       # it points at the open question
 
 
-def test_connect_against_an_unwired_session_says_so_honestly(client):
-    """A venue with a host takes the real FixGateway, which is not wired yet.
-    It must say that in words rather than looking like a connection failure
-    somebody could try to fix by retyping the port."""
+def test_real_connect_requires_engine_instead_of_opening_a_duplicate_session(client):
+    """The web worker never opens a temporary real FIX connection."""
     c, _ = client
     body = c.get('/api/venues/wired/connect').get_json()
     assert body['ok'] is False
-    assert 'not wired' in body['rows'][0]['detail']
+    assert 'engine is not running' in body['rows'][0]['detail']
 
 
 def test_a_missing_password_is_reported_as_not_set_never_as_a_value(client):
@@ -261,6 +259,30 @@ def test_two_contracts_cannot_share_a_key(client):
     c.post('/api/contracts', json={'symbol': 'FEFV6-FEFX6', 'venue': 'orient'})
     res = c.post('/api/contracts', json={'symbol': 'FEFV6-FEFX6',
                                          'venue': 'orient'})
+    assert res.status_code == 409
+
+
+def test_two_tt_instruments_under_one_product_symbol_get_their_own_keys(client):
+    """`CL` is the December future AND every CL spread. The TT Security ID
+    tells them apart, so the second is not refused as a duplicate."""
+    c, _ = client
+    fut = c.post('/api/contracts', json={
+        'symbol': 'CL', 'name': 'Crude Oil Dec 2026', 'venue': 'orient',
+        'security_id': '883086633757772'}).get_json()
+    spread = c.post('/api/contracts', json={
+        'symbol': 'CL', 'name': '+1xCL Dec26:-1xCL Jan27', 'venue': 'orient',
+        'security_id': '543741535855301483'}).get_json()
+    assert fut['ok'] and spread['ok']
+    assert fut['key'] == 'cl'
+    assert spread['key'] == '1xcl_dec26_1xcl_jan27'
+
+
+def test_the_same_tt_instrument_twice_is_still_a_duplicate(client):
+    """The control: one Security ID is one contract, whatever it is named."""
+    c, _ = client
+    body = {'symbol': 'CL', 'venue': 'orient', 'security_id': '543741535855301483'}
+    assert c.post('/api/contracts', json=body).get_json()['ok']
+    res = c.post('/api/contracts', json=dict(body, name='another name'))
     assert res.status_code == 409
 
 
@@ -389,3 +411,48 @@ def test_a_venue_form_round_trip_does_not_quietly_mask_the_password(client,
         if isinstance(value, str):
             assert '*' * 4 not in value
             assert '•' not in value
+
+
+def test_the_replay_prices_a_margin_target_off_the_margin_it_was_charged(tmp_path):
+    """The shipped exit waits on a target that is a percentage of MARGIN.
+    The route hands the replay what the venue charged this contract on the
+    positions it recorded — without it, no replayed position ever took
+    profit, and the card blamed an entry filter for it."""
+    import random
+    from datetime import datetime, timedelta, timezone
+    from fixtrader.config import ContractConfig
+    from fixtrader.database import Database
+    from fixtrader.models import Position, Side
+
+    cfg = TraderConfig(path=str(tmp_path / 'config.json'))
+    cfg.settings['DATABASE_PATH'] = str(tmp_path / 'r.db')
+    cfg.contracts['fef'] = ContractConfig(
+        key='fef', name='Iron ore Oct/Nov', symbol='FEFV6-FEFX6',
+        tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
+        quantity=5, commission_per_contract=1.0, entry_threshold=2.0,
+        lookback=120, exit_signal_mode='profit', profit_target_pct=2.0,
+        profit_target_basis='MARGIN', stop_loss_z=99.0,
+        edge_filter_enabled=False, stats_update_interval_sec=0)
+    cfg.save()
+    db = Database(str(tmp_path / 'r.db'))
+    rng, px, rows = random.Random(7), 0.60, []
+    base = datetime.now(timezone.utc) - timedelta(hours=2)
+    for i in range(3000):
+        px += (0.60 - px) * 0.04 + rng.gauss(0, 0.012)
+        rows.append((base + timedelta(seconds=i), round(px, 4)))
+    db.save_samples('fef', rows)
+    app = create_app(str(tmp_path / 'config.json'), str(tmp_path / 's.json'),
+                     str(tmp_path / 'c.jsonl'), str(tmp_path / 'r.json'))
+    c = app.test_client()
+
+    blind = c.get('/api/replay/fef?thresholds=2').get_json()
+    assert blind['rows'][0]['trades'] == 0
+    assert 'margin' in blind['blocked_by']
+
+    db.save_position(Position(contract_key='fef', side=Side.SELL, qty=0.0,
+                              opened_qty=5.0, avg_price=0.66,
+                              margin_locked=1300.0))
+    priced = c.get('/api/replay/fef?thresholds=2').get_json()
+    assert priced['rows'][0]['trades'] > 0
+    assert priced['blocked_by'] is None
+    assert '260.00 per contract' in priced['assumptions']['margin']

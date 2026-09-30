@@ -32,7 +32,8 @@ REPLACE_BACKOFF_SEC = 0.01
 
 def write_text(path: str, text: str, encoding: str = "utf-8",
                attempts: int = REPLACE_ATTEMPTS,
-               replace=os.replace, sleep=time.sleep) -> None:
+               replace=os.replace, sleep=time.sleep,
+               durable: bool = True) -> None:
     """Replace `path` with `text` atomically, retrying a locked destination.
 
     `replace` and `sleep` are injectable so the Windows failure can be tested
@@ -45,7 +46,8 @@ def write_text(path: str, text: str, encoding: str = "utf-8",
         with os.fdopen(fd, "w", encoding=encoding, newline="\n") as fh:
             fh.write(text)
             fh.flush()
-            os.fsync(fh.fileno())
+            if durable:
+                os.fsync(fh.fileno())
 
         last = None
         for attempt in range(max(1, attempts)):
@@ -69,9 +71,10 @@ def write_text(path: str, text: str, encoding: str = "utf-8",
         raise
 
 
-def write_json(path: str, data: Any, indent: int = 2) -> None:
+def write_json(path: str, data: Any, indent: int = 2,
+               durable: bool = True) -> None:
     write_text(path, json.dumps(data, indent=indent, sort_keys=False,
-                                default=str) + "\n")
+                                default=str) + "\n", durable=durable)
 
 
 def read_json(path: str, default: Any = None) -> Any:

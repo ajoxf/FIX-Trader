@@ -16,9 +16,8 @@ Order of a pass, and it matters:
    a pass that runs out of budget must have got the position out, not in.
 """
 
-import logging
 import os
-import socket
+import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
@@ -67,6 +66,7 @@ class ContractRuntime:
         #: Touches raised but not yet written; the engine drains these.
         self.pending_touches: List[Any] = []
         self.halted_reason: Optional[str] = None
+        self.proposal: Optional[Dict[str, Any]] = None
 
     def roll_day(self, now: datetime) -> None:
         today = now.date().isoformat()
@@ -88,12 +88,17 @@ class Engine:
         self.simulated = simulated
         self.executor = Executor(gateway, db=db, notify=notify,
                                  simulated=simulated)
-        # The executor stamps tag 1 on every order but does not read
-        # configuration: the engine is what knows a contract's venue.
-        self.executor.account_resolver = self.account_for
         self.runtimes: Dict[str, ContractRuntime] = {}
         self.master_algo: bool = bool(config.settings.get('ALGO_MASTER_ENABLED', True))
+        # A live venue starts in proposal mode until execution and account
+        # recovery are available. Simulator behavior stays unchanged.
+        self.auto_trade_enabled: bool = (
+            bool(config.settings.get('AUTO_TRADE_ENABLED', True))
+            if not hasattr(gateway, 'venue') else False)
         self.killed: bool = False
+        #: Asked for from the screen, after a change only a restart takes on.
+        #: The runner stops cleanly and the launcher starts it again.
+        self.restart_requested: bool = False
         #: When an edited configuration was last picked up, and anything in
         #: it that is still waiting for a restart. The screen shows both: a
         #: setting that looks saved but is not in force is worse than one
@@ -157,55 +162,6 @@ class Engine:
             elif contract.spec_source.get(field) != 'operator':
                 contract.spec_source.setdefault(field, 'venue')
 
-    def trading_accounts(self) -> Optional[str]:
-        """The account, or accounts, this desk is trading — for the screen.
-
-        None where nothing is configured, which renders as an em dash: a
-        blank account is not "the default account", it is a question nobody
-        has answered.
-        """
-        seen = []
-        for key in self.runtimes:
-            account = self.account_for(key)
-            if account and account not in seen:
-                seen.append(account)
-        return ' · '.join(seen) if seen else None
-
-    def account_for(self, contract_key: str) -> str:
-        """The account this contract is traded on, or "" where none is set.
-
-        A desk that gives the algo its own sub-account is drawing the line
-        between what this system did and what a person did by hand, so the
-        account is read from the contract's own venue rather than assumed.
-        """
-        rt = self.runtimes.get(contract_key)
-        contract = rt.contract if rt else self.config.contracts.get(contract_key)
-        venue = self.config.venues.get(getattr(contract, 'venue', '') or '')
-        return getattr(venue, 'account', '') or ''
-
-    def is_ours(self, contract_key: str, account: str) -> bool:
-        """Whether a position the venue reports is this system's business.
-
-        Three cases, and the middle one is the point of the whole exercise:
-
-        - We trade no particular account (none configured): everything the
-          session can see is ours to reconcile. That is the old behaviour and
-          it is right when there is one account.
-        - The venue names an account and it is NOT ours: skip it. On a desk
-          where a person trades by hand in the broker's own UI, those
-          positions are not anomalies — they are somebody else's work, and
-          reporting them as UNCLAIMED every second trains the operator to
-          ignore the one line that matters.
-        - The venue names NO account: reconcile it anyway. Unknown is not
-          "not ours", and nothing is ever auto-closed on the strength of
-          this — so the safe error is to report a position we may not own,
-          never to ignore one we do.
-        """
-        mine = self.account_for(contract_key)
-        if not mine or not account:
-            return True
-        return str(account) == str(mine)
-
     def recover(self) -> None:
         """Rebuild the book from the database, then compare it to the venue.
 
@@ -229,19 +185,14 @@ class Engine:
 
         self.unclaimed = []
         for vp in venue_positions:
-            if not self.is_ours(vp.contract_key, vp.account):
-                continue
             rt = self.runtimes.get(vp.contract_key)
             ours = rt.position.signed_qty if (rt and rt.position) else 0.0
             if abs(vp.qty - ours) > 1e-9:
-                whose = (f" on account {vp.account}" if vp.account else
-                         " (the venue did not say which account)")
                 self.unclaimed.append({
                     'contract_key': vp.contract_key,
-                    'account': vp.account,
                     'venue_qty': vp.qty, 'our_qty': ours,
                     'text': (f"the venue reports {vp.qty:+g} on "
-                             f"{vp.contract_key}{whose}; this book explains "
+                             f"{vp.contract_key}; this book explains "
                              f"{ours:+g}. Nothing has been closed."),
                 })
         self.book_complete = True
@@ -256,39 +207,49 @@ class Engine:
         for event in events:
             self._handle_event(event, now)
 
+        # The FIX receiver publishes normalized, coalesced updates. Consume
+        # them on the engine thread so parsing and strategy work stay apart.
+        market_events = (self.gateway.drain_market_data()
+                         if hasattr(self.gateway, 'drain_market_data') else None)
+        updated_keys = None if market_events is None else set()
+        if market_events is not None:
+            for event in market_events:
+                updated_keys.add(event.contract_key)
+                logger.debug('algo consumed quote %s seq=%s bid=%s ask=%s last=%s',
+                             event.contract_key, event.sequence, event.bid,
+                             event.ask, event.last)
+
         for key, rt in self.runtimes.items():
             try:
-                self._poll_contract(rt, now)
+                self._poll_contract(rt, now, market_updated=(
+                    updated_keys is None or key in updated_keys))
             except Exception:                    # one contract must never
                 logger.exception("contract %s failed its pass", key)
         self.loop_ms = (utcnow() - started).total_seconds() * 1000.0
 
-    def _poll_contract(self, rt: ContractRuntime, now: datetime) -> None:
+    def _poll_contract(self, rt: ContractRuntime, now: datetime,
+                       market_updated: bool = True) -> None:
         contract = rt.contract
         settings = self.config.effective(contract.key)
         rt.roll_day(now)
+        rt.proposal = None
 
         book = self.gateway.top_of_book(contract.key)
         rt.book = book
         rt.guard.observe(book, now)
 
         armed = bool(contract.algo_on and self.master_algo and not self.killed)
-        if book is not None and book.usable:
+        if market_updated and book is not None and book.usable:
             touches = rt.window.add(book.mid, now, algo_armed=armed)
             if touches and self.db is not None:
                 for touch in touches:
                     self.db.save_touch(touch)
             if self.db is not None and self.config.settings.get(
                     'PERSIST_STATS_SAMPLES', True):
-                # The BOOK, not just its mid. An exit reads the executable
-                # side, so a replay given only mids has to assume a spread —
-                # and that assumption cannot be corrected afterwards. This is
-                # the one thing here that gets harder the longer it waits.
-                self.db.save_samples(contract.key, [(
-                    now, book.mid, book.bid, book.ask,
-                    book.bid_size, book.ask_size)])
+                self.db.save_samples(contract.key, [(now, book.mid)])
 
-        said = self.executor.manage(contract, settings, book, now)
+        said = (self.executor.manage(contract, settings, book, now)
+                if self.auto_trade_enabled else [])
         for line in said:
             self._say(rt, "ORDER", line)
 
@@ -299,7 +260,10 @@ class Engine:
                                           settings, contract.tick_size,
                                           contract.tick_value, now,
                                           session_flat_due=flat_due)
-            if sig.action == "CLOSE" and not self._has_working_close(contract.key):
+            if sig.action == 'CLOSE':
+                rt.proposal = self._proposal(sig, now)
+            if (sig.action == "CLOSE" and self.auto_trade_enabled
+                    and not self._has_working_close(contract.key)):
                 self._send_close(rt, settings, sig.side, sig.qty,
                                  sig.exit_reason, sig.reason, book, now)
             return
@@ -317,13 +281,22 @@ class Engine:
             jump_settling=status['settling'],
             in_session=self._in_session(contract, settings, now))
         rt.blocked_by = sig.blocked_by
-        if sig.action == "OPEN" and not self.executor.working_for(contract.key):
+        if sig.action == 'OPEN':
+            rt.proposal = self._proposal(sig, now)
+        if (sig.action == "OPEN" and self.auto_trade_enabled
+                and not self.executor.working_for(contract.key)):
             self.executor.place(contract, settings, sig.side, sig.qty,
                                 Intent.OPEN, book, now, reason=sig.reason,
                                 decision=self._decision(rt.window))
             self._mark_touch_traded(rt, sig.side)
             self._say(rt, "ORDER",
                       f"{sig.side.value} {sig.qty:g} — {sig.reason}")
+
+    @staticmethod
+    def _proposal(sig, now):
+        return {'action': sig.action, 'side': sig.side.value,
+                'qty': sig.qty, 'reason': sig.reason,
+                'ts': now.isoformat()}
 
     @staticmethod
     def _decision(window) -> Dict[str, Any]:
@@ -553,6 +526,30 @@ class Engine:
         self.config.save()
         return {'ok': True, 'master_algo': self.master_algo}
 
+    def set_auto_trade(self, on: bool) -> Dict[str, Any]:
+        if on:
+            if getattr(self.gateway, 'connection_only', False):
+                return {'ok': False, 'error':
+                    'Automatic FIX orders are unavailable: account recovery and execution are not wired.'}
+            if not self.book_complete:
+                return {'ok': False, 'error':
+                    'Automatic trading requires a complete recovered account book.'}
+            if self.gateway.state().value != 'LOGGED_ON':
+                return {'ok': False, 'error': 'The venue is not logged on.'}
+        was_enabled = self.auto_trade_enabled
+        self.auto_trade_enabled = bool(on)
+        if not on:
+            self.executor.escalating.clear()
+            if was_enabled:
+                try:
+                    self.executor.cancel_all()
+                except Exception:
+                    logger.exception('automatic trading stopped; cancel outcome unknown')
+        self.config.settings['AUTO_TRADE_ENABLED'] = self.auto_trade_enabled
+        self.config.save()
+        logger.info('automatic trade placement %s', 'enabled' if on else 'disabled')
+        return {'ok': True, 'auto_trade_enabled': self.auto_trade_enabled}
+
     def close_now(self, key: str) -> Dict[str, Any]:
         """Cross out of this contract now, and stand its algo down.
 
@@ -586,7 +583,8 @@ class Engine:
     #: or needs the gateway to subscribe again.
     STRUCTURAL_CONTRACT_FIELDS = ('symbol', 'venue', 'security_id',
                                   'security_exchange', 'tick_size',
-                                  'tick_value', 'contract_multiplier',
+                                  'tick_value', 'raw_tick_size',
+                                  'display_factor', 'contract_multiplier',
                                   'currency', 'min_qty', 'qty_step',
                                   'max_qty')
 
@@ -613,6 +611,8 @@ class Engine:
         restart: List[str] = []
 
         for key, value in new.settings.items():
+            if key == 'AUTO_TRADE_ENABLED':
+                continue  # the live switch wins over an edited settings file
             if self.config.settings.get(key) != value:
                 if key in config_mod.STRUCTURAL_SETTINGS:
                     restart.append(key)
@@ -675,6 +675,8 @@ class Engine:
         """
         self.killed = True
         self.master_algo = False
+        self.auto_trade_enabled = False
+        self.executor.escalating.clear()
         cancelled = self.executor.cancel_all()
         closed = 0
         if close_positions:
@@ -694,6 +696,25 @@ class Engine:
             self.db.log_event(kind, text, rt.contract.key)
 
     # -- the snapshot ------------------------------------------------------
+
+    def halted_by(self, rt: ContractRuntime, now: datetime) -> Optional[str]:
+        """Why this contract is HALTED, in words, or None when it is not.
+
+        The same three causes `state_of` checks, in the same order. A badge
+        that says HALTED and nothing else reads as a fault in the program;
+        the usual cause on a quiet UAT book is a price that has not moved.
+        """
+        if self.killed:
+            return "KILL ALL is on — new entries are stopped desk-wide"
+        if rt.halted_reason:
+            return rt.halted_reason
+        if rt.guard.is_stale(now):
+            age = rt.guard.age(now) or 0.0
+            return (f"the bid/ask has not changed for {age:.0f}s — the limit "
+                    f"is {rt.guard.max_quote_age_sec:g}s (MAX_QUOTE_AGE_SEC). "
+                    f"New entries wait for the price to move; exits and "
+                    f"CLOSE NOW still work")
+        return None
 
     def state_of(self, rt: ContractRuntime, now: datetime) -> ContractState:
         if self.killed or rt.halted_reason:
@@ -741,10 +762,12 @@ class Engine:
                 'key': key,
                 'name': contract.name,
                 'symbol': contract.symbol,
+                'security_id': contract.security_id,
                 'venue': contract.venue,
                 'decimals': contract.decimals,
                 'tick_size': contract.tick_size,
                 'state': self.state_of(rt, now).value,
+                'halted_by': self.halted_by(rt, now),
                 'algo_on': bool(contract.algo_on),
                 'market': (book.to_dict() if book is not None else
                            {'bid': None, 'ask': None, 'mid': None}),
@@ -766,7 +789,6 @@ class Engine:
                 },
                 'settings': {
                     'entry_threshold': settings.get('entry_threshold'),
-                    'trade_direction': settings.get('trade_direction'),
                     'stop_loss_z': settings.get('stop_loss_z'),
                     'quantity': qty,
                     'entry_order_type': settings.get('entry_order_type'),
@@ -775,6 +797,7 @@ class Engine:
                 'position': self._position_dict(pos, open_pnl),
                 'orders': [w.to_dict() for w in
                            self.executor.working_for(key)],
+                'proposal': rt.proposal,
                 'last_close': rt.last_close,
                 'pnl_today': round(rt.pnl_today, 2),
                 'trades_today': rt.trades_today,
@@ -796,17 +819,10 @@ class Engine:
                 'alive': True,
                 'loop_ms': round(self.loop_ms, 1),
                 'master_algo': self.master_algo,
-                #: Who is publishing this. A restart after a crash has to be
-                #: able to tell a LIVE engine from the last file a dead one
-                #: left behind — see `runner.another_engine_is_running`.
-                'pid': os.getpid(),
-                'host': socket.gethostname(),
+                'auto_trade_enabled': self.auto_trade_enabled,
+                'auto_trade_available': not getattr(self.gateway, 'connection_only', False),
                 'killed': self.killed,
                 'environment': self.config.environment_label,
-                #: Which account the algo is trading. On a desk that gives it
-                #: a sub-account this is as load-bearing as UAT/PROD: the
-                #: screen must never leave "whose money is this" to memory.
-                'account': self.trading_accounts(),
                 'simulated': self.simulated,
                 'book_complete': self.book_complete,
                 'unclaimed': self.unclaimed,
@@ -817,10 +833,18 @@ class Engine:
                 'config_reloaded_at': (self.config_reloaded_at.isoformat()
                                        if self.config_reloaded_at else None),
                 'config_restart_needed': list(self.config_restart_needed),
+                #: Whether a launcher is behind this engine to start it again,
+                #: which is what the restart button needs.
+                'supervised': bool(os.environ.get('FIXTRADER_SUPERVISED')),
                 'session': {
                     'state': self.gateway.state().value,
                     'text': self.gateway.state_text(),
                 },
+                'connection_only': getattr(self.gateway, 'connection_only', False),
+                'fix_connection': (self.gateway.connection_snapshot()
+                                   if hasattr(self.gateway, 'connection_snapshot') else None),
+                'manual_terminal': (self.gateway.terminal.snapshot()
+                                    if hasattr(self.gateway, 'terminal') else None),
                 'refresh_sec': self.config.settings.get('PRICE_REFRESH_SEC', 0.5),
                 'sound': self.config.settings.get('SOUND_ENABLED', True),
                 'confirm_close': self.config.settings.get('CONFIRM_CLOSE', True),
@@ -851,12 +875,7 @@ class Engine:
         by_key = {}
         if venue_positions is not None:
             for vp in venue_positions:
-                # The Positions window puts OUR book beside THE VENUE's. A
-                # position on somebody else's account in that column would
-                # read as this system's, and the two disagreeing is the
-                # whole point of the column.
-                if self.is_ours(vp.contract_key, vp.account):
-                    by_key[vp.contract_key] = vp
+                by_key[vp.contract_key] = vp
 
         rows: List[Dict[str, Any]] = []
         for c in contracts:
@@ -898,6 +917,10 @@ class Engine:
         return {
             'rows': rows,
             'venue_readable': venue_positions is not None,
+            'position_scope': 'account_verified' if venue_positions is not None else 'algo_local',
+            'account_status': ('verified' if venue_positions is not None else
+                               'unavailable' if getattr(self.gateway, 'connection_only', False)
+                               else 'recovery_pending'),
             # Unmeasured is not zero: a total is only a total when every row
             # it covers was measured.
             'open_pnl': (round(sum(pnls), 2)

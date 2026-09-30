@@ -24,17 +24,23 @@ const state = {
   focused: null,
   free: false,
   notify: { orders: false, fills: true, positions: true, rejects: true },
+  quoteStream: null,
 };
 
 /* -- formatting ---------------------------------------------------------- */
 
 function num(value, decimals) {
   if (value === null || value === undefined || Number.isNaN(value)) return DASH;
-  return Number(value).toFixed(decimals === undefined ? 2 : decimals);
+  return String(Number(Number(value).toFixed(decimals === undefined ? 2 : decimals)));
+}
+function price(value) {
+  if (value === null || value === undefined || value === '') return DASH;
+  const number = Number(value);
+  return Number.isFinite(number) ? String(Number(number.toPrecision(15))) : DASH;
 }
 function signed(value, decimals) {
   if (value === null || value === undefined) return DASH;
-  const s = Number(value).toFixed(decimals === undefined ? 2 : decimals);
+  const s = String(Number(Number(value).toFixed(decimals === undefined ? 2 : decimals)));
   return Number(value) > 0 ? '+' + s : s;
 }
 function money(value) {
@@ -180,6 +186,23 @@ async function commandResult(id, timeoutMs) {
   return null;
 }
 
+/* The engine takes on a new contract when it starts. It stops the way it
+ * always stops — this system's own working orders cancelled, the book
+ * already on disk — and the launcher starts it again. */
+async function restartEngine() {
+  const ok = await ask('Restart the engine',
+    'The engine stops — cancelling any working orders this system sent — ' +
+    'and the launcher starts it again with the saved changes. Open ' +
+    'positions are kept and recovered. Prices pause and the TT sessions ' +
+    'log on again: allow about 15 seconds.', 'Restart engine');
+  if (!ok) return;
+  const answer = await command('restart_engine');
+  if (answer && answer.ok) {
+    toast('OK', 'RESTARTING', 'the engine is restarting — the desk comes ' +
+      'back within about 15 seconds');
+  }
+}
+
 /* -- one window ----------------------------------------------------------- */
 
 function windowFor(key) {
@@ -283,6 +306,7 @@ function renderContract(c) {
   q('.venue').textContent = c.symbol || '';
   q('.state').textContent = c.state;
   q('.state').className = 'state s-' + c.state;
+  q('.state').title = c.halted_by ? 'Halted: ' + c.halted_by : '';
   el.classList.toggle('stale', !!(c.feed && c.feed.stale));
 
   const sw = q('.sw');
@@ -290,13 +314,13 @@ function renderContract(c) {
   sw.querySelector('span').textContent = c.algo_on ? 'ON' : 'OFF';
 
   const m = c.market || {};
-  q('.bidc .v').textContent = num(m.bid, d);
-  q('.askc .v').textContent = num(m.ask, d);
+  q('.bidc .v').textContent = price(m.bid);
+  q('.askc .v').textContent = price(m.ask);
   q('.bidc .sz').textContent = m.bid_size === null || m.bid_size === undefined
     ? DASH : String(m.bid_size);
   q('.askc .sz').textContent = m.ask_size === null || m.ask_size === undefined
     ? DASH : String(m.ask_size);
-  q('.mid').textContent = num(m.mid, d);
+  q('.mid').textContent = price(m.mid);
 
   const s = c.stats || {};
   q('.f-mean').textContent = num(s.mean, d);
@@ -316,25 +340,6 @@ function renderContract(c) {
       ? 'the Hurst filter is off for this contract, so it is not computed'
       : 'not enough of a window to estimate it yet');
   q('.f-hl').textContent = s.half_life === null ? DASH : num(s.half_life, 1);
-
-  // A one-way contract is armed and yet cannot take half the signals it
-  // shows. The band it will never enter is marked on the strip, so the
-  // restriction is visible where the trader is actually looking.
-  const way = String((c.settings && c.settings.trade_direction) || 'BOTH')
-    .toUpperCase();
-  el.classList.toggle('short-only', way === 'SHORT_ONLY');
-  el.classList.toggle('long-only', way === 'LONG_ONLY');
-  const wayTag = q('.f-way');
-  if (wayTag) {
-    wayTag.textContent = way === 'SHORT_ONLY' ? 'SELL ONLY'
-      : way === 'LONG_ONLY' ? 'BUY ONLY' : '';
-    wayTag.title = way === 'BOTH' ? ''
-      : 'this contract enters only ' + (way === 'SHORT_ONLY'
-        ? 'when the spread is rich — a cheap one is left alone'
-        : 'when the spread is cheap — a rich one is left alone') +
-        '. Entries only: an open position is always closed.';
-    wayTag.classList.toggle('hidden', way === 'BOTH');
-  }
 
   // the z strip, drawn between the two entry thresholds
   const threshold = (c.settings && c.settings.entry_threshold) || 2;
@@ -369,8 +374,14 @@ function renderContract(c) {
       (f.edge_ok ? 'p-pass">PASS' : 'p-block">BLOCK') + '</span>';
   }
   const blocked = q('.f-blocked');
-  blocked.classList.toggle('hidden', !f.blocked_by);
-  if (f.blocked_by) blocked.textContent = 'Withheld: ' + f.blocked_by;
+  const why = c.halted_by ? 'Halted: ' + c.halted_by
+    : f.blocked_by ? 'Withheld: ' + f.blocked_by : '';
+  blocked.classList.toggle('hidden', !why);
+  if (why) blocked.textContent = why;
+  const proposal = q('.f-proposal');
+  proposal.classList.toggle('hidden', !c.proposal);
+  if (c.proposal) proposal.textContent = 'Proposal: ' + c.proposal.side +
+    ' ' + c.proposal.qty + ' · ' + c.proposal.reason;
 
   // position
   const pos = c.position;
@@ -382,14 +393,14 @@ function renderContract(c) {
     q('.posline .side').textContent = pos.side;
     q('.posline .side').className = 'side ' + pos.side;
     q('.posline .q').textContent = pos.qty;
-    q('.posline .at').textContent = '@ ' + num(pos.avg_price, d);
+    q('.posline .at').textContent = '@ ' + price(pos.avg_price);
     const pnl = q('.posline .pnl');
     pnl.textContent = money(pos.open_pnl);
     pnl.className = 'pnl ' + (pos.open_pnl > 0 ? 'up' : pos.open_pnl < 0 ? 'dn' : '');
     q('.p-zin').textContent = signed(pos.entry_z, 2);
-    q('.p-be').textContent = num(pos.break_even, d);
-    q('.p-tgt').textContent = num(pos.target, d);
-    q('.p-stop').textContent = num(pos.stop, d);
+    q('.p-be').textContent = price(pos.break_even);
+    q('.p-tgt').textContent = price(pos.target);
+    q('.p-stop').textContent = price(pos.stop);
     q('.p-held').textContent = held(pos.opened_at);
     q('.p-margin').textContent = pos.margin_locked === null ? DASH
       : '$' + Math.round(pos.margin_locked).toLocaleString();
@@ -414,7 +425,6 @@ function renderContract(c) {
     : c.state === 'WARMING' ? ' warnf' : '');
 
   markPosition(el, c);
-  refreshConfigNote(c.key);
 
   // A change of last_event is a thing that happened: say it once, and only
   // if the operator asked to hear about that kind. Order traffic is off by
@@ -548,17 +558,25 @@ function renderPositions(snap) {
   const p = snap.portfolio || { rows: [], venue_readable: true };
   const el = positionsWindow();
   const rows = p.rows || [];
+  const localOnly = p.position_scope === 'algo_local' || p.venue_readable === false;
+  const unsupported = p.account_status === 'unavailable' || snap.engine?.connection_only;
+  el.querySelector('.title').textContent = localOnly ? 'Algo positions' : 'Positions';
 
   el.querySelector('.pv-count').textContent =
-    rows.length + (rows.length === 1 ? ' open' : ' open');
+    rows.length + (localOnly ? ' tracked' : ' open');
   el.querySelector('.pv-empty').classList.toggle('hidden', rows.length > 0);
+  el.querySelector('.pv-empty').textContent = localOnly
+    ? 'No open algo positions recorded by this app.' : 'No open positions reported.';
 
   // "could not read" is not "flat", and the table must not imply it is.
   const banner = el.querySelector('.pv-banner');
   const unreadable = p.venue_readable === false;
   banner.classList.toggle('hidden', !unreadable);
+  banner.classList.toggle('critical', unreadable && !unsupported);
   if (unreadable) {
-    banner.textContent = 'The venue could not be read, so what is shown is ' +
+    banner.textContent = unsupported
+      ? 'Showing this app\'s algo book. Account-wide positions are not verified. Live quotes and strategy monitoring remain available.'
+      : 'The venue could not be read, so what is shown is ' +
       'this book alone. It is NOT confirmation that the account is flat.';
   }
 
@@ -573,12 +591,12 @@ function renderPositions(snap) {
       ['txt', r.name],
       ['txt', r.side ? '<span class="tag ' + r.side + '">' + r.side + '</span>' : DASH],
       ['r', r.qty === null ? DASH : String(r.qty)],
-      ['r', num(r.avg_price, d)],
-      ['r', num(r.mid, d)],
+      ['r', price(r.avg_price)],
+      ['r', price(r.mid)],
       ['r', signed(r.entry_z, 2)],
-      ['r', num(r.break_even, d)],
-      ['r', num(r.target, d)],
-      ['r', num(r.stop, d)],
+      ['r', price(r.break_even)],
+      ['r', price(r.target)],
+      ['r', price(r.stop)],
       ['r', held(r.opened_at)],
       ['r', r.margin_locked === null || r.margin_locked === undefined ? DASH
         : '$' + Math.round(r.margin_locked).toLocaleString()],
@@ -627,7 +645,8 @@ function renderPositions(snap) {
     'realised today ' + money(p.realised_today) + ' · ' +
     (p.trades_today || 0) + ' trades';
   el.querySelector('.pv-day').textContent = p.venue_readable
-    ? 'book and venue agree' : 'venue unreadable';
+    ? (rows.every((r) => r.agrees) ? 'book and venue agree' : 'position reconciliation required')
+    : 'account verification unavailable';
 }
 
 /* -- the Analysis window --------------------------------------------------
@@ -866,8 +885,8 @@ function renderJournal(el, rows, decimals) {
       '<td class="r">' + r.qty + '</td>' +
       '<td class="r">' + signed(r.entry_z, 2) + '</td>' +
       '<td class="r">' + signed(r.exit_z, 2) + '</td>' +
-      '<td class="r">' + num(r.entry_price, decimals) + '</td>' +
-      '<td class="r">' + num(r.exit_price, decimals) + '</td>' +
+      '<td class="r">' + price(r.entry_price) + '</td>' +
+      '<td class="r">' + price(r.exit_price) + '</td>' +
       '<td class="r">' + money(r.gross) + '</td>' +
       '<td class="r">' + money(r.fees) + '</td>' +
       '<td class="r ' + (r.net > 0 ? 'up' : r.net < 0 ? 'dn' : '') + '">' +
@@ -1010,15 +1029,12 @@ function renderReplay(el, report, live) {
   }
 
   const a = report.assumptions || {};
-  // Whether the exits came off a real book or a guess is the difference
-  // between a measurement and an estimate, so it leads.
-  const measured = a.book_assumed === 0 && a.book_recorded;
   note.innerHTML = 'This is a <b>signal</b> replay, not a fill simulator. ' +
-    '<b>The book:</b> ' + (a.book || 'assumed') +
-    (measured ? '' : ' — an exit reads the executable side, so where the ' +
-      'book was not recorded the exit price is an assumption') + '. ' +
-    (a.fills || '') + '; ' + (a.costs || '') + '. Read against ' +
-    (report.samples || 0) + ' recorded prices.';
+    'The book was ' + (a.book || 'assumed') + '; ' + (a.fills || '') + '; ' +
+    (a.costs || '') + '. ' +
+    (a.margin ? '<b>Margin:</b> ' + a.margin + '. ' : '') +
+    'Read against ' + (report.samples || 0) +
+    ' recorded prices.';
 }
 
 function cls(v) {
@@ -1032,6 +1048,9 @@ async function loadAnalysis() {
   const current = () => mine === analysis.seq;
   const el = analysisWindow();
   const contracts = (window.__lastSnapshot || {}).contracts || [];
+  if (analysis.key && !contracts.some((c) => c.key === analysis.key)) {
+    analysis.key = contracts.length ? contracts[0].key : null;
+  }
   if (analysis.key === undefined) analysis.key = null;
   if (analysis.key === null && contracts.length && analysis.key !== null) { /* noop */ }
   if (analysis.key === null && !el.dataset.touched) {
@@ -1185,19 +1204,6 @@ function renderChrome(snap) {
   badge.title = engine.simulated
     ? 'these prices come from the simulator, not from a venue'
     : 'live venue session';
-
-  // Whose money this is, beside which environment it is. On a desk that
-  // gives the algo its own sub-account the two questions are the same class
-  // of question, and neither should be left to memory. An em dash where no
-  // account is configured: blank is not "the default account".
-  const acct = document.getElementById('account-badge');
-  if (acct) {
-    acct.textContent = engine.account || DASH;
-    acct.title = engine.account
-      ? 'every order this system sends is stamped with this account'
-      : 'no account configured — orders go out without one (tag 1 empty)';
-    acct.classList.toggle('unset', !engine.account);
-  }
   badge.className = 'env' + (engine.environment === 'PROD' ? ' prod'
     : engine.simulated ? ' sim' : '');
 
@@ -1212,6 +1218,9 @@ function renderChrome(snap) {
     banner.classList.remove('critical');
     banner.textContent = 'KILL ALL is on — every algo is stood down and ' +
       'our working orders are cancelled. Positions are untouched.';
+  } else if (engine.connection_only) {
+    banner.classList.remove('hidden', 'critical');
+    banner.textContent = 'Live FIX market data and algo proposals are available. Automatic orders require account recovery and FIX execution integration. Reviewed manual UAT orders remain under Instruments & orders.';
   } else if (engine.book_complete === false) {
     banner.classList.remove('hidden');
     banner.classList.add('critical');
@@ -1235,9 +1244,24 @@ function renderChrome(snap) {
   const waiting = engine.config_restart_needed || [];
   restart.classList.toggle('hidden', waiting.length === 0);
   if (waiting.length) {
-    restart.textContent = 'SAVED, NOT IN FORCE — ' + waiting.join(', ') +
+    const said = 'SAVED, NOT IN FORCE — ' + waiting.join(', ') +
       '. These change something the running engine already holds; restart it ' +
       'for them to take effect. Everything else you saved is live now.';
+    // Rebuilt only when the list changes, or the button would be replaced
+    // under the pointer twice a second.
+    if (restart.dataset.said !== said) {
+      restart.dataset.said = said;
+      restart.textContent = said + ' ';
+      if (engine.supervised) {
+        const b = document.createElement('button');
+        b.className = 'btn sm';
+        b.textContent = 'Restart engine now';
+        b.onclick = restartEngine;
+        restart.appendChild(b);
+      }
+    }
+  } else {
+    restart.dataset.said = '';
   }
 
   const link = document.getElementById('link-badge');
@@ -1251,6 +1275,12 @@ function renderChrome(snap) {
   const master = document.getElementById('master-toggle');
   master.textContent = 'Master: ' + (engine.master_algo ? 'ON' : 'OFF');
   master.classList.toggle('act', !!engine.master_algo);
+  const auto = document.getElementById('auto-trade-toggle');
+  auto.textContent = 'Auto trade: ' + (engine.auto_trade_enabled ? 'ON' : 'OFF');
+  auto.classList.toggle('act', !!engine.auto_trade_enabled);
+  auto.title = engine.auto_trade_available
+    ? 'Turn automatic order placement on or off'
+    : 'Automatic FIX orders require account recovery and execution integration';
 
   const stat = document.getElementById('loop-stat');
   stat.textContent = 'loop ' + (engine.loop_ms === undefined ? DASH
@@ -1284,10 +1314,9 @@ function renderChrome(snap) {
  */
 
 const CFG_GROUPS = [
-  { name: 'Signal', note: exitModeNote, fields: [
+  { name: 'Signal', fields: [
     ['lookback', 'Lookback', 'samples in the rolling window', 'number', { step: 10, min: 2 }],
     ['stats_update_interval_sec', 'Recompute mean and σ every', 'seconds; 0 = every update. Stable bands are easier to aim at', 'number', { step: 10, min: 0 }],
-    ['trade_direction', 'Trade which way', 'a spread ABOVE its mean is SOLD', 'select', { options: [['BOTH', 'Both directions'], ['SHORT_ONLY', 'Short spread only (high → low)'], ['LONG_ONLY', 'Long spread only (low → high)']] }],
     ['entry_threshold', 'Enter at |z|', '', 'number', { step: 0.1, min: 0 }],
     ['exit_signal_mode', 'Exit on', '', 'select', { options: [['profit', 'Profit target'], ['zscore', 'z-score'], ['hybrid', 'Whichever comes first']] }],
     ['exit_threshold', 'Exit at |z|', 'used by z-score and hybrid', 'number', { step: 0.1, min: 0 }],
@@ -1324,7 +1353,7 @@ const CFG_GROUPS = [
     ['time_in_force', 'Time in force', '', 'select', { options: [['DAY', 'Day'], ['IOC', 'IOC'], ['GTC', 'GTC']] }],
     ['close_offset_mode', 'Closing flag', 'what this venue wants on a close. AUTO reads the venue; an unknown flag degrades to CLOSE, never to OPEN', 'select', { options: [['AUTO', 'Auto'], ['CLOSE', 'Close'], ['CLOSE_TODAY_FIRST', 'Close today first'], ['NONE', 'None (netting venue)']] }],
   ] },
-  { name: 'Costs', note: targetNote, fields: [
+  { name: 'Costs', fields: [
     ['commission_per_contract', 'Commission', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
     ['exchange_fee_per_contract', 'Exchange fee', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
     ['clearing_fee_per_contract', 'Clearing fee', 'per contract, per side', 'number', { step: 0.1, min: 0 }],
@@ -1469,128 +1498,7 @@ function paintConfig(key) {
     || CFG_GROUPS[0];
   el.querySelector('.cfg-body').innerHTML = '<div class="cb">' +
     group.fields.map((f) => cfgField(f[0], f[1], f[2], f[3], f[4], row)).join('') +
-    (group.note ? group.note(row, liveContract(key)) : '') +
     '</div>';
-}
-
-/* Keep a settings panel's NOTE current without touching its boxes.
- *
- * The note quotes live figures — the round trip, an open position's
- * break-even and target — and those move. Repainting the whole panel to
- * refresh them would wipe out whatever is half-typed in a field, so only the
- * note is replaced. */
-function refreshConfigNote(key) {
-  const el = document.querySelector('.win[data-key="__config__' + key + '"]');
-  const row = cfgState[key] && cfgState[key].contract;
-  if (!el || !row) return;
-  const note = el.querySelector('.cfg-explains');
-  if (!note) return;
-  const group = CFG_GROUPS.find((g) => g.name === cfgState[key].group);
-  if (!group || !group.note) return;
-  const wrapper = document.createElement('div');
-  wrapper.innerHTML = group.note(row, liveContract(key));
-  const fresh = wrapper.firstElementChild;
-  if (fresh && fresh.innerHTML !== note.innerHTML) {
-    note.innerHTML = fresh.innerHTML;
-    note.className = fresh.className;
-  }
-}
-
-/* This contract as the ENGINE last described it. Every money figure a note
- * below shows comes from here — the panel states the arithmetic, it never
- * performs it. One conversion, in `sizing.py`, and a screen that recomputes
- * a target is a screen that can disagree with the order that was sent. */
-function liveContract(key) {
-  const snap = window.__lastSnapshot || {};
-  return (snap.contracts || []).find((c) => c.key === key) || null;
-}
-
-/* Where the profit target actually comes from, in the contract's own
- * figures. It answers the question the Costs tab invites and cannot
- * otherwise settle without opening a position. */
-function targetNote(row, live) {
-  const eff = row.effective || {};
-  const pct = eff.profit_target_pct;
-  const basis = String(eff.profit_target_basis || 'MARGIN');
-  const basisName = { MARGIN: 'initial margin', NOTIONAL: 'notional',
-                      ENTRY_SIGMA: 'sigma at entry' }[basis] || basis;
-  const d = row.decimals === undefined ? 4 : row.decimals;
-  const costs = (live && live.costs) || {};
-  const pos = live && live.position;
-
-  let out = '<div class="finding cfg-explains"><b>Target = break-even ' +
-    (pct ? '+ ' + num(pct, 2) + '% of ' + basisName : '(the target is 0%: ' +
-      'leave at break-even)') + '</b><br>' +
-    'Break-even is the fill plus this contract\'s whole round trip — ' +
-    'commission, exchange, clearing and the slippage budget, both sides. ' +
-    'It is <b>' + money(costs.round_trip_money) + '</b> here' +
-    (costs.round_trip_ticks !== null && costs.round_trip_ticks !== undefined
-      ? ' (' + num(costs.round_trip_ticks, 2) + ' ticks)' : '') +
-    ' at the configured quantity. A long\'s break-even is ABOVE its fill and ' +
-    'its target above that; a short\'s are below.';
-
-  if (pos && pos.qty) {
-    out += '<br><b>Open now:</b> filled ' + num(pos.avg_price, d) +
-      ' → break-even ' + num(pos.break_even, d) + ' → target ' +
-      num(pos.target, d) +
-      (pos.margin_locked ? ', on margin of ' + money(pos.margin_locked) : '');
-  }
-  if (live && live.target_missing) {
-    out += '<br><span class="warnline">The target cannot be priced: ' +
-      live.target_missing + ' — it renders as an em dash rather than a ' +
-      'number nothing stands behind, and the position is held by the stop ' +
-      'and the z instead.</span>';
-  } else if (basis === 'MARGIN' && !(pos && pos.margin_locked)) {
-    out += '<br>On <b>initial margin</b> the target can only be priced once ' +
-      'the venue reports the margin a position locked up. Until it does, ' +
-      'the target shows as an em dash — never as a figure nothing stands ' +
-      'behind.';
-  }
-  return out + '</div>';
-}
-
-/* A direction restriction halves the trades a contract can take, quietly.
- * It is worth a line saying so — and saying that it is an ENTRY rule, since
- * "short only" reading as "cannot buy" would be alarming beside an open long
- * that still has to be closed. */
-function directionNote(eff) {
-  const way = String(eff.trade_direction || 'BOTH').toUpperCase();
-  if (way === 'BOTH') return '';
-  const selling = way === 'SHORT_ONLY';
-  return '<div class="finding warn cfg-explains"><b>' +
-    (selling ? 'Short spread only' : 'Long spread only') + '.</b> This ' +
-    'contract enters only when the spread is ' +
-    (selling ? 'RICH — z above the threshold, sold back down to the mean. A ' +
-      'cheap spread is left alone' : 'CHEAP — z below the threshold, bought ' +
-      'back up to the mean. A rich spread is left alone') +
-    ', so roughly half the signals are passed over. It restricts ENTRIES ' +
-    'only: a position already on is closed by whatever closes it.</div>';
-}
-
-/* The Signal tab names the exit MODE; the number that defines it lives on
- * Costs. Saying so is cheaper than the trip a trader makes looking for it. */
-function exitModeNote(row, live) {
-  const eff = row.effective || {};
-  const mode = String(eff.exit_signal_mode || 'profit');
-  if (mode === 'zscore') {
-    return directionNote(eff) +
-      '<div class="finding cfg-explains">Exiting on <b>z-score</b>: this ' +
-      'contract leaves when z comes back to ' + num(eff.exit_threshold, 2) +
-      ', whatever the trade is worth. The profit target is not consulted.' +
-      '</div>';
-  }
-  const pct = eff.profit_target_pct;
-  const basis = { MARGIN: 'initial margin', NOTIONAL: 'notional',
-                  ENTRY_SIGMA: 'sigma at entry' }[
-    String(eff.profit_target_basis || 'MARGIN')] || 'initial margin';
-  return directionNote(eff) +
-    '<div class="finding cfg-explains">Exiting on <b>' +
-    (mode === 'hybrid' ? 'whichever comes first' : 'the profit target') +
-    '</b>: break-even plus <b>' + num(pct, 2) + '% of ' + basis + '</b>' +
-    (mode === 'hybrid' ? ', or z back to ' + num(eff.exit_threshold, 2) : '') +
-    '. <b>The percentage itself is set on the Costs tab</b>, beside the fees ' +
-    'it is measured from — the target is taken after the round trip, so the ' +
-    'two are one calculation.</div>';
 }
 
 async function saveConfig(key) {
@@ -1661,6 +1569,53 @@ function restartTimer() {
   state.timer = setInterval(tick, state.refresh);
 }
 
+/* Market prices bypass the 500 ms account/status snapshot. The engine's
+ * latest-value SSE stream is written off the FIX receiver thread, so a slow
+ * browser skips frames without ever applying backpressure to FIX. Strategy
+ * statistics and order/account state continue to come from the authoritative
+ * engine snapshot. */
+function connectQuoteStream() {
+  if (!window.EventSource || state.quoteStream) return;
+  const source = new EventSource('/api/quotes/stream');
+  state.quoteStream = source;
+  source.onmessage = (event) => {
+    try {
+      const frame = JSON.parse(event.data);
+      const snap = window.__lastSnapshot;
+      if (!snap?.engine?.alive || snap.engine.simulated ||
+          snap.engine.session?.state !== 'LOGGED_ON' ||
+          frame.source !== 'TT_FIX_UAT' || frame.simulated !== false ||
+          !frame.connected ||
+          !Number.isFinite(frame.server_sent_ms) ||
+          !Number.isFinite(frame.published_ms) ||
+          frame.server_sent_ms - frame.published_ms > 3000) return;
+      (snap.contracts || []).forEach((contract) => {
+        const quote = (frame.quotes || {})[contract.security_id];
+        if (!quote || !quote.timestamp) return;
+        const market = contract.market || (contract.market = {});
+        for (const field of ['bid', 'ask', 'last', 'bid_size', 'ask_size', 'last_size', 'timestamp']) {
+          if (quote[field] !== undefined) market[field] = quote[field];
+        }
+        market.mid = market.bid !== null && market.bid !== undefined &&
+          market.ask !== null && market.ask !== undefined
+          ? (market.bid + market.ask) / 2 : null;
+        market.width = market.mid === null ? null : market.ask - market.bid;
+        const age = Math.max(0, (Date.now() - Date.parse(quote.timestamp)) / 1000);
+        contract.feed = Object.assign({}, contract.feed, {
+          age_sec: Number(age.toFixed(1)),
+          stale: quote.integrity_ok === false || age > 15,
+        });
+        renderContract(contract);
+      });
+    } catch (e) { /* the regular snapshot remains the recovery path */ }
+  };
+  source.onerror = () => {
+    // EventSource reconnects automatically. Clear this only when the browser
+    // has permanently closed it so a later page lifecycle can reconnect.
+    if (source.readyState === EventSource.CLOSED) state.quoteStream = null;
+  };
+}
+
 /* -- wiring --------------------------------------------------------------- */
 
 document.getElementById('kill').onclick = async () => {
@@ -1673,6 +1628,10 @@ document.getElementById('kill').onclick = async () => {
 document.getElementById('master-toggle').onclick = async () => {
   const on = document.getElementById('master-toggle').classList.contains('act');
   await command('master_algo', '', { on: !on });
+};
+document.getElementById('auto-trade-toggle').onclick = async () => {
+  const on = document.getElementById('auto-trade-toggle').classList.contains('act');
+  await command('auto_trade', '', { on: !on });
 };
 
 document.getElementById('sound-toggle').onclick = (e) => {
@@ -1724,3 +1683,4 @@ document.addEventListener('keydown', (e) => {
 
 tick();
 restartTimer();
+connectQuoteStream();

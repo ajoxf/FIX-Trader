@@ -237,11 +237,6 @@ class OrderRequest:
     #: Said to the VENUE. Never left at OPEN on a closing order — that is the
     #: order that opens an opposite position instead of closing one.
     position_effect: PositionEffect = PositionEffect.OPEN
-    #: The account this is sent FOR — FIX tag 1. On a desk that gives the
-    #: algo its own sub-account this is the whole separation between what
-    #: this system did and what a person did by hand, so it is stamped on
-    #: every order rather than assumed from the session.
-    account: str = ""
     #: Our own position, and the venue's own ids for the fills that built it.
     #: Carried so a close is traceable to what it closes, and so a venue that
     #: wants a position or ticket reference has one to be given.
@@ -292,12 +287,6 @@ class Fill:
 @dataclass
 class VenuePosition:
     contract_key: str = ""
-    #: Whose position this is. A session that can see more than one account
-    #: reports more than one account's positions, and on a desk where the
-    #: algo has its own sub-account most of them are none of this system's
-    #: business. EMPTY means the venue did not say — which is not the same
-    #: as "ours", and is not treated as ours.
-    account: str = ""
     qty: float = 0.0                       # signed NET: + long, - short
     avg_price: Optional[float] = None
     margin: Optional[float] = None

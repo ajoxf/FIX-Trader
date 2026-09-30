@@ -568,7 +568,7 @@ table.grid tr.cannot-pay .tag { opacity: .55; }
           font: 500 10.5px/1 var(--mono); font-variant-numeric: tabular-nums;
           color: var(--ink-faint); }
 .cf-eff.own { color: #2c3036; font-weight: 600; }
-.cfgwin .wfoot .cfg-explains { color: var(--ink-mute); }
+.cfgwin .wfoot .cfg-note { color: var(--ink-mute); }
 
 /* The threshold that actually paid. Marked, because the table beside it —
  * which level reverts most — reliably points somewhere else. */
@@ -640,45 +640,3 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 @media (prefers-reduced-motion: reduce) {
   .win.contractwin, .win.contractwin > .titlebar { transition: none; }
 }
-
-/* A sub-heading inside a settings card. Thirty boxes in one grid is a wall;
- * the groups are the same five the per-contract gear uses, so the two
- * screens teach one vocabulary rather than two. */
-.card .subhead {
-  font: 600 9.5px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase;
-  color: #2c3036; padding: 9px 9px 6px; margin-top: 2px;
-  border-top: 1px solid var(--line-soft); background: #ededed;
-  display: flex; align-items: baseline; gap: 8px;
-}
-.card .subhead:first-of-type { border-top: 0; }
-.card .subhead span {
-  font: 400 10px/1.3 var(--ui); letter-spacing: 0; text-transform: none;
-  color: var(--ink-mute);
-}
-.card .subhead + .cb-grid { padding-top: 8px; }
-.card .cb .hint { line-height: 1.55; }
-
-/* Whose money this is, beside which environment it is. On a desk that gives
- * the algo its own sub-account, "which account" is the same class of
- * question as "UAT or PROD" — and an unset one says so rather than looking
- * like a default. */
-.acct {
-  font: 600 10px/1 var(--mono); letter-spacing: .08em;
-  padding: 3px 6px; border: 1px solid #6f757d; border-radius: 2px;
-  background: #2b2f36; color: #e7e9ec;
-}
-.acct.unset { background: transparent; color: #9aa0a7; border-style: dashed; }
-
-/* A note under a group of settings, in the contract's own figures. It states
- * the arithmetic the engine performs — it never performs it. */
-.cfg-explains { margin-top: 4px; line-height: 1.55; }
-.cfg-explains .warnline { color: #7d5606; }
-
-/* A contract that may only be entered one way. Marked on the window, because
- * it is armed and yet will pass over roughly half of what it shows — and a
- * signal that fires and is not taken looks like a fault otherwise. */
-.way {
-  font: 600 9px/1 var(--mono); letter-spacing: .1em; padding: 3px 5px;
-  background: #efe3c8; color: #6b5212; border: 1px solid #d9c48d;
-}
-.way.hidden { display: none; }

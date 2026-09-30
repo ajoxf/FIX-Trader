@@ -12,11 +12,13 @@ the real one.
 """
 
 import os
+import io
+import csv
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 from . import atomicfile
 from .commands import CommandBridge
@@ -73,7 +75,53 @@ def create_app(config_path: str = "config.json",
 
     @app.get('/')
     def index():
+        if any(v.host and v.fix_version == 'FIX.4.2' for v in load_config().venues.values()):
+            return render_template('connection.html', asset_version=ASSET_VERSION)
         return render_template('index.html', asset_version=ASSET_VERSION)
+
+    @app.get('/connection')
+    def connection():
+        return render_template('connection.html', asset_version=ASSET_VERSION)
+
+    @app.get('/desk')
+    def desk():
+        # A long-running web process must serve a fresh script after a desk
+        # update, even when its process startup version has not changed.
+        version = str(os.stat(os.path.join(app.static_folder, 'app.js')).st_mtime_ns)
+        response = app.make_response(render_template('index.html', asset_version=version))
+        response.headers['Cache-Control'] = 'no-cache'
+        return response
+
+    @app.get('/instruments')
+    def instruments():
+        return render_template('instruments.html', asset_version=ASSET_VERSION)
+
+    @app.get('/logs')
+    def logs_page():
+        return render_template('logs.html', asset_version=ASSET_VERSION)
+
+    def audit_log():
+        from .fix_audit import FixAuditLog
+        return FixAuditLog()
+
+    @app.get('/api/fix-logs')
+    def api_fix_logs():
+        return jsonify({'rows': audit_log().read(request.args.get('limit', 500),
+            request.args.get('category', ''), request.args.get('search', ''))})
+
+    @app.post('/api/fix-logs/clear')
+    def api_clear_fix_logs():
+        audit_log().clear()
+        return jsonify({'ok': True})
+
+    @app.get('/api/fix-logs.csv')
+    def api_fix_logs_csv():
+        rows = audit_log().read(5000, request.args.get('category', ''), request.args.get('search', ''))
+        out = io.StringIO(); columns = ['timestamp','level','category','session','direction','event','sequence','details','raw']
+        writer = csv.DictWriter(out, fieldnames=columns); writer.writeheader()
+        for row in reversed(rows):
+            item = {key: row.get(key, '') for key in columns}; item['details'] = str(item['details']); writer.writerow(item)
+        return Response(out.getvalue(), mimetype='text/csv', headers={'Content-Disposition':'attachment; filename=fix-logs.csv'})
 
     @app.get('/settings')
     def settings_page():
@@ -89,12 +137,27 @@ def create_app(config_path: str = "config.json",
     def api_snapshot():
         return jsonify(read_status())
 
+    @app.get('/api/quotes/stream')
+    def quote_stream():
+        from .quote_stream import events
+        return Response(events(str(status_path) + '.quotes.json'), mimetype='text/event-stream',
+                        headers={'Cache-Control': 'no-cache, no-store', 'X-Accel-Buffering': 'no'})
+
     @app.post('/api/command')
     def api_command():
         data = request.get_json(silent=True) or {}
         action = data.get('action')
         if not action:
             return jsonify({'ok': False, 'error': 'no action'}), 400
+        if action in ('fix_connect', 'fix_reconnect'):
+            sessions = (read_status().get('engine', {}).get('fix_connection', {})
+                        .get('sessions', []))
+            if any('sequence mismatch' in str(session.get('error', '')).lower()
+                   for session in sessions):
+                return jsonify({'ok': False, 'error':
+                    'TT FIX sequence mismatch. Connect/reconnect is blocked until TT '
+                    'confirms the sequence reset or recovery procedure and working '
+                    'orders and fills have been reconciled.'}), 409
         command_id = bridge.submit(action, data.get('contract', ''),
                                    data.get('args') or {})
         return jsonify({'ok': True, 'id': command_id})
@@ -175,10 +238,8 @@ def create_app(config_path: str = "config.json",
             rows, settings, contract.tick_size, contract.tick_value,
             thresholds=levels,
             contract_multiplier=contract.contract_multiplier,
-            contract_key=key)
-        # The sweep's own assumptions come from the first row it ran; the
-        # book counts belong to the whole recording, so they are read once
-        # here rather than inferred from a threshold that took no trades.
+            contract_key=key,
+            margin_per_contract=_db(config).margin_per_contract(key))
         out.update({'ok': True, 'key': key, 'symbol': contract.symbol,
                     'period': period, 'samples': len(rows),
                     'decimals': contract.decimals,
@@ -278,8 +339,20 @@ def create_app(config_path: str = "config.json",
         if venue and venue not in config.venues:
             return jsonify({'ok': False,
                             'error': f"no venue {venue!r}"}), 400
-        key = data.get('key') or re.sub(r'[^a-z0-9]+', '_',
-                                        symbol.lower()).strip('_')
+        def slug(text):
+            return re.sub(r'[^a-z0-9]+', '_', str(text).lower()).strip('_')
+        key = data.get('key') or slug(symbol)
+        # A TT product symbol is shared by every contract in it — `CL` is the
+        # December future AND every CL calendar AND every CL|BZ spread. The
+        # TT Security ID is what tells them apart, so a DIFFERENT instrument
+        # under a taken key gets its own key; the SAME one is still refused.
+        security_id = str(data.get('security_id') or '').strip()
+        taken = config.contracts.get(key)
+        if (taken is not None and not data.get('key') and security_id
+                and str(getattr(taken, 'security_id', '') or '') != security_id):
+            key = slug(data.get('name') or symbol) or key
+            if key in config.contracts:
+                key = f"{key}_{slug(security_id)[-6:]}"
         if key in config.contracts:
             return jsonify({'ok': False,
                             'error': f"{key} already exists"}), 409
@@ -390,6 +463,26 @@ def create_app(config_path: str = "config.json",
         if venue is None:
             return jsonify({'ok': False, 'error': f"no venue {name}"}), 404
 
+        if venue.host:
+            snap = read_status()
+            if not snap.get('engine', {}).get('alive'):
+                return jsonify({'ok': False, 'simulated': False, 'rows': [{
+                    'check': 'Engine', 'ok': False,
+                    'detail': 'The FIX engine is not running.',
+                    'fix': 'Start python start.py --fix --no-browser.'}]})
+            command_id = bridge.submit('fix_connect' if action == 'connect' else 'fix_status',
+                                       args={'venue': name})
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                result = bridge.result(command_id)
+                if result is not None:
+                    return jsonify(result)
+                time.sleep(0.02)
+            return jsonify({'ok': False, 'simulated': False, 'rows': [{
+                'check': 'Engine', 'ok': False,
+                'detail': 'The engine has not answered yet.',
+                'fix': 'Wait briefly, then use Test to read the session status.'}]})
+
         gateway, contracts, simulated = _gateway_for(config, venue)
         rows = []
         try:
@@ -471,6 +564,9 @@ def create_app(config_path: str = "config.json",
             return jsonify({'ok': False,
                             'error': f"contract {key} has no venue"}), 400
 
+        if venue.host:
+            return jsonify({'ok': False, 'simulated': False,
+                            'error': 'Security-definition translation is not implemented by the connection-only TT adapter.'})
         gateway, _, simulated = _gateway_for(config, venue)
         try:
             gateway.start()
@@ -536,10 +632,7 @@ def _csv(filename, columns, rows):
 VENUE_FIELDS = (
     'environment', 'broker', 'host', 'port', 'md_host', 'md_port',
     'sender_comp_id', 'target_comp_id', 'sender_sub_id', 'target_sub_id',
-    'on_behalf_of_comp_id', 'on_behalf_of_sub_id',
-    'md_sender_comp_id', 'md_target_comp_id',
-    'dc_host', 'dc_port', 'dc_sender_comp_id', 'dc_target_comp_id',
-    'fix_version', 'username', 'account',
+    'on_behalf_of_comp_id', 'fix_version', 'username', 'account',
     'heartbeat_sec', 'reset_seq_on_logon', 'use_tls', 'data_dictionary',
     'store_path', 'log_path', 'enabled',
 )

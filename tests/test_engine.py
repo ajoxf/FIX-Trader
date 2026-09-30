@@ -53,6 +53,41 @@ def put_book_at_z(engine, gw, z):
     return px
 
 
+def test_unknown_account_is_explicitly_scoped_to_local_algo_positions(tmp_path):
+    engine, gw, db, cfg = build(tmp_path)
+    assert engine.snapshot()['portfolio']['position_scope'] == 'account_verified'
+    gw.positions = lambda: None
+    gw.connection_only = True
+    portfolio = engine.snapshot()['portfolio']
+    assert portfolio['position_scope'] == 'algo_local'
+    assert portfolio['account_status'] == 'unavailable'
+    assert portfolio['venue_readable'] is False
+
+
+def test_auto_trade_off_still_produces_signal_proposal(tmp_path):
+    engine, gw, db, cfg = build(tmp_path)
+    assert engine.set_auto_trade(False)['ok']
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now)
+    assert rt.proposal['action'] == 'OPEN'
+    assert rt.proposal['side'] == 'SELL'
+    assert not engine.executor.working
+    assert rt.position is None
+    assert engine.snapshot()['engine']['auto_trade_enabled'] is False
+    assert engine.set_auto_trade(True)['ok']
+    engine.poll(now=gw.now)
+    assert engine.executor.working
+
+
+def test_auto_trade_off_disarms_pending_market_escalation(tmp_path):
+    engine, gw, db, cfg = build(tmp_path)
+    engine.executor.escalating['old-order'] = {'intent': 'OPEN'}
+    assert engine.set_auto_trade(False)['ok']
+    assert engine.executor.escalating == {}
+    assert engine.auto_trade_enabled is False
+
+
 def test_it_warms_before_it_trades(tmp_path):
     engine, gw, db, cfg = build(tmp_path)
     rt = engine.runtimes['fef']
@@ -658,102 +693,21 @@ def test_an_unmeasured_net_is_published_as_none_never_as_zero(tmp_path):
     assert rt.last_close['net'] is None
 
 
-# -- the algo's own sub-account ---------------------------------------------
-
-def with_account(cfg, account='ALGO-SUB', key='fef'):
-    """Point the contract at a venue that names an account, as a desk does
-    when the algo trades its own sub-account."""
-    from fixtrader.config import VenueConfig
-    cfg.venues['tt-uat'] = VenueConfig('tt-uat', environment='UAT',
-                                       account=account)
-    cfg.contracts[key].venue = 'tt-uat'
-    return cfg
-
-
-def test_every_order_carries_the_account_it_is_sent_for(tmp_path):
-    """Tag 1 is stamped on the order, never left for the session to imply:
-    it is the line between what this system did and what a person did."""
+def test_a_halted_window_says_why(tmp_path):
+    """HALTED alone reads as a fault. On a quiet book the cause is a price
+    that has not moved, and the window says so — with the limit it hit."""
     engine, gw, db, cfg = build(tmp_path)
-    with_account(cfg)
-    warm_the_window(engine, gw)
-    sent = []
-    original = gw.send
-    gw.send = lambda req: (sent.append(req), original(req))[1]
-    put_book_at_z(engine, gw, 2.5)
-    engine.poll(now=gw.now)
-    assert sent and all(r.account == 'ALGO-SUB' for r in sent)
+    rt = warm_the_window(engine, gw)
+    assert engine.halted_by(rt, gw.now) is None          # the control
 
+    later = gw.now + __import__('datetime').timedelta(seconds=120)
+    engine.poll(now=later)
+    assert engine.state_of(rt, later) is ContractState.HALTED
+    why = engine.halted_by(rt, later)
+    assert 'has not changed' in why and 'MAX_QUOTE_AGE_SEC' in why
+    snap = [c for c in engine.snapshot(now=later)['contracts']
+            if c['key'] == 'fef'][0]
+    assert snap['state'] == 'HALTED' and snap['halted_by'] == why
 
-def test_no_account_configured_sends_an_empty_one_not_a_guess(tmp_path):
-    engine, gw, db, cfg = build(tmp_path)          # no venue, no account
-    warm_the_window(engine, gw)
-    sent = []
-    original = gw.send
-    gw.send = lambda req: (sent.append(req), original(req))[1]
-    put_book_at_z(engine, gw, 2.5)
-    engine.poll(now=gw.now)
-    assert sent and all(r.account == '' for r in sent)
-
-
-def test_another_accounts_position_is_not_this_systems_business(tmp_path):
-    """A person trading by hand in the broker's own UI shows up on the same
-    session. Reporting those as UNCLAIMED every second trains the operator
-    to ignore the one line that matters."""
-    from fixtrader.models import VenuePosition
-    engine, gw, db, cfg = build(tmp_path)
-    with_account(cfg)
-    warm_the_window(engine, gw)
-
-    gw.positions = lambda: [VenuePosition(contract_key='fef', account='HAND',
-                                          qty=7.0)]
-    engine.recover()
-    assert engine.unclaimed == []
-    assert engine.book_complete is True
-
-    # the control: the SAME position on OUR account is unexplained, loudly
-    gw.positions = lambda: [VenuePosition(contract_key='fef',
-                                          account='ALGO-SUB', qty=7.0)]
-    engine.recover()
-    assert len(engine.unclaimed) == 1
-    assert 'ALGO-SUB' in engine.unclaimed[0]['text']
-
-
-def test_a_position_with_no_account_stated_is_still_reconciled(tmp_path):
-    """Unknown is not 'not ours'. Nothing is auto-closed on the strength of
-    this, so the safe error is to report a position we may not own — never
-    to ignore one we do."""
-    from fixtrader.models import VenuePosition
-    engine, gw, db, cfg = build(tmp_path)
-    with_account(cfg)
-    warm_the_window(engine, gw)
-    gw.positions = lambda: [VenuePosition(contract_key='fef', account='',
-                                          qty=7.0)]
-    engine.recover()
-    assert len(engine.unclaimed) == 1
-    assert 'did not say which account' in engine.unclaimed[0]['text']
-
-
-def test_the_positions_window_never_shows_another_accounts_quantity(tmp_path):
-    """The window puts OUR book beside THE VENUE's, and the two disagreeing
-    is the point of the column. Somebody else's position in it would read as
-    this system's."""
-    from fixtrader.models import VenuePosition
-    engine, gw, db, cfg = build(tmp_path)
-    with_account(cfg)
-    warm_the_window(engine, gw)
-    put_book_at_z(engine, gw, 2.5)
-    engine.poll(now=gw.now); engine.poll(now=gw.now)
-
-    gw.positions = lambda: [VenuePosition(contract_key='fef', account='HAND',
-                                          qty=99.0)]
-    row = engine.snapshot(now=gw.now)['portfolio']['rows'][0]
-    assert row['venue_qty'] != 99.0
-
-
-def test_the_screen_says_which_account_and_none_is_not_a_default(tmp_path):
-    engine, gw, db, cfg = build(tmp_path)
-    warm_the_window(engine, gw)
-    assert engine.snapshot(now=gw.now)['engine']['account'] is None
-
-    with_account(cfg)                                   # the control
-    assert engine.snapshot(now=gw.now)['engine']['account'] == 'ALGO-SUB'
+    engine.kill_all()
+    assert 'KILL ALL' in engine.halted_by(rt, later)

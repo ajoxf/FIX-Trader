@@ -1,5 +1,19 @@
 # FIX-Trader
 
+**Instruments & manual UAT orders:** open `/instruments` to search TT futures,
+options and listed spreads, save a watchlist, receive bid/ask prices, and
+review/send manual orders with cancel/replace and execution reports.
+See [symbol and order instructions](docs/INSTRUMENTS_AND_ORDERS.md).
+This manual workflow was added explicitly at the operator's request and is
+separate from the existing algorithm desk. Algorithmic execution and complete
+account-position recovery remain unfinished.
+
+**Local TT UAT connection:** the native connection code from
+`backup_v1fixapp.py` is now integrated. Run `run_fix.ps1` for the configured
+Order Routing and Market Data sessions. See [TT connection](docs/TT_CONNECTION.md)
+for setup and scope. This adds session connectivity; the execution and market
+data translation work described below remains unfinished.
+
 A **statistical-arbitrage monitor and execution terminal for exchange-listed
 spread contracts**, traded over **FIX** through Orient Futures.
 
