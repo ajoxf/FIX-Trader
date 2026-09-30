@@ -178,12 +178,12 @@ class ManualTerminal:
         instrument['display_factor'] = p.get('9787') or instrument.get('display_factor') or ''
         factor = Decimal(str(instrument['display_factor'] or '1'))
         instrument['raw_tick_size'] = raw_tick
-        instrument['tick_size'] = (format(Decimal(str(raw_tick)) * factor, 'f')
+        instrument['tick_size'] = (format((Decimal(str(raw_tick)) * factor).normalize(), 'f')
                                    if raw_tick not in ('', None) else '')
         configured_tick_value = instrument.get('tick_value', '')
         instrument['tick_value'] = configured_tick_value
         if raw_tick not in ('', None) and instrument['point_value']:
-            instrument['tick_value'] = format(Decimal(str(raw_tick)) * Decimal(instrument['point_value']), 'f')
+            instrument['tick_value'] = format((Decimal(str(raw_tick)) * Decimal(instrument['point_value'])).normalize(), 'f')
         instrument['contract_code'] = instrument.get('contract_code') or p.get('455', '')
         instrument['display_name'] = instrument.get('contract_code') or (instrument.get('description', instrument.get('symbol', '')) + ' ' + instrument.get('maturity', ''))
         instrument['tt_name'] = tt_name(instrument)

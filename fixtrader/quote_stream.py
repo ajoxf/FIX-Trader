@@ -49,11 +49,9 @@ class QuotePublisher:
                 failures += 1
                 if failures == 1:
                     logging.getLogger(__name__).exception('Quote stream publish failed; regular snapshots remain available')
-            # Coalesce very small bursts without doing disk IO on the FIX
-            # receiver thread. Five milliseconds keeps the receiver free and
-            # still puts a normal update on screen within one display frame.
-            if self.stopped.wait(0.005):
-                break
+            # The FIX receiver signals the event after updating the book.
+            # Publish on that signal rather than delaying every tick by a
+            # fixed sleep. The file still carries only the latest book.
             self.terminal.quote_changed.wait(1)
 
 

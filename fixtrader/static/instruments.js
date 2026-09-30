@@ -14,7 +14,7 @@
   // inter-commodity ones with a bar.
   const productOf=v=>String(v||'').trim().toUpperCase().replace(/[\s/:+,]+|-(?=[A-Z])/g,'|').replace(/^\|+|\|+$/g,'');
   window.addEventListener('error',event=>{const status=$('feed-status');if(status)status.textContent=`Display error: ${event.message}. Refresh the page; prices are not being presented as live.`;});
-  const fmt = n => n === null || n === undefined || n === '' ? '—' : typeof n === 'number' ? Number(n.toFixed(8)).toString() : String(n);
+  const fmt = n => n === null || n === undefined || n === '' ? '—' : typeof n === 'number' ? String(Number(n.toPrecision(15))) : String(n);
   const clock = n => n ? new Date(n).toLocaleTimeString([], {hour12:false}) : '—';
   function quoteStatus(q) {
     if(!snapshot.engine?.alive)return 'Engine offline · historical prices';

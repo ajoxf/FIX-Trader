@@ -31,11 +31,16 @@ const state = {
 
 function num(value, decimals) {
   if (value === null || value === undefined || Number.isNaN(value)) return DASH;
-  return Number(value).toFixed(decimals === undefined ? 2 : decimals);
+  return String(Number(Number(value).toFixed(decimals === undefined ? 2 : decimals)));
+}
+function price(value) {
+  if (value === null || value === undefined || value === '') return DASH;
+  const number = Number(value);
+  return Number.isFinite(number) ? String(Number(number.toPrecision(15))) : DASH;
 }
 function signed(value, decimals) {
   if (value === null || value === undefined) return DASH;
-  const s = Number(value).toFixed(decimals === undefined ? 2 : decimals);
+  const s = String(Number(Number(value).toFixed(decimals === undefined ? 2 : decimals)));
   return Number(value) > 0 ? '+' + s : s;
 }
 function money(value) {
@@ -309,13 +314,13 @@ function renderContract(c) {
   sw.querySelector('span').textContent = c.algo_on ? 'ON' : 'OFF';
 
   const m = c.market || {};
-  q('.bidc .v').textContent = num(m.bid, d);
-  q('.askc .v').textContent = num(m.ask, d);
+  q('.bidc .v').textContent = price(m.bid);
+  q('.askc .v').textContent = price(m.ask);
   q('.bidc .sz').textContent = m.bid_size === null || m.bid_size === undefined
     ? DASH : String(m.bid_size);
   q('.askc .sz').textContent = m.ask_size === null || m.ask_size === undefined
     ? DASH : String(m.ask_size);
-  q('.mid').textContent = num(m.mid, d);
+  q('.mid').textContent = price(m.mid);
 
   const s = c.stats || {};
   q('.f-mean').textContent = num(s.mean, d);
@@ -388,14 +393,14 @@ function renderContract(c) {
     q('.posline .side').textContent = pos.side;
     q('.posline .side').className = 'side ' + pos.side;
     q('.posline .q').textContent = pos.qty;
-    q('.posline .at').textContent = '@ ' + num(pos.avg_price, d);
+    q('.posline .at').textContent = '@ ' + price(pos.avg_price);
     const pnl = q('.posline .pnl');
     pnl.textContent = money(pos.open_pnl);
     pnl.className = 'pnl ' + (pos.open_pnl > 0 ? 'up' : pos.open_pnl < 0 ? 'dn' : '');
     q('.p-zin').textContent = signed(pos.entry_z, 2);
-    q('.p-be').textContent = num(pos.break_even, d);
-    q('.p-tgt').textContent = num(pos.target, d);
-    q('.p-stop').textContent = num(pos.stop, d);
+    q('.p-be').textContent = price(pos.break_even);
+    q('.p-tgt').textContent = price(pos.target);
+    q('.p-stop').textContent = price(pos.stop);
     q('.p-held').textContent = held(pos.opened_at);
     q('.p-margin').textContent = pos.margin_locked === null ? DASH
       : '$' + Math.round(pos.margin_locked).toLocaleString();
@@ -586,12 +591,12 @@ function renderPositions(snap) {
       ['txt', r.name],
       ['txt', r.side ? '<span class="tag ' + r.side + '">' + r.side + '</span>' : DASH],
       ['r', r.qty === null ? DASH : String(r.qty)],
-      ['r', num(r.avg_price, d)],
-      ['r', num(r.mid, d)],
+      ['r', price(r.avg_price)],
+      ['r', price(r.mid)],
       ['r', signed(r.entry_z, 2)],
-      ['r', num(r.break_even, d)],
-      ['r', num(r.target, d)],
-      ['r', num(r.stop, d)],
+      ['r', price(r.break_even)],
+      ['r', price(r.target)],
+      ['r', price(r.stop)],
       ['r', held(r.opened_at)],
       ['r', r.margin_locked === null || r.margin_locked === undefined ? DASH
         : '$' + Math.round(r.margin_locked).toLocaleString()],
@@ -880,8 +885,8 @@ function renderJournal(el, rows, decimals) {
       '<td class="r">' + r.qty + '</td>' +
       '<td class="r">' + signed(r.entry_z, 2) + '</td>' +
       '<td class="r">' + signed(r.exit_z, 2) + '</td>' +
-      '<td class="r">' + num(r.entry_price, decimals) + '</td>' +
-      '<td class="r">' + num(r.exit_price, decimals) + '</td>' +
+      '<td class="r">' + price(r.entry_price) + '</td>' +
+      '<td class="r">' + price(r.exit_price) + '</td>' +
       '<td class="r">' + money(r.gross) + '</td>' +
       '<td class="r">' + money(r.fees) + '</td>' +
       '<td class="r ' + (r.net > 0 ? 'up' : r.net < 0 ? 'dn' : '') + '">' +

@@ -239,7 +239,7 @@ function paintCounts() {
     (state.contracts.length === 1 ? ' contract' : ' contracts');
 }
 
-const num = (v, d) => (v === null || v === undefined) ? DASH : Number(v).toFixed(d);
+const num = (v, d) => (v === null || v === undefined) ? DASH : String(Number(Number(v).toFixed(d)));
 
 async function loadContracts() {
   state.contracts = await getJSON('/api/contracts');
