@@ -134,7 +134,51 @@ def params_from_settings(s):
     for key in ('stop_mode', 'target_mode'):
         if p[key] not in LEVEL_MODES:
             p[key] = 'MARGIN'
+    p['sides'] = {side: _side_levels(s, p, suffix)
+                  for side, suffix in (('SELL', 'hl'), ('BUY', 'lh'))}
     return p
+
+
+#: The level fields a direction may set for itself.
+_SIDE_LEVEL_FIELDS = (('target_mode', 'target_mode'),
+                      ('target_pct', 'profit_target_pct'),
+                      ('atr_target_mult', 'atr_target_mult'),
+                      ('stop_mode', 'stop_mode'),
+                      ('stop_loss_pct', 'stop_loss_pct'),
+                      ('atr_stop_mult', 'atr_stop_mult'))
+
+
+def _side_levels(s, p, suffix):
+    """One direction's OWN levels: H to L (`_hl`, a SELL) or L to H (`_lh`,
+    a BUY). Only what that direction set — blank is "same as both", never
+    zero — so the shared figures are read at the time they are used."""
+    out = {}
+    for key, setting in _SIDE_LEVEL_FIELDS:
+        raw = s.get(setting + '_' + suffix)
+        if key.endswith('_mode'):
+            value = str(raw or '').upper()
+            if value in LEVEL_MODES:
+                out[key] = value
+        elif raw not in (None, ''):
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            # A non-positive multiple is not a level; the shared one stands.
+            if value > 0 or key.endswith('_pct'):
+                out[key] = value
+    return out
+
+
+def side_params(p, side):
+    """`p` with this direction's own levels laid over the shared ones: what
+    `levels` prices a position on that side with."""
+    own = (p.get('sides') or {}).get(side)
+    if not own:
+        return p
+    q = dict(p)
+    q.update(own)
+    return q
 
 
 def zscore(value, mean, sigma):
@@ -368,8 +412,11 @@ class AlgoSignal:
             return f"cooldown {_mmss(body['cooldown_sec'])}"
         if gates.get('session'):
             return gates['session']
-        if gates.get('levels'):
-            return gates['levels']
+        levels_why = gates.get('levels')
+        if isinstance(levels_why, dict):          # one reason per direction
+            levels_why = levels_why.get(side)
+        if levels_why:
+            return levels_why
         buffer_min = p['cutoff_buffer_min']
         cutoff = gates.get('cutoff_min')
         if buffer_min and cutoff is not None and cutoff <= buffer_min:
@@ -497,12 +544,17 @@ def levels(side, entry, fee_points, p, k, margin, atr):
     - stop: break-even minus `stop_loss_pct` % of the margin, or
       `atr_stop_mult` x ATR; None when the stop is off.
 
+    Each of these is the DIRECTION's own where it set one (`side_params`):
+    H to L (a SELL) and L to H (a BUY) can be sized differently.
+
     `k` is money per 1.00 of price for the WHOLE position (k per contract
     x qty). A level that cannot be priced is None, and `why_not` says why —
     an entry is not taken without its levels.
     """
     if entry is None or fee_points is None:
         return None, None, None, 'levels: the round-trip cost is not priced'
+    # H to L and L to H may each have their own target and stop.
+    p = side_params(p, side)
     sign = 1.0 if side == 'BUY' else -1.0
     be = float(entry) + sign * float(fee_points)
     tp = sl = None
@@ -529,6 +581,22 @@ def levels(side, entry, fee_points, p, k, margin, atr):
         else:
             sl = be - sign * (p['stop_loss_pct'] / 100.0) * margin / k
     return be, tp, sl, why
+
+
+def levels_gate(p, price, fee_points, k, margin, atr, width):
+    """Why an entry on each side could not be given its levels, or None:
+    {'BUY': why, 'SELL': why}. Per direction, because H to L and L to H may
+    size their target and stop differently — one in ATR before the ATR is
+    measured, the other in % of margin — and an entry is not taken without
+    its own levels. A stop inside the bid-ask is a stop that fires at once."""
+    out = {}
+    for side in ('BUY', 'SELL'):
+        _, _, sl, why = levels(side, price, fee_points, p, k, margin, atr)
+        if why is None and sl is not None and price is not None \
+                and abs(price - sl) <= (width or 0.0):
+            why = 'levels: the stop is inside the bid-ask'
+        out[side] = why
+    return out
 
 
 def trend_drift(closes, length, lookback, sigma):

@@ -153,6 +153,16 @@ the drawing wins.
   clock of its own left a band empty over hours of recordings). The live
   warm-up is time WATCHED since the Algo was armed; a quick restart carries
   it, standing the Algo down resets it.
+- **H to L and L to H may each size their own target and stop**
+  (`*_hl` / `*_lh`: mode, %, ATR multiple — "Exit by side" in the contract's
+  settings). Blank is "same as both", never zero; `algo.side_params` lays a
+  direction's own over the shared ones and `levels` is still the ONE
+  function the engine and the backtest price with. The levels gate is per
+  direction (`levels_gate`): a side that cannot price its own levels holds
+  only itself.
+- **One settings window per contract**, opened from the Algo window's gear
+  — the ladder has none, so there is never a second door to the same
+  settings. The Algo window's ladder button reopens / restores the ladder.
 - **Levels are from BREAK-EVEN and frozen at entry**: the target is
   `profit_target_pct` % of the margin the trader ENTERS (or `atr_target_mult`
   x the ATR at entry), the stop loss `stop_loss_pct` % (or `atr_stop_mult` x

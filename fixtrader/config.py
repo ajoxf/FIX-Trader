@@ -132,6 +132,20 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     'DEFAULT_ATR_PERIOD': 14,
     'DEFAULT_ATR_STOP_MULT': 2.0,
     'DEFAULT_ATR_TARGET_MULT': 1.5,
+    #: Per-direction levels (H to L = _HL, L to H = _LH). None is "same as
+    #: both": the shared target / stop above stand until a direction asks.
+    'DEFAULT_TARGET_MODE_HL': None,
+    'DEFAULT_PROFIT_TARGET_PCT_HL': None,
+    'DEFAULT_ATR_TARGET_MULT_HL': None,
+    'DEFAULT_STOP_MODE_HL': None,
+    'DEFAULT_STOP_LOSS_PCT_HL': None,
+    'DEFAULT_ATR_STOP_MULT_HL': None,
+    'DEFAULT_TARGET_MODE_LH': None,
+    'DEFAULT_PROFIT_TARGET_PCT_LH': None,
+    'DEFAULT_ATR_TARGET_MULT_LH': None,
+    'DEFAULT_STOP_MODE_LH': None,
+    'DEFAULT_STOP_LOSS_PCT_LH': None,
+    'DEFAULT_ATR_STOP_MULT_LH': None,
     #: The optional exits, each OFF until a contract asks: a z stop on the
     #: closing side, back at the mean only in profit, and a time stop.
     'DEFAULT_STOP_Z_ON': False,
@@ -273,6 +287,18 @@ CONTRACT_DEFAULTS: Dict[str, str] = {
     'atr_period': 'DEFAULT_ATR_PERIOD',
     'atr_stop_mult': 'DEFAULT_ATR_STOP_MULT',
     'atr_target_mult': 'DEFAULT_ATR_TARGET_MULT',
+    'target_mode_hl': 'DEFAULT_TARGET_MODE_HL',
+    'profit_target_pct_hl': 'DEFAULT_PROFIT_TARGET_PCT_HL',
+    'atr_target_mult_hl': 'DEFAULT_ATR_TARGET_MULT_HL',
+    'stop_mode_hl': 'DEFAULT_STOP_MODE_HL',
+    'stop_loss_pct_hl': 'DEFAULT_STOP_LOSS_PCT_HL',
+    'atr_stop_mult_hl': 'DEFAULT_ATR_STOP_MULT_HL',
+    'target_mode_lh': 'DEFAULT_TARGET_MODE_LH',
+    'profit_target_pct_lh': 'DEFAULT_PROFIT_TARGET_PCT_LH',
+    'atr_target_mult_lh': 'DEFAULT_ATR_TARGET_MULT_LH',
+    'stop_mode_lh': 'DEFAULT_STOP_MODE_LH',
+    'stop_loss_pct_lh': 'DEFAULT_STOP_LOSS_PCT_LH',
+    'atr_stop_mult_lh': 'DEFAULT_ATR_STOP_MULT_LH',
     'stop_z_on': 'DEFAULT_STOP_Z_ON',
     'max_losses_row': 'DEFAULT_MAX_LOSSES_ROW',
     'progress_bar': 'DEFAULT_PROGRESS_BAR',
@@ -506,7 +532,11 @@ class ContractConfig:
                         'exit_limit_timeout_sec', 'repeg_dead_band_ticks',
                         'commission_per_contract', 'exchange_fee_per_contract',
                         'clearing_fee_per_contract', 'slippage_budget_ticks',
-                        'profit_target_pct'):
+                        'profit_target_pct',
+                        'profit_target_pct_hl', 'atr_target_mult_hl',
+                        'stop_loss_pct_hl', 'atr_stop_mult_hl',
+                        'profit_target_pct_lh', 'atr_target_mult_lh',
+                        'stop_loss_pct_lh', 'atr_stop_mult_lh'):
             try:
                 out[numeric] = float(out[numeric]) if out[numeric] is not None else None
             except (TypeError, ValueError):
@@ -526,6 +556,10 @@ class ContractConfig:
         for mode in ('stop_mode', 'target_mode'):
             chosen = str(out.get(mode) or 'MARGIN').upper()
             out[mode] = chosen if chosen in ('MARGIN', 'ATR') else 'MARGIN'
+        # A direction's own mode: blank (or anything unknown) is "same as both".
+        for mode in ('stop_mode_hl', 'target_mode_hl', 'stop_mode_lh', 'target_mode_lh'):
+            chosen = str(out.get(mode) or '').upper()
+            out[mode] = chosen if chosen in ('MARGIN', 'ATR') else None
         return out
 
     def to_dict(self) -> Dict[str, Any]:

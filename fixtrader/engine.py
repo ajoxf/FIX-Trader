@@ -515,12 +515,10 @@ class Engine:
                 cutoff = (hh * 60 + mm) - (now.hour * 60 + now.minute)
             except ValueError:
                 cutoff = None
-        _, _, sl_try, why_levels = algo_mod.levels(
-            'BUY', book.mid if usable else None, money['fee_points'], p,
-            (money['k'] or 0) * qty, margin, atr)
-        if why_levels is None and sl_try is not None and usable \
-                and abs(book.mid - sl_try) <= (book.width or 0.0):
-            why_levels = 'levels: the stop is inside the bid-ask'
+        why_levels = algo_mod.levels_gate(
+            p, book.mid if usable else None, money['fee_points'],
+            (money['k'] or 0) * qty, margin, atr,
+            book.width if usable else None)
         gates = {
             'health': health, 'mode': mode_gate,
             'halt': algo.halt(open_pos['net_pnl'] if open_pos else None),

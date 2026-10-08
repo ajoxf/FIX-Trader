@@ -94,12 +94,8 @@ def run(rows, params, width, k, fee_points, commission, margin,
         # The levels THIS entry would get, from the ATR on the candles
         # CLOSED before it, as live; none, and no entry, if unpriceable.
         atr = algofilters.atr(closes[:-1], p['atr_period'])
-        side_guess = 'BUY'
-        _, tp_try, sl_try, levels_block = algo_module.levels(
-            side_guess, close, fee_points, p, k_pos, margin_pos, atr)
-        if levels_block is None and sl_try is not None and \
-                abs(close - sl_try) <= (width or 0.0):
-            levels_block = 'levels: the stop is inside the bid-ask'
+        levels_block = algo_module.levels_gate(p, close, fee_points, k_pos,
+                                               margin_pos, atr, width)
         gates = {'health': None, 'halt': halt, 'entry_check': check,
                  'levels': levels_block}
         body = signal.evaluate(now, md, stats, positions, gates)

@@ -10,6 +10,7 @@ polls twice a second, so `networkidle` NEVER fires — wait for
 """
 
 import json
+import re
 import os
 import threading
 from datetime import datetime, timezone
@@ -919,13 +920,17 @@ def test_every_group_of_settings_renders(analysis_server):
         browser, page = open_page(p, url, errors)
         cfg = open_config(page)
         for group, probe in [('Exit', '#cf-margin_per_contract'),
+                             ('Exit by side', '#cf-profit_target_pct_hl'),
                              ('Book', '#cf-max_book_spread_ticks'),
                              ('Size & risk', '#cf-max_position'),
                              ('Execution', '#cf-exit_on_timeout'),
                              ('Costs', '#cf-commission_per_contract'),
                              ('Display', '#cf-decimals')]:
-            cfg.locator('.cfg-tabs button', has_text=group).click()
+            cfg.locator('.cfg-tabs button', has_text=re.compile('^' + re.escape(group) + '$')).click()
             page.wait_for_selector('.cfgwin ' + probe)
+            if group == 'Exit by side':
+                # blank is "same as both", said in the box and the select
+                assert 'same as both' in cfg.locator('.cfg-body').inner_text()
         browser.close()
     assert errors == []
 
@@ -1216,3 +1221,63 @@ def test_the_execution_button_says_PAPER_or_LIVE_and_the_waiver(server):
         assert 'could not be read' in page.locator('#engine-banner').inner_text()
         browser.close()
     assert errors == []
+
+
+def test_the_algo_windows_ladder_button_brings_the_ladder_back(server):
+    """No chart button: the Algo window opens its contract's LADDER — from
+    minimised or closed — and there is ONE settings gear per contract, on the
+    Algo window, not a second one on the ladder."""
+    url, _ = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        win = page.locator('.contractwin')
+        assert win.locator('.winbtn.chart').count() == 0
+        assert page.locator('.ladderwin .cog, .ladderwin .ld-cog').count() == 0
+        assert win.locator('.winbtn.cog').count() == 1
+        ladder = page.locator('.ladderwin')
+        ladder.locator('.min').click()
+        assert not ladder.is_visible()
+        win.locator('.open-ladder').click()
+        assert page.locator('.ladderwin').is_visible()
+        page.locator('.ladderwin .close').click()
+        page.wait_for_timeout(300)
+        assert page.locator('.ladderwin').count() == 0
+        win.locator('.open-ladder').click()
+        page.wait_for_selector('.ladderwin')
+        assert page.locator('.ladderwin').is_visible()
+        browser.close()
+    assert errors == []
+
+
+def test_the_ladder_offers_the_switch_to_manual_in_algo_mode(server):
+    """An Algo switched OFF does not make the ladder a manual one — the DESK
+    must be in MANUAL. The ladder says so and carries the switch, which asks
+    (the same confirmation as the taskbar) and then sends it."""
+    url, tmp = server
+    manual_desk(tmp, mode='ALGO')
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin .ld-grid tbody tr')
+        ladder = page.locator('.ladderwin')
+        assert 'Desk in ALGO mode' in ladder.locator('.ld-lock').inner_text()
+        ladder.locator('.ld-switch').click()
+        page.wait_for_selector('#modal:not(.hidden)')
+        assert 'MANUAL' in page.locator('#modal-title').inner_text()
+        page.locator('#modal-confirm').click()
+        page.wait_for_timeout(400)
+        sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
+        assert sent['action'] == 'trading_mode' and sent['args']['mode'] == 'MANUAL'
+        browser.close()
+
+
+def test_in_manual_mode_the_ladder_has_no_switch_button(server):
+    """The control: already MANUAL, nothing to switch to on the ladder."""
+    url, tmp = server
+    manual_desk(tmp)
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, [])
+        page.wait_for_selector('.ladderwin.manual-on')
+        assert not page.locator('.ladderwin .ld-switch').is_visible()
+        browser.close()

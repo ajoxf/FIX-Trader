@@ -229,6 +229,24 @@ function setMinimised(el, on) {
   renderTabs();
 }
 
+/* The Algo window's ladder button: the contract's ladder, brought back —
+ * reopened if it was closed, restored if minimised — and to the front, for
+ * trading by hand (in MANUAL mode) or reading the book. */
+function openLadder(key) {
+  const wkey = '__ladder__' + key;
+  if (state.closed.has(wkey)) {
+    state.closed.delete(wkey);
+    localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));
+    tick();
+  }
+  const el = document.querySelector('.win[data-key="' + wkey + '"]');
+  if (!el) return;
+  if (el.classList.contains('minimised')) setMinimised(el, false);
+  state.focused = wkey;
+  raise(el);
+  el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
+
 function closeNowAsk(key, name) {
   return ask('Close ' + name + '?',
     'The position is closed at market, now — this crosses the spread. ' +
@@ -253,7 +271,7 @@ function windowFor(key) {
   el.querySelector('.close-now').onclick = () => closeNowAsk(key,
     el.querySelector('.title').textContent);
   el.querySelector('.cog').onclick = () => configWindow(key);
-  el.querySelector('.chart').onclick = () => chartWindow(key);
+  el.querySelector('.open-ladder').onclick = () => openLadder(key);
   el.querySelector('.aw-bt-run').onclick = () => runBacktest(el, key);
   document.getElementById('desktop').appendChild(el);
 
@@ -640,7 +658,19 @@ function renderAlgoBody(el, c) {
       (off ? ' <small>(entries off)</small>' : '') +
       '</div><div class="aw-tile-price">' + num(sell ? market.bid : market.ask, d) +
       '</div><div class="aw-tile-z">' + zText(z) + '</div>' + entryLine(sell) +
-      '</div>';
+      sizingLine(sell) + '</div>';
+  }
+  // This direction's own TP / SL sizing — H to L and L to H can differ.
+  function sizingLine(sell) {
+    const sp = sideParams(params, sell ? 'SELL' : 'BUY');
+    const own = Object.keys((params.sides || {})[sell ? 'SELL' : 'BUY'] || {}).length > 0;
+    const tp = sp.target_mode === 'ATR' ? sp.atr_target_mult + '×ATR' : sp.target_pct + '%';
+    const sl = !sp.stop_loss_on ? 'off'
+      : sp.stop_mode === 'ATR' ? sp.atr_stop_mult + '×ATR' : sp.stop_loss_pct + '%';
+    return '<div class="aw-tile-levels' + (own ? ' own' : '') + '" title="' +
+      (own ? 'this direction\'s own target and stop' : 'the shared target and stop') +
+      ' — % of the margin, or a multiple of the ATR at entry, from break-even">TP ' +
+      tp + ' · SL ' + sl + (own ? ' <small>own</small>' : '') + '</div>';
   }
   const first = (block.positions || [])[0] || null;
   const position = first ? (first.side === 'BUY' ? 'LONG' : 'SHORT') + ' ' +
@@ -685,7 +715,8 @@ function renderAlgoBody(el, c) {
         (first.sl === null || first.sl === undefined
           ? (params.stop_loss_on ? DASH : 'off')
           : levelWords(first.sl, first.sl_money, d)) +
-        ((params.stop_mode === 'ATR' || params.target_mode === 'ATR')
+        ((sideParams(params, first.side).stop_mode === 'ATR' ||
+          sideParams(params, first.side).target_mode === 'ATR')
           ? ' <small>(ATR ' + num(first.entry_atr, d) + ' at entry)</small>' : ''),
         '', 'compare with the CLOSING price: the bid for a LONG, the offer ' +
         'for a SHORT. In brackets: the net P&L of closing there', true) +
@@ -865,6 +896,12 @@ const LADDER_ROWS = 24;          // each side of the centre
 const ladderCentre = {};         // key -> centre price, held until Centre
 const ladderPrefs = {};          // key -> {lock, filter, increment}
 
+/* The Algo's parameters for one direction: its own target / stop laid over
+ * the shared ones (algo.side_params). */
+function sideParams(params, side) {
+  return Object.assign({}, params || {}, ((params || {}).sides || {})[side] || {});
+}
+
 function ladderPref(key) {
   if (!ladderPrefs[key]) {
     let saved = {};
@@ -902,7 +939,6 @@ function ladderFor(key) {
     saveLadderPref(key);
   };
   el.querySelector('.ld-centre').onclick = () => { delete ladderCentre[key]; el.dataset.recentre = '1'; };
-  el.querySelector('.ld-cog').onclick = () => configWindow(key);
   el.querySelector('.ld-flatten').onclick = () => (ladderManualPositions(key).length
     ? closeManual(el, key, null)
     : closeNowAsk(key, el.querySelector('.title').textContent));
@@ -926,6 +962,8 @@ function ladderFor(key) {
   // MANUAL mode: hand trading on this ladder, through the manual ticket —
   // every order reviewed, then sent as an FTM- order. ManualTerminal refuses
   // it in ALGO mode whatever this page does.
+  // One switch for the desk's mode: the taskbar's, with its confirmation.
+  el.querySelector('.ld-switch').onclick = () => document.getElementById('mode-toggle').click();
   el.querySelector('.ld-buy').onclick = () => manualOrder(el, key, 'BUY', null);
   el.querySelector('.ld-sell').onclick = () => manualOrder(el, key, 'SELL', null);
   el.querySelectorAll('.ld-keypad button').forEach((b) => {
@@ -1156,20 +1194,25 @@ function renderLadder(c, engine) {
   el.querySelector('.ld-lt').textContent = num(c.last_trade, d);
 
   const lock = el.querySelector('.ld-lock');
+  const lockText = el.querySelector('.ld-lock-text');
+  // The DESK's mode decides hand trading, not this contract's Algo switch:
+  // "ALGO OFF" on a desk in ALGO mode still takes no manual order.
+  el.querySelector('.ld-switch').classList.toggle('hidden', tradingMode !== 'ALGO');
   if (tradingMode === 'ALGO') {
     lock.className = 'ld-lock';
-    lock.textContent = modeText + ' — manual orders are off on this ladder. ' +
-      'CLOSE ALL and Close @ LMT still close.';
-    lock.title = 'Switch the desk to MANUAL (taskbar) to trade by hand on Instruments & orders.';
+    lockText.textContent = 'Desk in ALGO mode (' + modeText + ') — manual orders are off ' +
+      'on this ladder. CLOSE ALL and Close @ LMT still close.';
+    lock.title = 'Hand trading needs the DESK in MANUAL mode — this contract\'s Algo being ' +
+      'off is not enough. Switch here or with the taskbar\'s Mode button.';
   } else if (manualOn) {
     lock.className = 'ld-lock manual';
-    lock.textContent = 'MANUAL — BUY / SELL, or click a price: Bids buys, Asks sells. ' +
+    lockText.textContent = 'MANUAL — BUY / SELL, or click a price: Bids buys, Asks sells. ' +
       'Every order is reviewed before it goes to TT.';
     lock.title = 'Orders from this ladder are manual tickets (FTM-), with the same checks ' +
       'and safety limits as Instruments & orders. Right-click a Work cell to cancel there.';
   } else {
     lock.className = 'ld-lock manual';
-    lock.textContent = 'MANUAL — ' + (!term ? 'hand orders need the TT session (not the simulator).'
+    lockText.textContent = 'MANUAL — ' + (!term ? 'hand orders need the TT session (not the simulator).'
       : !c.security_id ? 'this contract has no TT Security ID.'
       : 'the TT session is not logged on.') + ' CLOSE ALL still closes.';
     lock.title = '';
@@ -2309,6 +2352,20 @@ const CFG_GROUPS = [
     ['max_hold_minutes', 'Time stop', 'minutes, whatever the P&amp;L; 0 = none', 'number', { step: 15, min: 0 }],
     ['progress_bar', 'SL &larr; entry &rarr; TP bar', 'in the Algo window while a position is on', 'check'],
   ] },
+  { name: 'Exit by side', fields: [
+    ['target_mode_hl', 'H to L: target sized by', 'blank = same as both', 'select', { options: [['MARGIN', '% of margin'], ['ATR', 'ATR multiple']] }],
+    ['profit_target_pct_hl', 'H to L: profit target', '% of the margin, from break-even; blank = same as both', 'number', { step: 0.5, min: 0 }],
+    ['atr_target_mult_hl', 'H to L: target', '&times; ATR (ATR mode); blank = same as both', 'number', { step: 0.1, min: 0 }],
+    ['stop_mode_hl', 'H to L: stop sized by', 'blank = same as both', 'select', { options: [['MARGIN', '% of margin'], ['ATR', 'ATR multiple']] }],
+    ['stop_loss_pct_hl', 'H to L: stop loss at', '% of the margin, below break-even; blank = same as both', 'number', { step: 0.5, min: 0 }],
+    ['atr_stop_mult_hl', 'H to L: stop', '&times; ATR (ATR mode); blank = same as both', 'number', { step: 0.1, min: 0 }],
+    ['target_mode_lh', 'L to H: target sized by', 'blank = same as both', 'select', { options: [['MARGIN', '% of margin'], ['ATR', 'ATR multiple']] }],
+    ['profit_target_pct_lh', 'L to H: profit target', '% of the margin, from break-even; blank = same as both', 'number', { step: 0.5, min: 0 }],
+    ['atr_target_mult_lh', 'L to H: target', '&times; ATR (ATR mode); blank = same as both', 'number', { step: 0.1, min: 0 }],
+    ['stop_mode_lh', 'L to H: stop sized by', 'blank = same as both', 'select', { options: [['MARGIN', '% of margin'], ['ATR', 'ATR multiple']] }],
+    ['stop_loss_pct_lh', 'L to H: stop loss at', '% of the margin, below break-even; blank = same as both', 'number', { step: 0.5, min: 0 }],
+    ['atr_stop_mult_lh', 'L to H: stop', '&times; ATR (ATR mode); blank = same as both', 'number', { step: 0.1, min: 0 }],
+  ] },
   { name: 'Book', fields: [
     ['min_book_size', 'Book size at least', 'contracts on the touch, both sides', 'number', { step: 1, min: 0 }],
     ['max_book_spread_ticks', 'Book no wider than', 'ticks', 'number', { step: 1, min: 0 }],
@@ -2407,145 +2464,6 @@ function configWindow(key) {
   return el;
 }
 
-/* -- the chart ----------------------------------------------------------- */
-
-/* One contract's price over its window, with the mean and the bands the
- * signal is reading NOW, and the entries and exits inside the window. The
- * bands are the standing ones — recomputed every few minutes — drawn across
- * the whole window, and the footnote says so: they are today's levels, not a
- * history of where the levels were. */
-const charts = {};
-
-function chartWindow(key) {
-  const wkey = '__chart__' + key;
-  let el = document.querySelector('.win[data-key="' + wkey + '"]');
-  if (el) { raise(el); return el; }
-  const tpl = document.getElementById('chart-template');
-  el = tpl.content.firstElementChild.cloneNode(true);
-  el.dataset.key = wkey;
-  el.dataset.contract = key;
-  el.querySelector('.close').onclick = () => {
-    clearInterval((charts[key] || {}).timer);
-    delete charts[key];
-    el.remove();
-    renderTabs();
-  };
-  el.onmousedown = () => raise(el);
-  makeDraggable(el, wkey);
-  const desk = document.getElementById('desktop');
-  desk.appendChild(el);
-  const place = state.places[wkey];
-  if (place) {
-    placeWindow(el, place.x, place.y);
-  } else {
-    el.classList.add('floating');
-    const owner = document.querySelector('.win[data-key="' + key + '"]');
-    const box = desk.getBoundingClientRect();
-    const from = owner ? owner.getBoundingClientRect() : box;
-    el.style.left = Math.max(8, Math.min(from.left - box.left + 40,
-                                         desk.clientWidth - 620)) + 'px';
-    el.style.top = (from.top - box.top + desk.scrollTop + 30) + 'px';
-  }
-  raise(el);
-  charts[key] = { timer: setInterval(() => loadChart(key), 5000) };
-  loadChart(key);
-  return el;
-}
-
-async function loadChart(key) {
-  const el = document.querySelector('.win[data-key="__chart__' + key + '"]');
-  if (!el) return;
-  try {
-    const data = await (await fetch('/api/series/' + encodeURIComponent(key),
-      { cache: 'no-store' })).json();
-    const snap = window.__lastSnapshot || {};
-    const c = (snap.contracts || []).find((x) => x.key === key) || {};
-    drawChart(el, data, c);
-  } catch (e) {
-    el.querySelector('.chart-note').textContent = 'The chart could not be loaded.';
-  }
-}
-
-function svgEl(tag, attrs) {
-  const n = document.createElementNS('http://www.w3.org/2000/svg', tag);
-  Object.entries(attrs || {}).forEach(([k, v]) => n.setAttribute(k, v));
-  return n;
-}
-
-function drawChart(el, data, c) {
-  el.querySelector('.title').textContent = (c.name || data.key) + ' · chart';
-  const note = el.querySelector('.chart-note');
-  const svg = el.querySelector('svg.chart');
-  while (svg.firstChild) svg.removeChild(svg.firstChild);
-  const pts = (data.series || []).map(([t, p]) => [Date.parse(t), p]);
-  if (pts.length < 2) {
-    note.textContent = 'Nothing recorded for this contract in the last ' +
-      Math.round(data.minutes || 0) + ' minutes yet.';
-    return;
-  }
-  // The Algo's band: the EMA middle and its sigma, as the window shows them.
-  const a = c.algo || {};
-  const s = { mean: a.mean, std: a.sigma };
-  const d = c.decimals === undefined ? (data.decimals || 4) : c.decimals;
-  const k = Number((a.params || {}).entry_z) || Number(data.entry_threshold) || 2.5;
-  const stop = Number(data.stop_loss_z) || 4;
-  const levels = [];
-  if (s.mean !== null && s.mean !== undefined && s.std) {
-    levels.push(['mean', s.mean, 'mean']);
-    levels.push(['entry', s.mean + k * s.std, '+' + k + 'σ sell']);
-    levels.push(['entry', s.mean - k * s.std, '−' + k + 'σ buy']);
-    levels.push(['stop', s.mean + stop * s.std, '+' + stop + 'σ stop']);
-    levels.push(['stop', s.mean - stop * s.std, '−' + stop + 'σ stop']);
-  }
-  const marks = data.marks || [];
-  const ys = pts.map((p) => p[1]).concat(levels.map((l) => l[1]),
-    marks.map((m) => m.price));
-  let lo = Math.min(...ys), hi = Math.max(...ys);
-  if (hi === lo) { hi += 1; lo -= 1; }
-  const pad = (hi - lo) * 0.06; lo -= pad; hi += pad;
-  const t0 = pts[0][0], t1 = Math.max(pts[pts.length - 1][0], t0 + 1);
-  const W = 600, H = 300, L = 8, R = 88, T = 8, B = 20;
-  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-  const x = (t) => L + (t - t0) / (t1 - t0) * (W - L - R);
-  const y = (p) => T + (hi - p) / (hi - lo) * (H - T - B);
-
-  levels.forEach(([kind, v, label]) => {
-    svg.appendChild(svgEl('line', { x1: L, x2: W - R, y1: y(v), y2: y(v),
-      class: 'lvl lvl-' + kind }));
-    const t = svgEl('text', { x: W - R + 4, y: y(v) + 3, class: 'lvl-label' });
-    t.textContent = label + ' ' + num(v, d);
-    svg.appendChild(t);
-  });
-  svg.appendChild(svgEl('polyline', { class: 'px',
-    points: pts.map((p) => x(p[0]).toFixed(1) + ',' + y(p[1]).toFixed(1)).join(' ') }));
-  marks.forEach((m) => {
-    const cx = x(Date.parse(m.ts)), cy = y(m.price);
-    if (cx < L || cx > W - R) return;
-    const up = (m.kind === 'open') === (m.side === 'BUY');
-    const tri = up
-      ? [cx, cy - 6, cx - 5, cy + 3, cx + 5, cy + 3]
-      : [cx, cy + 6, cx - 5, cy - 3, cx + 5, cy - 3];
-    const shape = svgEl('polygon', { points: tri.join(' '),
-      class: 'mark ' + m.kind + ' ' + m.side });
-    const tip = svgEl('title');
-    tip.textContent = (m.kind === 'open' ? 'entry ' : 'exit ') + m.side +
-      ' @ ' + num(m.price, d) + (m.reason ? ' · ' + m.reason : '');
-    shape.appendChild(tip);
-    svg.appendChild(shape);
-  });
-  const fmt = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  [[t0, 'start'], [t1, 'end']].forEach(([t, a]) => {
-    const lab = svgEl('text', { x: a === 'start' ? L : W - R, y: H - 5,
-      class: 'axis', 'text-anchor': a === 'start' ? 'start' : 'end' });
-    lab.textContent = fmt(t);
-    svg.appendChild(lab);
-  });
-  note.textContent = 'The last ' + Math.round(data.minutes) + ' minutes of the ' +
-    'recorded mid. The EMA middle and its bands are the ones the Algo is ' +
-    'reading now, drawn across the window — not a history ' +
-    'of where they were. ▲ buy · ▼ sell; hover a mark for its reason.';
-}
-
 async function loadConfig(key) {
   const el = document.querySelector('.win[data-key="__config__' + key + '"]');
   if (!el) return;
@@ -2586,7 +2504,8 @@ function cfgField(field, label, hint, kind, opts, row) {
       (on ? ' checked' : '') + '>';
   } else if (kind === 'select') {
     control = '<select id="' + id + '" data-field="' + field + '">' +
-      (plain ? '' : '<option value="">&mdash; desk default &mdash;</option>') +
+      (plain ? '' : '<option value="">&mdash; ' + (/_(hl|lh)$/.test(field)
+        ? 'same as both' : 'desk default') + ' &mdash;</option>') +
       (o.options || []).map((op) =>
         '<option value="' + op[0] + '"' +
         (String(own) === op[0] ? ' selected' : '') + '>' + op[1] + '</option>').join('') +
@@ -2600,8 +2519,9 @@ function cfgField(field, label, hint, kind, opts, row) {
   }
   // Unmeasured is not zero, and neither is blank: the grey figure says what
   // this contract will actually trade on.
+  const perSide = /_(hl|lh)$/.test(field);
   const effText = (plain || kind === 'check') ? '' :
-    (eff === null || eff === undefined ? DASH : String(eff));
+    (eff === null || eff === undefined ? (perSide ? 'same as both' : DASH) : String(eff));
   const isDefault = !plain && (own === null || own === undefined);
   return '<label class="f cf-row"><span>' + label +
     (hint ? ' <small>' + hint + '</small>' : '') + '</span>' +
@@ -2671,7 +2591,6 @@ async function tick() {
       // sweep below removes windows for contracts that are gone; it must not
       // remove the panel of one that is still here.
       seen.add('__config__' + c.key);
-      seen.add('__chart__' + c.key);
       seen.add('__ladder__' + c.key);
       // The ladder first: on a fresh desk it sits to the LEFT of its Algo.
       renderLadder(c, snap.engine);
