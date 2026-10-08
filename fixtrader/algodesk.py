@@ -50,7 +50,7 @@ class AlgoRun:
         self.candles = bands.SpreadCandles(params['timeframe_min'] * 60.0,
                                            params['length'])
         self.history = {'note': None, 'candles': 0}
-        self.day = {'date': None, 'trades': 0, 'losses_row': 0, 'pnl': 0.0}
+        self.day = self._new_day(None)
         self.recent = deque(maxlen=20)
         self.last_blocked = None
         self.blocked_journal = None
@@ -175,12 +175,28 @@ class AlgoRun:
 
     # -- the day ------------------------------------------------------------
 
-    def settle_day(self, date, closed_net=None, closed=False):
+    @staticmethod
+    def _new_day(date):
+        # `slip_*`: today's MEASURED slippage, per fill side, in ticks and
+        # money. Unmeasured sides (paper, a missing decision price) are
+        # counted apart and never averaged in as zero.
+        return {'date': date, 'trades': 0, 'losses_row': 0, 'pnl': 0.0,
+                'slip_sides': 0, 'slip_ticks': 0.0, 'slip_money': 0.0,
+                'slip_unmeasured': 0}
+
+    def settle_day(self, date, closed_net=None, closed=False, slips=()):
         """A new day clears the counts; a closed trade is scored. A net of
-        None is unmeasured — not a loss, and not a win."""
+        None is unmeasured — not a loss, and not a win. `slips` are the
+        trade's (ticks, money) at each end, None where unmeasured."""
         if date != self.day['date']:
-            self.day = {'date': date, 'trades': 0, 'losses_row': 0,
-                        'pnl': 0.0}
+            self.day = self._new_day(date)
+        for ticks, cash in slips or ():
+            if ticks is None:
+                self.day['slip_unmeasured'] += 1
+            else:
+                self.day['slip_sides'] += 1
+                self.day['slip_ticks'] += ticks
+                self.day['slip_money'] += cash or 0.0
         if closed and closed_net is not None:
             self.day['pnl'] += closed_net
             self.day['losses_row'] = (self.day['losses_row'] + 1

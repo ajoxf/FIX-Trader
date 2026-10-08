@@ -155,6 +155,7 @@ def entry_z_taken(p):
 
 #: The positional fields the window shows, passed through untouched.
 _POSITION_DISPLAY = ('quantity', 'opened_at', 'age_sec', 'entry_atr',
+                     'entry_slip_ticks',
                      'stop_mode', 'target_mode', 'tp_money', 'sl_money',
                      'entry_z', 'paper')
 

@@ -216,6 +216,26 @@
         </div>
       </div>
 
+      <!-- What each fill cost against the price its decision was made at.
+           Measured, never budgeted; unmeasured stands in its own column. -->
+      <div class="card an-slip-card">
+        <h5>Slippage <span class="note">each fill against the price its decision was made at &middot; positive a cost, negative an improvement</span>
+          <a class="btn an-slip-csv" download title="One row per position, both ends; empty where nothing was measured">Export CSV</a></h5>
+        <div class="tablewrap">
+          <table class="grid an-slip">
+            <thead><tr>
+              <th></th><th class="r">Measured</th><th></th>
+              <th class="r">Mean</th><th class="r">Median</th>
+              <th class="r" title="The biggest cost">Worst</th>
+              <th class="r" title="The biggest improvement">Best</th>
+              <th class="r">Cost</th><th>Paid / earned</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="cb"><div class="hint an-slip-note"></div></div>
+      </div>
+
       <div class="card an-replay-card">
         <h5>What a different threshold would have done
           <span class="note an-replay-note">a signal replay over recorded prices &mdash; not a fill simulator</span></h5>

@@ -359,9 +359,18 @@ class Executor:
                    open_qty=remaining if wo.is_close else 0.0,
                    position_id=wo.position_id,
                    # the decision was made when the LIMIT was sent;
-                   # escalating does not re-decide it
-                   decision=self.decisions.get(wo.clordid),
+                   # escalating does not re-decide it — and its slippage is
+                   # measured from THAT price, the wait included
+                   decision=self._escalated(self.decisions.get(wo.clordid)),
                    position=self.positions.get(wo.clordid))
+
+    @staticmethod
+    def _escalated(decision: Optional[Dict[str, Any]]):
+        if decision is None:
+            return None
+        kind = decision.get('order_type') or 'LIMIT'
+        return dict(decision, order_type=(kind if kind.endswith('escalated')
+                                          else kind + ' escalated'))
 
     def decision_of(self, clordid: str) -> Dict[str, Any]:
         """The window's state when the signal fired, or an empty dict."""

@@ -25,6 +25,7 @@ from . import algo as algo_mod
 from . import config as config_mod
 from . import costs as costs_mod
 from .algodesk import AlgoRun
+from . import slippage as slippage_mod
 from . import marketdata, signals as signals_mod, sizing
 from .executor import Executor
 from .marketdata import FeedGuard
@@ -392,6 +393,9 @@ class Engine:
             'break_even': pos.break_even, 'tp': pos.target_price,
             'sl': pos.stop_price, 'quantity': pos.qty,
             'entry_z': pos.entry_z, 'entry_atr': rt.entry_atr,
+            'entry_slip_ticks': (sizing.to_ticks(pos.entry_slippage,
+                                                 contract.tick_size)
+                                 if pos.entry_slippage is not None else None),
             # PAPER is a fill made in this process at the live price; the
             # simulator's fills are simulated, which is a different thing.
             'paper': any(str(t).startswith('PAPER-') for t in pos.tickets),
@@ -478,6 +482,10 @@ class Engine:
                              'slippage': money['slippage']},
                             armed=armed and self.trading_mode == 'ALGO',
                             live=live)
+        # The slippage BUDGET, so the window can put today's measured figure
+        # beside it — a budget is corrected from data, or not at all.
+        body['slip_budget_ticks'] = float(
+            settings.get('slippage_budget_ticks', 0) or 0)
         rt.blocked_by = body.get('blocked') if body.get('state') == 'BLOCKED' \
             else None
 
@@ -527,6 +535,11 @@ class Engine:
                 continue
             decision = {'z': intent.get('z'), 'mean': body.get('mean'),
                         'std': body.get('sigma'),
+                        # The price the Algo decided at — the anchor the
+                        # entry's slippage is measured against.
+                        'price': intent.get('price'),
+                        'order_type': ('PAPER' if self.paper else str(
+                            settings.get('entry_order_type') or 'MARKET')),
                         'half_life': (body['filters'].get('half_life_minutes')
                                       or 0) * 60.0 or None}
             rt.entry_atr = atr
@@ -597,6 +610,20 @@ class Engine:
         if self.db is not None:
             self.db.save_touch(touch)
 
+    def _exit_decision(self, rt, settings, book, side: Side,
+                       order_type: Optional[str] = None) -> Dict[str, Any]:
+        """What a close was decided on: the price it could be had at then —
+        the side it closes on — and the Algo's z of that price. The anchor
+        its slippage is measured against."""
+        price = book.executable(side) if book is not None else None
+        body = (rt.algo.body or {}) if rt.algo is not None else {}
+        return {'z': algo_mod.zscore(price, body.get('mean'), body.get('sigma')),
+                'mean': body.get('mean'), 'std': body.get('sigma'),
+                'price': price,
+                'order_type': ('PAPER' if self.paper else
+                               order_type or str(settings.get(
+                                   'exit_order_type') or 'MARKET'))}
+
     def _has_working_close(self, key: str) -> bool:
         return any(w.is_close for w in self.executor.working_for(key))
 
@@ -606,7 +633,8 @@ class Engine:
         venue, an order that says it is closing."""
         if self.paper:
             self._paper_fill(rt, side, qty, Intent.CLOSE, book, now,
-                             decision=self._decision(rt.window, book, side),
+                             decision=self._exit_decision(rt, settings, book,
+                                                          side),
                              exit_reason=exit_reason or ExitReason.TARGET,
                              reason=reason)
             return
@@ -658,7 +686,7 @@ class Engine:
             rt.contract, settings, side, qty, Intent.CLOSE, book, now,
             reason=reason, open_qty=rt.position.qty,
             position_id=rt.position.id,
-            decision=self._decision(rt.window),
+            decision=self._exit_decision(rt, settings, book, side),
             # The position itself, so the order carries an explicit close
             # flag and the venue tickets it is closing — never a bare
             # opposite order, which opens the other side instead.
@@ -724,6 +752,14 @@ class Engine:
                 pos.margin_locked = self._margin(contract, settings, total)
 
             pos = rt.position
+            # Slippage against the price the decision was made at. A PAPER
+            # fill is made AT that price: nothing to measure, so None — a
+            # perfect 0.00 would be a figure nobody measured.
+            pos.entry_order_type = decided.get('order_type') or pos.entry_order_type
+            pos.entry_slippage = (None if self._is_paper(pos) else
+                                  slippage_mod.slip(pos.side.value,
+                                                    decided.get('price'),
+                                                    pos.avg_price))
             # The Algo's levels, from break-even: the target and the stop a
             # % of the margin, or a multiple of the ATR frozen at entry.
             params = (rt.algo.params if rt.algo is not None else
@@ -760,6 +796,12 @@ class Engine:
         pos.closed_at = now
         pos.exit_price = fill.price
         pos.exit_z = decided.get('z', rt.window.z)
+        pos.exit_order_type = decided.get('order_type')
+        # The CLOSING order's side paid it: a long sells to close.
+        pos.exit_slippage = (None if self._is_paper(pos) else
+                             slippage_mod.slip(pos.side.opposite.value,
+                                               decided.get('price'),
+                                               fill.price))
         pos.exit_reason = self._exit_reasons.pop(event.clordid,
                                                  ExitReason.TARGET)
         filled = pos.tickets
@@ -802,8 +844,17 @@ class Engine:
         rt.position = None
         rt.entry_atr = None
         if rt.algo is not None:
+            measured = slippage_mod.row(pos, contract)
             rt.algo.settle_day(now.date().isoformat(), pos.net_pnl,
-                               closed=True)
+                               closed=True, slips=(
+                                   (measured['entry_ticks'],
+                                    measured['entry_money']),
+                                   (measured['exit_ticks'],
+                                    measured['exit_money'])))
+
+    @staticmethod
+    def _is_paper(pos) -> bool:
+        return any(str(t).startswith('PAPER-') for t in pos.tickets or ())
 
     def _margin(self, contract, settings, qty) -> Optional[float]:
         """The margin the target is a percentage of: the one the operator

@@ -22,7 +22,8 @@ import math
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from . import costs as costs_mod, sizing
+from . import costs as costs_mod
+from . import sizing
 
 #: Below this, a contract is described but never judged.
 MIN_TRADES_FOR_A_VERDICT = 10
@@ -438,6 +439,32 @@ def journal(trades: List[Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def _measured_sides(trades, fills, contract) -> List[Dict[str, Any]]:
+    """The slippage the Costs card measures, ONE figure with the slippage
+    report: each trade's entry and exit against the price its DECISION was
+    made at. A trade recorded before decisions were kept falls back to its
+    fills' own figure against the touch they were sent at; a PAPER trade is
+    filled at the decision price by construction and is left out — it has
+    nothing to measure."""
+    tick_size = getattr(contract, 'tick_size', None)
+    out, covered = [], set()
+    for t in trades:
+        tickets = [str(x) for x in (t.tickets or ())]
+        if any(x.startswith('PAPER-') for x in tickets):
+            covered.update(tickets)
+            continue
+        if t.entry_order_type is None and t.exit_order_type is None:
+            continue                       # an older trade: its fills speak
+        covered.update(tickets)
+        qty = t.opened_qty or t.qty
+        for points in (t.entry_slippage, t.exit_slippage):
+            out.append({'slippage_ticks': (sizing.to_ticks(points, tick_size)
+                                           if points is not None else None),
+                        'qty': qty})
+    out.extend(f for f in fills if str(f.get('exec_id')) not in covered)
+    return out
+
+
 def contract_report(db, config, key: str, period: str = 'all',
                     mode: str = 'live', now: Optional[datetime] = None
                     ) -> Dict[str, Any]:
@@ -449,8 +476,9 @@ def contract_report(db, config, key: str, period: str = 'all',
 
     trades = [t for t in db.closed_positions(key, limit=5000)
               if _in_period(t.closed_at, start) and _wants(t.is_simulated, mode)]
-    fills = [f for f in db.fills(key, limit=20000)
-             if _in_period(f.get('our_ts'), start)]
+    fills = _measured_sides(trades, [
+        f for f in db.fills(key, limit=20000)
+        if _in_period(f.get('our_ts'), start)], contract)
     touches = [t for t in db.touches(key, limit=20000)
                if _in_period(t.get('ts'), start)]
 

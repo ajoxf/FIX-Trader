@@ -369,6 +369,15 @@ class Position:
     #: The venue trading DAY this was opened on, for venues that price a
     #: close-today differently from a close-yesterday.
     opened_session: Optional[str] = None
+    #: SLIPPAGE, in price points, against the price the decision was made at
+    #: — positive a cost, negative an improvement, None unmeasured (and None
+    #: for a PAPER fill, which has nothing to measure). See `slippage`.
+    entry_slippage: Optional[float] = None
+    exit_slippage: Optional[float] = None
+    #: How each end was sent — MARKET, LIMIT, LIMIT escalated — so a limit
+    #: that is not beating a market fill can be seen not to.
+    entry_order_type: Optional[str] = None
+    exit_order_type: Optional[str] = None
 
     @property
     def is_open(self) -> bool:

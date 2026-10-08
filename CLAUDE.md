@@ -160,6 +160,19 @@ the drawing wins.
   queue. Where every entry was withheld it reports the signal's own words,
   because "nothing crossed the threshold" when the edge filter was the
   blocker sends the desk to change the number that was never the problem.
+- **Slippage is measured from the DECISION price** (`slippage.py`, ported
+  from the MT5 desk): each position keeps `entry_slippage` and
+  `exit_slippage` in price points against the executable price when the
+  Algo decided — or the touch when a close was pressed — with the order type
+  each end went as. Positive is a COST at both ends (`slip` takes the side
+  of the order that paid). An unfilled limit escalated to market keeps its
+  ORIGINAL decision and is labelled `LIMIT escalated`: the wait is part of
+  what it cost. A PAPER fill is made at the decision price by construction —
+  None, never a perfect 0.00. The Analysis Costs card and the slippage
+  report read the SAME measure; a trade recorded before decisions were kept
+  falls back to its fills' send-touch figure. A round turn counts only with
+  both ends measured, and an open position has no exit, not an unmeasured
+  one.
 - **Slippage can be NEGATIVE** — the market moving our way between the price an
   order was aimed at and the fill. That is a price improvement, not a cost, and
   a budget is never negative: proposing one would have the edge filter pay the

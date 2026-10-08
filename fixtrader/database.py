@@ -107,6 +107,22 @@ class Database:
             os.makedirs(directory, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    #: Columns added after a book could already exist. Added, never dropped:
+    #: a book written by an older build keeps every row it had.
+    ADDED_COLUMNS = {'positions': [('entry_slippage', 'REAL'),
+                                   ('exit_slippage', 'REAL'),
+                                   ('entry_order_type', 'TEXT'),
+                                   ('exit_order_type', 'TEXT')]}
+
+    def _migrate(self, conn) -> None:
+        for table, columns in self.ADDED_COLUMNS.items():
+            have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for name, kind in columns:
+                if name not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+        conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.path, timeout=30.0,
@@ -131,7 +147,9 @@ class Database:
                    pos.exit_reason.value if pos.exit_reason else None,
                    pos.gross_pnl, pos.fees_paid, pos.net_pnl,
                    pos.pnl_pct_on_margin, int(pos.is_simulated),
-                   json.dumps(pos.tickets))
+                   json.dumps(pos.tickets), pos.entry_slippage,
+                   pos.exit_slippage, pos.entry_order_type,
+                   pos.exit_order_type)
             if pos.id is None:
                 cur = conn.execute(
                     "INSERT INTO positions (contract_key, side, qty,"
@@ -140,7 +158,9 @@ class Database:
                     " entry_half_life, margin_locked, break_even, target_price,"
                     " stop_price, closed_at, exit_price, exit_z, exit_reason,"
                     " gross_pnl, fees_paid, net_pnl, pnl_pct_on_margin,"
-                    " is_simulated, tickets) VALUES (" + ",".join("?" * 24) + ")",
+                    " is_simulated, tickets, entry_slippage, exit_slippage,"
+                    " entry_order_type, exit_order_type) VALUES ("
+                    + ",".join("?" * 28) + ")",
                     row)
                 pos.id = cur.lastrowid
             else:
@@ -152,7 +172,9 @@ class Database:
                     " break_even=?, target_price=?, stop_price=?, closed_at=?,"
                     " exit_price=?, exit_z=?, exit_reason=?, gross_pnl=?,"
                     " fees_paid=?, net_pnl=?, pnl_pct_on_margin=?,"
-                    " is_simulated=?, tickets=? WHERE id=?",
+                    " is_simulated=?, tickets=?, entry_slippage=?,"
+                    " exit_slippage=?, entry_order_type=?, exit_order_type=?"
+                    " WHERE id=?",
                     row + (pos.id,))
             conn.commit()
         return pos.id
@@ -174,12 +196,30 @@ class Database:
             gross_pnl=r['gross_pnl'], fees_paid=r['fees_paid'],
             net_pnl=r['net_pnl'], pnl_pct_on_margin=r['pnl_pct_on_margin'],
             is_simulated=bool(r['is_simulated']),
-            tickets=json.loads(r['tickets'] or '[]'))
+            tickets=json.loads(r['tickets'] or '[]'),
+            entry_slippage=r['entry_slippage'],
+            exit_slippage=r['exit_slippage'],
+            entry_order_type=r['entry_order_type'],
+            exit_order_type=r['exit_order_type'])
 
     def open_positions(self) -> List[Position]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM positions WHERE closed_at IS NULL").fetchall()
+        return [self._position_from_row(r) for r in rows]
+
+    def positions_opened_since(self, since=None) -> List[Position]:
+        """Every position opened at or after `since` (all when None), open
+        or closed — the slippage report's window."""
+        sql = "SELECT * FROM positions"
+        args: List[Any] = []
+        if since is not None:
+            sql += " WHERE opened_at >= ?"
+            args.append(since.isoformat() if hasattr(since, 'isoformat')
+                        else str(since))
+        sql += " ORDER BY opened_at DESC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, args).fetchall()
         return [self._position_from_row(r) for r in rows]
 
     def closed_positions(self, contract_key: Optional[str] = None,

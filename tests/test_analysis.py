@@ -420,3 +420,26 @@ def test_price_improvement_against_a_zero_budget_proposes_nothing():
                                   settings, 0.01, 1.0)
     assert report['finding'] is None
     assert report['measured_ticks'] == pytest.approx(-1.5)   # still reported
+
+
+def test_the_costs_card_measures_from_the_decision_like_the_report():
+    """One slippage figure, not two: a trade that kept its decision price is
+    measured from it at both ends, and its fills' send-touch figure is not
+    counted a second time. A paper trade has nothing to measure."""
+    from types import SimpleNamespace
+    from fixtrader.models import Position, Side
+    contract = SimpleNamespace(tick_size=0.01)
+    decided = Position(contract_key='fef', side=Side.SELL, qty=0.0,
+                       opened_qty=5.0, avg_price=0.6, tickets=['E1', 'E2'],
+                       entry_slippage=0.02, exit_slippage=-0.01,
+                       entry_order_type='MARKET', exit_order_type='MARKET')
+    paper = Position(contract_key='fef', side=Side.BUY, qty=0.0,
+                     opened_qty=5.0, avg_price=0.6, tickets=['PAPER-1'],
+                     entry_order_type='PAPER')
+    older = Position(contract_key='fef', side=Side.BUY, qty=0.0,
+                     opened_qty=5.0, avg_price=0.6, tickets=['E9'])
+    fills = [{'exec_id': 'E1', 'slippage_ticks': 7.0, 'qty': 5},
+             {'exec_id': 'E9', 'slippage_ticks': 0.4, 'qty': 5}]
+    sides = analysis._measured_sides([decided, paper, older], fills, contract)
+    ticks = sorted(s['slippage_ticks'] for s in sides)
+    assert ticks == pytest.approx([-1.0, 0.4, 2.0])     # E1's 7.0 not counted

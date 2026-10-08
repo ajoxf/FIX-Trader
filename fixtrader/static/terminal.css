@@ -866,3 +866,11 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 .ladderwin .lm-sl { background: var(--ask); }
 .ladderwin .ld-actions { display: flex; gap: 4px; padding: 4px 6px; background: var(--panel); border-top: 1px solid var(--line-soft); }
 .ladderwin .ld-actions .btn { flex: 1; }
+
+/* The slippage report: section heads inside the one table, and the round
+ * turn set apart. */
+.an-slip .an-slip-head td { font-weight: 600; color: var(--ink-mute); background: var(--frame-2); }
+.an-slip .an-slip-total td { font-weight: 600; }
+.an-slip td.dn { color: var(--ask); }
+.an-slip td.up { color: var(--good); }
+.an-slip-card h5 .an-slip-csv { float: right; font-size: calc(10px * var(--fs)); padding: 1px 6px; }

@@ -197,6 +197,44 @@ def create_app(config_path: str = "config.json",
         return jsonify(analysis.contract_report(_db(config), config, key,
                                                 period, mode))
 
+    def _slippage_report(config):
+        """The slippage report over the Analysis window's period and mode.
+        Built from the positions the engine recorded; it prices nothing of
+        its own."""
+        from . import analysis, slippage
+        period, mode = _filters()
+        since = analysis.period_start(period)
+        positions = [p for p in _db(config).positions_opened_since(since)
+                     if analysis._wants(p.is_simulated, mode)]
+        key = request.args.get('contract') or None
+        if key:
+            positions = [p for p in positions if p.contract_key == key]
+        budgets = {k: float(config.effective(k).get('slippage_budget_ticks')
+                            or 0) for k in config.contracts}
+        body = slippage.report(positions, config.contracts, budgets)
+        body.update(period=period, mode=mode, contract=key)
+        return body
+
+    @app.get('/api/slippage')
+    def api_slippage():
+        """Measured slippage: entries, exits and the round turn, by contract
+        and by order type, and the worst fills — each against the price its
+        decision was made at, positive a cost."""
+        return jsonify(dict(_slippage_report(load_config()), ok=True))
+
+    @app.get('/api/slippage.csv')
+    def api_slippage_csv():
+        """One row per position, both ends — empty cells, not zeros, where
+        nothing was measured."""
+        body = _slippage_report(load_config())
+        columns = ['opened_at', 'closed_at', 'contract_key', 'side', 'qty',
+                   'entry_order_type', 'entry_price', 'entry_ticks',
+                   'entry_money', 'exit_order_type', 'exit_price',
+                   'exit_ticks', 'exit_money', 'round_trip_ticks',
+                   'round_trip_money', 'net_pnl', 'paper', 'simulated',
+                   'position_id']
+        return _csv('slippage.csv', columns, body['rows'])
+
     @app.get('/api/series/<path:key>')
     def api_series(key):
         """The chart: the recorded mid over the window, and the entries and

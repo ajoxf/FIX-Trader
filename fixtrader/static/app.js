@@ -661,6 +661,15 @@ function renderAlgoBody(el, c) {
         good, 'closing price now − entry: a LONG makes money when this is ' +
         'positive, a SHORT when it is negative') +
       kv('Entry z', zText(first.entry_z)) +
+      kv('Entry slip', first.entry_slip_ticks === null ||
+        first.entry_slip_ticks === undefined
+        ? (first.paper ? 'paper' : DASH)
+        : (first.entry_slip_ticks > 0 ? '+' : '') +
+          Number(first.entry_slip_ticks).toFixed(2) + ' t',
+        first.entry_slip_ticks > 0 ? 'down' : first.entry_slip_ticks < 0 ? 'up' : '',
+        'the fill against the price the Algo decided at: positive a cost, ' +
+        'negative an improvement. A paper fill is made at that price — ' +
+        'nothing to measure') +
       kv('Net P&amp;L', cash(first.net_pnl), first.net_pnl === null ||
         first.net_pnl === undefined ? '' : (first.net_pnl >= 0 ? 'up' : 'down'),
         'after the whole round trip, at the side it would close on') +
@@ -756,7 +765,20 @@ function renderAlgoBody(el, c) {
       (params.edge_capture_frac || 0.5) + ' × entry z × σ) against the round ' +
       'trip, at the entry z', true) +
     kv('Round trip', cash(cost.total), '', 'crossing ' + cash(cost.crossing) +
-      ' + fees ' + cash(cost.commission) + ' + slippage ' + cash(cost.slippage)) +
+      ' + fees ' + cash(cost.commission) + ' + slippage BUDGET ' +
+      cash(cost.slippage)) +
+    kv('Slippage today', day.slip_sides
+      ? ((day.slip_ticks / day.slip_sides) > 0 ? '+' : '') +
+        (day.slip_ticks / day.slip_sides).toFixed(2) + ' t/side · ' +
+        cash(day.slip_money) : DASH,
+      day.slip_sides ? (day.slip_ticks > 0 ? 'down' : day.slip_ticks < 0
+        ? 'up' : '') : '',
+      'MEASURED today, each fill against the price its decision was made at ' +
+      '(positive a cost) — beside the budget of ' +
+      (block.slip_budget_ticks || 0) + ' t/side the edge filter charges. ' +
+      (day.slip_sides || 0) + ' side(s) measured' +
+      (day.slip_unmeasured ? ', ' + day.slip_unmeasured + ' not (paper or ' +
+        'no decision price)' : '') + '.', true) +
     kv('Today', (day.trades || 0) + (params.max_trades_day
       ? '/' + params.max_trades_day : '') + ' trades · ' + (day.losses_row || 0) +
       ' in a row · ' + cash(day.pnl), '', 'the day’s limits stop entries, ' +
@@ -1654,8 +1676,98 @@ async function loadAnalysis() {
     csv.href = '/api/analysis/' + encodeURIComponent(analysis.key) +
       '/trades.csv' + query;
   }
+  const slipQuery = query + (analysis.key ? '&contract=' +
+    encodeURIComponent(analysis.key) : '');
+  const slip = await getAnalysis('/api/slippage' + slipQuery);
+  if (!current()) return;
+  renderSlippage(el, slip, analysis.key);
+  el.querySelector('.an-slip-csv').href = '/api/slippage.csv' + slipQuery;
   el.querySelector('.an-updated').textContent =
     'updated ' + new Date().toLocaleTimeString([], { hour12: false });
+}
+
+/* -- the slippage report ----------------------------------------------------
+ *
+ * Measured against the price each decision was made at, positive a cost.
+ * Cost is red, an improvement green, unmeasured a dash in its own column —
+ * never a zero in the mean.
+ */
+function slipCell(ticks) {
+  if (ticks === null || ticks === undefined) return '<td class="r">' + DASH + '</td>';
+  return '<td class="r ' + (ticks > 0 ? 'dn' : ticks < 0 ? 'up' : '') + '">' +
+    (ticks > 0 ? '+' : '') + Number(ticks).toFixed(2) + ' t</td>';
+}
+
+function slipCash(value) {
+  if (value === null || value === undefined) return '<td class="r">' + DASH + '</td>';
+  return '<td class="r ' + (value > 0 ? 'dn' : value < 0 ? 'up' : '') + '">' +
+    cash(value) + '</td>';
+}
+
+function slipRow(label, st, cls) {
+  if (!st) return '';
+  return '<tr' + (cls ? ' class="' + cls + '"' : '') + '><td>' + label +
+    '</td><td class="r">' + st.measured + '</td><td>' +
+    (st.unmeasured ? '<span class="hint">' + st.unmeasured + ' unmeasured</span>'
+      : '') + '</td>' + slipCell(st.ticks_mean) + slipCell(st.ticks_median) +
+    slipCell(st.ticks_worst) + slipCell(st.ticks_best) +
+    slipCash(st.money_total) + '<td>' + (st.measured ? st.paid + ' paid / ' +
+      st.earned + ' earned' : DASH) + '</td></tr>';
+}
+
+function renderSlippage(el, report, key) {
+  const body = el.querySelector('.an-slip tbody');
+  const note = el.querySelector('.an-slip-note');
+  if (!report || report.ok === false) {
+    body.innerHTML = '';
+    note.textContent = 'the slippage report could not be read';
+    return;
+  }
+  const counts = report.counts || {};
+  if (!counts.positions) {
+    body.innerHTML = '';
+    note.textContent = 'Nothing was traded under these filters. That is not ' +
+      'a slippage of zero — there is nothing to measure yet.';
+    return;
+  }
+  let html = slipRow('Entries', report.overall.entry) +
+    slipRow('Exits', report.overall.exit) +
+    slipRow('Round turn', report.overall.round_trip, 'an-slip-total');
+  // MARKET against LIMIT on the same desk: a limit that is not beating a
+  // market fill is costing time for nothing, and only side by side says so.
+  const types = Object.keys(report.by_order_type || {});
+  if (types.length) {
+    html += '<tr class="an-slip-head"><td colspan="9">Entries by order type</td></tr>';
+    types.forEach((t) => { html += slipRow(esc(t), report.by_order_type[t].entry); });
+  }
+  if (!key) {
+    html += '<tr class="an-slip-head"><td colspan="9">Round turn by contract ' +
+      '<span class="hint">(budget, ticks a side)</span></td></tr>';
+    Object.keys(report.by_contract || {}).forEach((k) => {
+      const c = report.by_contract[k];
+      html += slipRow(esc(c.name || k) + ' <span class="hint">budget ' +
+        (c.budget_ticks || 0) + '</span>', c.round_trip);
+    });
+  }
+  const worst = report.worst || [];
+  if (worst.length) {
+    html += '<tr class="an-slip-head"><td colspan="9">Worst entries</td></tr>';
+    worst.forEach((r) => {
+      html += '<tr><td>' + esc(r.name || r.contract_key) + ' · ' + esc(r.side) +
+        ' ' + r.qty + '</td><td class="r">' + esc(r.entry_order_type || '') +
+        '</td><td class="hint">' + (r.opened_at ? new Date(r.opened_at)
+          .toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit',
+            minute: '2-digit' }) : '') + '</td>' + slipCell(r.entry_ticks) +
+        '<td></td><td></td><td></td>' + slipCash(r.entry_money) + '<td></td></tr>';
+    });
+  }
+  body.innerHTML = html;
+  note.textContent = counts.positions + ' position(s) · ' + counts.open +
+    ' still open (no exit yet — not an unmeasured one)' +
+    (counts.paper ? ' · ' + counts.paper + ' PAPER, filled at the decision ' +
+      'price by construction — nothing to measure, so not counted' : '') +
+    '. A limit escalated to market is measured from the price the limit ' +
+    'was decided at: the wait is part of what it cost.';
 }
 
 /* Nothing here, but something under another filter? Say so. An empty

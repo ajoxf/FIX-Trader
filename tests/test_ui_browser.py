@@ -1050,3 +1050,46 @@ def test_text_size_and_window_size_are_the_traders_and_are_kept(server):
         assert size() > before * 1.1               # and so does the text size
         browser.close()
     assert errors == []
+
+
+def test_the_slippage_card_reports_what_was_measured(analysis_server):
+    """The Analysis window's slippage card. The fixture's trades were
+    recorded without a decision price: every entry is UNMEASURED, said in
+    its own column — never a mean of 0.00."""
+    url, _ = analysis_server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_analysis(p, url, errors)
+        page.locator('.an-mode').select_option('live')
+        page.wait_for_function(
+            "document.querySelectorAll('.an-slip tbody tr').length > 0")
+        first = page.locator('.an-slip tbody tr').first.inner_text()
+        assert 'Entries' in first and 'unmeasured' in first
+        assert '0.00 t' not in first
+        assert '/api/slippage.csv' in page.locator('.an-slip-csv').get_attribute('href')
+        browser.close()
+    assert errors == []
+
+
+def test_the_algo_window_shows_todays_slippage_beside_its_budget(server):
+    url, tmp = server
+    snap = json.loads((tmp / 'status.json').read_text())
+    algo = snap['contracts'][0]['algo']
+    algo['day'].update(slip_sides=4, slip_ticks=2.0, slip_money=10.0,
+                       slip_unmeasured=0)
+    algo['slip_budget_ticks'] = 0.5
+    algo['positions'][0]['entry_slip_ticks'] = 1.0
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_timeout(900)
+        row = page.locator('.aw-kv', has=page.locator(
+            'span', has_text='Slippage today'))
+        assert row.locator('b').inner_text() == '+0.50 t/side · $10.00'
+        assert 'budget of 0.5' in row.get_attribute('title')
+        slip = page.locator('.aw-kv', has=page.locator(
+            'span', has_text='Entry slip')).locator('b').inner_text()
+        assert slip == '+1.00 t'
+        browser.close()
+    assert errors == []
