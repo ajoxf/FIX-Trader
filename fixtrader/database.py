@@ -79,6 +79,17 @@ CREATE TABLE IF NOT EXISTS samples (
 );
 CREATE INDEX IF NOT EXISTS ix_samples_key ON samples(contract_key, ts);
 
+-- Every fill TT reported on the Order Routing session, ours or not, in
+-- TT's own fields. Display only: the book is built from `fills`.
+CREATE TABLE IF NOT EXISTS tt_fills (
+    exec_id TEXT PRIMARY KEY, clordid TEXT, orig_clordid TEXT, order_id TEXT,
+    tt_time TEXT, account TEXT, security_id TEXT, symbol TEXT,
+    contract_key TEXT, side TEXT, open_close TEXT, qty REAL, price REAL,
+    cum_qty REAL, leaves_qty REAL, exec_type TEXT, ord_status TEXT,
+    text TEXT, ours TEXT, received TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_tt_fills_received ON tt_fills(received);
+
 CREATE TABLE IF NOT EXISTS algo_warmup (
     contract_key TEXT PRIMARY KEY, live_sec REAL NOT NULL, at REAL NOT NULL
 );
@@ -306,6 +317,30 @@ class Database:
         args.append(limit)
         with self._connect() as conn:
             return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+    TT_FILL_COLUMNS = ('exec_id', 'clordid', 'orig_clordid', 'order_id',
+                       'tt_time', 'account', 'security_id', 'symbol',
+                       'contract_key', 'side', 'open_close', 'qty', 'price',
+                       'cum_qty', 'leaves_qty', 'exec_type', 'ord_status',
+                       'text', 'ours', 'received')
+
+    def save_tt_fills(self, rows: List[Dict[str, Any]]) -> None:
+        """The TT fills tape. INSERT OR IGNORE: a resent report is one fill."""
+        if not rows:
+            return
+        cols = self.TT_FILL_COLUMNS
+        with self._lock, self._connect() as conn:
+            conn.executemany(
+                f"INSERT OR IGNORE INTO tt_fills ({','.join(cols)}) "
+                f"VALUES ({','.join('?' * len(cols))})",
+                [[r.get(c) for c in cols] for r in rows])
+            conn.commit()
+
+    def tt_fills(self, limit: int = 500) -> List[Dict[str, Any]]:
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT * FROM tt_fills ORDER BY received DESC, rowid DESC"
+                " LIMIT ?", (limit,)).fetchall()]
 
     def orders(self, contract_key: Optional[str] = None,
                limit: int = 500) -> List[Dict[str, Any]]:

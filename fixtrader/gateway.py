@@ -701,6 +701,12 @@ class AlgoOrderRouter:
         self.pos = {'status': 'not requested', 'why': None, 'req_id': None,
                     'sent_at': None, 'expected': None, 'reports': {},
                     'logon': None}
+        #: The FILLS TAPE: every execution report on this session that
+        #: carries a fill, ours or not, as TT sent it. For the Account page's
+        #: Fills tab only — it is never applied to the book (`_execution`
+        #: does that, for OUR ids alone).
+        self.tape: List[Dict[str, Any]] = []
+        self.tape_ids = set()
 
     # -- ids -----------------------------------------------------------------
 
@@ -904,6 +910,7 @@ class AlgoOrderRouter:
     def on_message(self, msg_type: str, fields: Dict[str, str], raw: str):
         with self.lock:
             if msg_type == '8':
+                self._record_fill(fields)
                 self._execution(fields)
             elif msg_type == '9':
                 self._cancel_reject(fields)
@@ -913,6 +920,51 @@ class AlgoOrderRouter:
                 self._positions_ack(fields)
             elif msg_type == 'AP':
                 self._position_report(fields, raw)
+
+    def _record_fill(self, f) -> None:
+        """One fill on the tape, in TT's own fields: 60 TransactTime, 1
+        Account, 48/55 instrument, 54 side, 77 Open/Close, 32/31 LastQty/
+        LastPx, 14/151 cum/leaves, 37 OrderID, 17 ExecID, 11 ClOrdID, 58."""
+        if f.get('150') not in ('1', '2', 'F'):
+            return
+        exec_id = f.get('17')
+        try:
+            qty = float(f.get('32') or 0)
+            price = float(f.get('31'))
+        except (TypeError, ValueError):
+            return
+        if not exec_id or qty <= 0 or exec_id in self.tape_ids:
+            return
+        self.tape_ids.add(exec_id)
+        clordid = f.get('11') or ''
+        sid = f.get('48') or ''
+        contract = next((c for c in self.gw.contracts
+                         if str(getattr(c, 'security_id', '') or '') == sid), None)
+        self.tape.append({
+            'exec_id': exec_id, 'clordid': clordid,
+            'orig_clordid': f.get('41') or '',
+            'order_id': f.get('37') or '',
+            'tt_time': f.get('60') or '', 'account': f.get('1') or '',
+            'security_id': sid, 'symbol': f.get('55') or '',
+            'contract_key': getattr(contract, 'key', '') if contract else '',
+            'side': {'1': 'BUY', '2': 'SELL'}.get(f.get('54'), f.get('54') or ''),
+            'open_close': {'O': 'OPEN', 'C': 'CLOSE', 'F': 'FIFO'}.get(
+                f.get('77'), f.get('77') or ''),
+            'qty': qty, 'price': price,
+            'cum_qty': float(f['14']) if f.get('14') else None,
+            'leaves_qty': float(f['151']) if f.get('151') else None,
+            'exec_type': f.get('150'), 'ord_status': f.get('39') or '',
+            'text': self.gw._redact(f.get('58', '')),
+            'ours': ('ALGO' if clordid.startswith(CLORDID_PREFIX + '-') else
+                     'MANUAL' if clordid.startswith('FTM-') else ''),
+            'received': utcnow().isoformat(),
+        })
+
+    def take_tape(self) -> List[Dict[str, Any]]:
+        """The fills recorded since the last call, for the engine to keep."""
+        with self.lock:
+            out, self.tape = self.tape, []
+        return out
 
     def _rec_for(self, fields):
         for tag in ('11', '41'):

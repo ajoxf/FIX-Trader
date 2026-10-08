@@ -23,8 +23,13 @@ def test_tt_landing_page_is_connection_dashboard_and_desk_is_available(tmp_path)
     assert b'contract-template' in client.get('/desk').data
     instruments = client.get('/instruments')
     assert instruments.status_code == 200
-    for element in ('explore-dialog', 'explore-exchange', 'explore-type', 'explore-product', 'explore-contract', 'ladders', 'review-dialog'):
+    for element in ('explore-dialog', 'explore-exchange', 'explore-type', 'explore-product', 'explore-contract', 'review-dialog'):
         assert ('id="' + element + '"').encode() in instruments.data
+    # The market ladders and the account section left this page: the desk
+    # has the ladder, the Account tab has the positions and P&L.
+    for gone in ('ladders', 'account-summary', 'floating-pnl', 'realized-pnl'):
+        assert ('id="' + gone + '"').encode() not in instruments.data
+    assert b'href="/account"' in instruments.data
 
 
 def test_fix_pages_share_one_navigation_and_visual_skin(tmp_path):
@@ -32,8 +37,8 @@ def test_fix_pages_share_one_navigation_and_visual_skin(tmp_path):
     cfg = TraderConfig(path=str(path))
     cfg.save()
     client = create_app(str(path)).test_client()
-    routes = ('/', '/connection', '/instruments', '/logs', '/settings', '/exchanges')
-    nav_targets = ('/connection', '/instruments', '/logs', '/desk', '/settings', '/exchanges')
+    routes = ('/', '/connection', '/instruments', '/account', '/logs', '/settings', '/exchanges')
+    nav_targets = ('/desk', '/instruments', '/account', '/connection', '/exchanges', '/logs', '/settings')
 
     for route in routes:
         response = client.get(route)
@@ -42,6 +47,10 @@ def test_fix_pages_share_one_navigation_and_visual_skin(tmp_path):
         assert b'app_nav.css' in response.data, route
         for target in nav_targets:
             assert f'href="{target}"'.encode() in response.data, route
+        # Trading first, then the connection pages.
+        nav = response.data[response.data.index(b'<nav'):response.data.index(b'</nav>')]
+        where = [nav.index(f'href="{t}"'.encode()) for t in nav_targets]
+        assert where == sorted(where), route
     for route in ('/connection', '/instruments', '/logs'):
         assert b'fix_pages.css' in client.get(route).data
 

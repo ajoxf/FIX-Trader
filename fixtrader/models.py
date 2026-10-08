@@ -129,6 +129,8 @@ class ExitReason(str, Enum):
     #: Back at the rolling mean while already net positive — short of the
     #: profit target, but paid.
     MEAN = "MEAN"
+    #: Closed by the trader's resting Close @ LMT on the ladder.
+    CLOSE_LIMIT = "CLOSE_LIMIT"
 
 
 class TargetBasis(str, Enum):

@@ -854,14 +854,31 @@ function backtestHtml(data, d) {
 
 /* -- the ladder ----------------------------------------------------------------
  *
- * The contract's price ladder, beside its Algo: the touch, and where the
- * Algo's own levels sit — the band, the entry, break-even, the target and
- * the stop. In ALGO mode a person does not trade it (the banner says so);
- * CLOSE always closes.
+ * The MT5 desk's ladder, on one contract. The Bids and Asks columns are
+ * solid furniture — they never change size; what moves is the sizes in
+ * them, at the touch. Work carries our working orders and the Algo's levels
+ * (TP, SL, BE, the band, the mean). In ALGO mode a person does not trade it
+ * and the lock banner says so; CLOSE ALL and Close @ LMT always close.
  */
 
 const LADDER_ROWS = 24;          // each side of the centre
 const ladderCentre = {};         // key -> centre price, held until Centre
+const ladderPrefs = {};          // key -> {lock, filter, increment}
+
+function ladderPref(key) {
+  if (!ladderPrefs[key]) {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem('ft.ladder.' + key) || '{}'); }
+    catch (e) { /* private window: defaults */ }
+    ladderPrefs[key] = Object.assign({ lock: false, filter: false, increment: null }, saved);
+  }
+  return ladderPrefs[key];
+}
+
+function saveLadderPref(key) {
+  try { localStorage.setItem('ft.ladder.' + key, JSON.stringify(ladderPrefs[key])); }
+  catch (e) { /* kept for this page only */ }
+}
 
 function ladderFor(key) {
   const wkey = '__ladder__' + key;
@@ -872,13 +889,63 @@ function ladderFor(key) {
   el.dataset.key = wkey;
   el.dataset.contract = key;
   wireWindow(el, wkey);
-  el.querySelector('.ld-centre').onclick = () => { delete ladderCentre[key]; };
-  el.querySelector('.ld-close').onclick = () => closeNowAsk(key,
+  const pref = ladderPref(key);
+  el.querySelector('.ld-lockscroll').checked = !!pref.lock;
+  el.querySelector('.ld-filter').checked = !!pref.filter;
+  if (pref.increment) el.querySelector('.ld-increment').value = pref.increment;
+  el.querySelector('.ld-lockscroll').onchange = (e) => { pref.lock = e.target.checked; saveLadderPref(key); };
+  el.querySelector('.ld-filter').onchange = (e) => { pref.filter = e.target.checked; saveLadderPref(key); };
+  el.querySelector('.ld-increment').onchange = (e) => {
+    const v = parseFloat(e.target.value);
+    pref.increment = v > 0 ? v : null;
+    delete ladderCentre[key];
+    saveLadderPref(key);
+  };
+  el.querySelector('.ld-centre').onclick = () => { delete ladderCentre[key]; el.dataset.recentre = '1'; };
+  el.querySelector('.ld-cog').onclick = () => configWindow(key);
+  el.querySelector('.ld-flatten').onclick = () => closeNowAsk(key,
     el.querySelector('.title').textContent);
+  el.querySelector('.ld-close-go').onclick = () => closeAtLimitAsk(el, key);
+  el.querySelector('.ld-refresh').onclick = async () => {
+    const r = await command('refresh_feed', key);
+    if (r && r.ok) toast('OK', 'FEED', 'prices re-requested from TT', key);
+  };
+  const cxl = (side, label) => async () => {
+    const ok = await ask('Cancel ' + label + ' on ' + el.querySelector('.title').textContent + '?',
+      'A cancel request goes to TT for each of our working orders. They stay working until TT ' +
+      'confirms — and can fill in between.', 'Request cancel');
+    if (ok) await command('cancel_all', key, side ? { side } : {});
+  };
+  el.querySelector('.ld-cxl-s').onclick = cxl('SELL', 'the working SELL orders');
+  el.querySelector('.ld-cxl-b').onclick = cxl('BUY', 'the working BUY orders');
+  el.querySelector('.ld-cxl-all').onclick = cxl(null, 'every working order');
   document.getElementById('desktop').appendChild(el);
   const place = state.places[wkey];
   if (place) placeWindow(el, place.x, place.y);
   return el;
+}
+
+async function closeAtLimitAsk(el, key) {
+  const box = el.querySelector('.ld-close-px');
+  const resting = el.querySelector('.ld-closelmt').classList.contains('resting');
+  const name = el.querySelector('.title').textContent;
+  if (resting) {
+    const ok = await ask('Pull the Close @ LMT on ' + name + '?',
+      'The resting closing limit is cancelled (a request, at a venue). The position stays open.',
+      'Pull it');
+    if (ok) await command('cancel_close_limit', key);
+    return;
+  }
+  const price = parseFloat(box.value);
+  if (!(price || price === 0)) { toast('REJECT', 'CLOSE @ LMT', 'type the price to close at first', key); return; }
+  const ok = await ask('Close ' + name + ' at ' + box.value + '?',
+    'ONE closing limit rests at ' + box.value + ' for the whole open position, carrying its ' +
+    'tickets (77=C). It waits there — a target, and no stop. The Algo on this contract is stood ' +
+    'down with it. CLOSE ALL still crosses at once.', 'Rest the close');
+  if (ok) {
+    const r = await command('close_limit', key, { price });
+    if (r && r.ok) toast('ORDER', 'CLOSE @ LMT', 'resting at ' + box.value, key);
+  }
 }
 
 function renderLadder(c, engine) {
@@ -887,100 +954,203 @@ function renderLadder(c, engine) {
   const el = ladderFor(c.key);
   const d = c.decimals === undefined ? 4 : c.decimals;
   const tick = c.tick_size || Math.pow(10, -d);
+  const pref = ladderPref(c.key);
+  const inc = pref.increment || tick;
   const m = c.market || {};
   const block = c.algo || {};
   const pos = c.position;
-  el.querySelector('.title').textContent = c.name;
-  el.querySelector('.ld-route').textContent = c.symbol || '';
-  const mode = el.querySelector('.ld-mode');
+  const ex = (engine || {}).execution || {};
   const tradingMode = (engine || {}).trading_mode || 'ALGO';
-  mode.textContent = tradingMode === 'ALGO' ? 'ALGO ' + (block.mode || '') : 'MANUAL';
-  mode.className = 'ld-mode ' + (tradingMode === 'ALGO'
-    ? (block.mode === 'LIVE' ? 'live' : block.mode === 'PAPER' ? 'paper' : 'dry')
-    : 'manual');
+  const st = c.settings || {};
+  const orders = c.orders || [];
+  const has = (v) => v !== null && v !== undefined;
 
-  const net = el.querySelector('.ld-net');
-  const value = pos ? pos.net : null;
-  net.textContent = pos ? (value === null || value === undefined ? DASH
-    : (value > 0 ? '+' : '') + cash(value)) : 'flat';
-  net.className = 'ld-net ' + (value > 0 ? 'up' : value < 0 ? 'dn' : '');
-  el.querySelector('.ld-hl').textContent = pos
-    ? pos.side + ' ' + pos.qty + ' @ ' + num(pos.avg_price, d) : '';
+  el.querySelector('.title').textContent = c.name;
+  el.querySelector('.ld-route').textContent = c.security_id || c.symbol || '';
+  const ot = String(st.entry_order_type || 'MARKET').toUpperCase();
+  el.querySelector('.ld-ordtype').textContent = ot + ' · DAY';
+  el.querySelector('.ld-ot').value = ot === 'LIMIT' ? 'LIMIT' : 'MARKET';
 
-  const banner = el.querySelector('.ld-banner');
+  // Who trades this contract, and whether its orders reach TT.
+  const mode = el.querySelector('.ld-mode');
+  let modeText, modeCls;
+  if (tradingMode !== 'ALGO') { modeText = 'MANUAL'; modeCls = 'manual'; }
+  else if (!c.algo_on) { modeText = 'ALGO OFF'; modeCls = 'off'; }
+  else if (!(engine || {}).auto_trade_enabled) { modeText = 'ALGO DRY RUN'; modeCls = 'dry'; }
+  else if (ex.mode === 'LIVE') { modeText = 'ALGO LIVE'; modeCls = 'live'; }
+  else if (ex.mode === 'PAPER') { modeText = 'ALGO PAPER'; modeCls = 'paper'; }
+  else { modeText = 'ALGO SIM'; modeCls = 'paper'; }
+  mode.textContent = modeText;
+  mode.className = 'ld-mode ' + modeCls;
+
+  // The quote strip: the mid against today's open, and the day's H/L/O —
+  // ours, from the mids watched, and the badge says so.
+  const hlo = c.hlo || {};
+  const chg = has(m.mid) && has(hlo.open) ? m.mid - hlo.open : null;
+  const net = el.querySelector('.ld-netchg');
+  net.textContent = chg === null ? DASH : (chg > 0 ? '+' : '') + chg.toFixed(d);
+  net.className = 'ld-netchg ' + (chg > 0 ? 'up' : chg < 0 ? '' : 'flat');
+  el.querySelector('.ld-h').textContent = num(hlo.high, d);
+  el.querySelector('.ld-l').textContent = num(hlo.low, d);
+  el.querySelector('.ld-o').textContent = num(hlo.open, d);
+  el.querySelector('.ld-lt').textContent = num(c.last_trade, d);
+
+  const lock = el.querySelector('.ld-lock');
   if (tradingMode === 'ALGO') {
-    banner.className = 'ld-banner algo';
-    banner.textContent = 'ALGO ' + (block.mode || '') + ' — manual orders ' +
-      'are off on this desk. CLOSE still closes. Switch the desk to MANUAL ' +
-      'to trade by hand.';
+    lock.className = 'ld-lock';
+    lock.textContent = modeText + ' — manual orders are off on this ladder. ' +
+      'CLOSE ALL and Close @ LMT still close.';
+    lock.title = 'Switch the desk to MANUAL (taskbar) to trade by hand on Instruments & orders.';
   } else {
-    banner.className = 'ld-banner manual';
-    banner.textContent = 'MANUAL — the Algo neither enters nor proposes. ' +
-      'Trade by hand on Instruments & orders.';
+    lock.className = 'ld-lock manual';
+    lock.textContent = 'MANUAL — the Algo is not entering. Trade by hand on ' +
+      'Instruments & orders. CLOSE ALL and Close @ LMT still close.';
   }
-  el.querySelector('.ld-close').disabled = !pos;
+  el.classList.toggle('algo-locked', true);
 
-  // The ladder, centred on the market until Centre is pressed again.
+  // The rail.
+  el.querySelector('.ld-rb-sym').innerHTML = 'Contract <b>' + esc(c.symbol || c.name) + '</b>';
+  el.querySelector('.ld-rb-id').innerHTML = 'TT ID <b>' + esc(c.security_id || DASH) + '</b>';
+  const acct = ((engine || {}).manual_terminal || {}).account;
+  el.querySelector('.ld-rb-acct').innerHTML = 'Account <b>' + esc(acct || (engine || {}).environment || DASH) + '</b>';
+  el.querySelector('.ld-quoting').textContent = ex.mode === 'PAPER' || ex.mode === 'SIMULATOR'
+    ? 'PAPER: filled here at the bid/offer'
+    : ot === 'LIMIT' ? 'LIMIT: rests at the touch, escalates' : 'MARKET: crosses the touch';
+  const q = st.quantity || 1;
+  el.querySelector('.ld-buy').textContent = 'BUY ' + q;
+  el.querySelector('.ld-sell').textContent = 'SELL ' + q;
+  el.querySelectorAll('.ld-qtybox').forEach((b) => { b.value = q; });
+  el.querySelector('.ld-flatten').disabled = !pos;
+  const cl = c.close_limit;
+  const lmtRow = el.querySelector('.ld-closelmt');
+  lmtRow.classList.toggle('resting', !!cl);
+  const go = el.querySelector('.ld-close-go');
+  go.disabled = !pos && !cl;
+  go.textContent = cl ? 'Pull' : '@ LMT';
+  go.title = cl ? 'A Close @ LMT is resting at ' + num(cl.price, d) +
+    (cl.paper ? ' (PAPER)' : '') + ' — click to pull it' : go.title;
+  const box = el.querySelector('.ld-close-px');
+  if (cl && document.activeElement !== box) box.value = num(cl.price, d);
+  if (!cl && !pos && document.activeElement !== box) box.value = '';
+
+  const working = orders.filter((o) => !['FILLED', 'CANCELLED', 'REJECTED', 'EXPIRED'].includes(o.state));
+  const nB = working.filter((o) => o.side === 'BUY').length;
+  const nS = working.filter((o) => o.side === 'SELL').length;
+  el.querySelector('.ld-n-b').textContent = nB || '';
+  el.querySelector('.ld-n-s').textContent = nS || '';
+  el.querySelector('.ld-n-all').textContent = working.length || '';
+  el.querySelector('.ld-cxl-b').disabled = !nB;
+  el.querySelector('.ld-cxl-s').disabled = !nS;
+  el.querySelector('.ld-cxl-all').disabled = !working.length;
+  el.querySelector('.ld-cnt-b').textContent = 'B:' + nB;
+  el.querySelector('.ld-cnt-s').textContent = 'S:' + nS;
+  el.querySelector('.ld-cnt-w').textContent = 'W:' + working.length;
+
+  // The footer: the feed, the contract's own book, the two directions.
+  const feed = c.feed || {};
+  const fe = el.querySelector('.ld-feed');
+  fe.textContent = feed.stale ? 'STALE (' + (has(feed.age_sec) ? feed.age_sec + 's' : 'no quote') + ')'
+    : feed.settling ? 'SETTLING after a jump' : has(feed.age_sec) ? 'OK (quote ' + feed.age_sec + 's)' : 'no quote yet';
+  fe.className = 'ld-feed ' + (feed.stale ? 'bad' : feed.settling ? 'warn' : 'ok');
+  el.querySelector('.ld-bk-sym').textContent = c.symbol || c.name;
+  el.querySelector('.ld-bk-bid').textContent = num(m.bid, d);
+  el.querySelector('.ld-bk-ask').textContent = num(m.ask, d);
+  el.querySelector('.ld-bk-spr').textContent = has(m.bid) && has(m.ask) ? (m.ask - m.bid).toFixed(d) : DASH;
+  el.querySelector('.ld-bk-age').textContent = has(feed.age_sec) ? feed.age_sec + 's' : DASH;
+  const armed = block.armed || {};
+  const hl = el.querySelector('.ld-hl'), lh = el.querySelector('.ld-lh');
+  hl.classList.toggle('armed', !!armed.SELL);
+  lh.classList.toggle('armed', !!armed.BUY);
+  el.querySelector('.ld-zb').textContent = signed(block.z_sell, 2);
+  el.querySelector('.ld-za').textContent = signed(block.z_buy, 2);
+  const pe = el.querySelector('.ld-pos'), pn = el.querySelector('.ld-pnl');
+  if (pos) {
+    pe.textContent = (pos.side === 'BUY' ? '+' : '-') + pos.qty + ' @ ' + num(pos.avg_price, d);
+    pn.textContent = has(pos.net) ? money(pos.net) : DASH;
+    pn.className = 'ld-pnl ' + (pos.net > 0 ? 'up' : pos.net < 0 ? 'dn' : '');
+    pn.title = 'Net after the round trip, at the side it would close on';
+  } else {
+    pe.textContent = 'flat';
+    pn.textContent = '';
+  }
+
+  // The grid, centred on the market until Centre — or held, with Lock.
   const mid = m.mid;
-  if (mid === null || mid === undefined) {
-    el.querySelector('.ld-quote').textContent = c.market_note || 'no price yet';
+  const body = el.querySelector('.ld-grid tbody');
+  if (!has(mid)) {
+    body.innerHTML = '<tr><td colspan="5" class="price">' + esc(c.market_note || 'no price yet') + '</td></tr>';
     return;
   }
-  // Re-centred when the market leaves the middle half of the ladder — and
-  // scrolled so the touch is in view, or a ladder can sit showing prices
-  // nobody is quoting while the market trades below the fold.
   let recentred = false;
   if (ladderCentre[c.key] === undefined ||
-      Math.abs(mid - ladderCentre[c.key]) > tick * (LADDER_ROWS / 2)) {
+      (!pref.lock && Math.abs(mid - ladderCentre[c.key]) > inc * (LADDER_ROWS / 2))) {
     ladderCentre[c.key] = mid;
     recentred = true;
   }
-  const centre = ladderCentre[c.key];
-  const round = (p) => Math.round(p / tick) * tick;
-  const top = round(centre) + LADDER_ROWS * tick;
-  const marks = {};
-  function mark(price, label, cls) {
-    if (price === null || price === undefined) return;
-    const k = round(price).toFixed(d);
-    (marks[k] = marks[k] || []).push('<span class="' + cls + '">' + label + '</span>');
+  const round = (p) => Math.round(p / inc) * inc;
+  const key = (p) => round(p).toFixed(d);
+  const top = round(ladderCentre[c.key]) + LADDER_ROWS * inc;
+  const levels = {};
+  function level(price, label, cls) {
+    if (!has(price)) return;
+    (levels[key(price)] = levels[key(price)] || []).push('<span class="lv ' + cls + '">' + label + '</span>');
   }
   if (block.ready) {
-    mark(block.mean, 'MEAN', 'lm-mean');
-    mark(block.upper, '+' + (block.params || {}).entry_z + 'σ', 'lm-band');
-    mark(block.lower, '−' + (block.params || {}).entry_z + 'σ', 'lm-band');
+    level(block.mean, 'MEAN', 'mean');
+    level(block.upper, '+' + (block.params || {}).entry_z + 'σ', 'band');
+    level(block.lower, '−' + (block.params || {}).entry_z + 'σ', 'band');
   }
   if (pos) {
-    mark(pos.avg_price, 'ENTRY', 'lm-entry');
-    mark(pos.break_even, 'BE', 'lm-be');
-    mark(pos.target, 'TP', 'lm-tp');
-    mark(pos.stop, 'SL', 'lm-sl');
+    level(pos.avg_price, 'ENTRY', 'en');
+    level(pos.break_even, 'BE', 'be');
+    level(pos.target, 'TP', 'tp');
+    level(pos.stop, 'SL', 'sl');
   }
-  const bidK = m.bid === null || m.bid === undefined ? null : round(m.bid).toFixed(d);
-  const askK = m.ask === null || m.ask === undefined ? null : round(m.ask).toFixed(d);
-  const body = el.querySelector('.ld-table tbody');
+  const work = {};
+  working.forEach((o) => {
+    if (!has(o.price)) return;
+    const k = key(o.price);
+    work[k] = work[k] || { BUY: 0, SELL: 0 };
+    work[k][o.side] += (o.qty || 0) - (o.filled_qty || 0);
+  });
+  if (cl && cl.paper) {
+    const k = key(cl.price);
+    work[k] = work[k] || { BUY: 0, SELL: 0, held: true };
+    work[k].held = true;
+    work[k][cl.side] += pos ? pos.qty : 0;
+  }
+  const bidK = has(m.bid) ? key(m.bid) : null;
+  const askK = has(m.ask) ? key(m.ask) : null;
+  const midK = key(mid);
+  const ltK = has(c.last_trade) ? key(c.last_trade) : null;
   let html = '';
   for (let i = 0; i <= LADDER_ROWS * 2; i += 1) {
-    const price = top - i * tick;
-    const k = price.toFixed(d);
+    const k = (top - i * inc).toFixed(d);
+    const w = work[k];
     const isBid = k === bidK, isAsk = k === askK;
-    html += '<tr class="' + (isBid ? 'ld-bidrow' : '') + (isAsk ? ' ld-askrow' : '') +
-      '"><td class="ld-bid">' + (isBid ? (m.bid_size === null || m.bid_size ===
-        undefined ? '' : m.bid_size) : '') + '</td><td class="ld-px">' + k +
-      '</td><td class="ld-ask">' + (isAsk ? (m.ask_size === null || m.ask_size ===
-        undefined ? '' : m.ask_size) : '') + '</td><td class="ld-marks">' +
-      (marks[k] || []).join(' ') + '</td></tr>';
+    if (pref.filter && !w && !levels[k] && !isBid && !isAsk && k !== ltK && k !== midK) continue;
+    let workCell = '<td class="work">';
+    if (w && (w.BUY || w.SELL)) {
+      const side = w.BUY ? 'buy' : 'sell';
+      workCell = '<td class="work ' + side + (w.held ? ' held' : '') + '" title="' +
+        (w.held ? 'Close @ LMT resting on PAPER' : 'our working ' + side) + '">' +
+        (w.BUY || w.SELL) + ' ';
+    }
+    workCell += (levels[k] || []).join('') + '</td>';
+    html += '<tr class="' + (k === midK ? 'mid-line' : '') + '">' + workCell +
+      '<td class="bid' + (isBid ? ' has-qty' : '') + '">' + (isBid && has(m.bid_size) ? m.bid_size : '') + '</td>' +
+      '<td class="price' + (k === ltK ? ' last-trade' : '') + (isBid ? ' at-bid' : '') + (isAsk ? ' at-ask' : '') + '">' + k + '</td>' +
+      '<td class="ask' + (isAsk ? ' has-qty' : '') + '">' + (isAsk && has(m.ask_size) ? m.ask_size : '') + '</td>' +
+      '<td class="ltq' + (k === ltK ? ' print' : '') + '" title="' + (k === ltK ? 'TT last trade' : '') + '">' +
+      (k === ltK ? '●' : '') + '</td></tr>';
   }
   body.innerHTML = html;
-  if (recentred) {
-    const scroll = el.querySelector('.ld-scroll');
-    const row = body.rows[LADDER_ROWS];
-    if (row) scroll.scrollTop = row.offsetTop - scroll.clientHeight / 2;
+  if (recentred || el.dataset.recentre) {
+    delete el.dataset.recentre;
+    const grid = el.querySelector('.ld-grid');
+    const row = body.querySelector('tr.mid-line') || body.rows[Math.floor(body.rows.length / 2)];
+    if (row) grid.scrollTop = row.offsetTop - grid.clientHeight / 2;
   }
-  el.querySelector('.ld-quote').textContent = 'B ' + num(m.bid, d) + ' × ' +
-    (m.bid_size === null || m.bid_size === undefined ? DASH : m.bid_size) +
-    '   A ' + num(m.ask, d) + ' × ' +
-    (m.ask_size === null || m.ask_size === undefined ? DASH : m.ask_size) +
-    '   spread ' + num(m.ask - m.bid, d);
 }
 
 /* -- marking the window ---------------------------------------------------

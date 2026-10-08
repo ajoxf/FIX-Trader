@@ -158,11 +158,18 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
         if action == 'execution':
             return engine.set_execution(args.get('mode', ''),
                                         confirm=args.get('confirm') is True)
+        if action == 'close_limit':
+            return engine.close_at_limit(key, args.get('price'))
+        if action == 'cancel_close_limit':
+            return engine.cancel_close_limit(key)
         if action == 'close_now':
             return engine.close_now(key)
         if action == 'cancel_all':
             return {'ok': True,
-                    'cancelled': engine.executor.cancel_all(key or None)}
+                    'cancelled': engine.executor.cancel_all(
+                        key or None, side=args.get('side') or None)}
+        if action == 'refresh_feed':
+            return engine.refresh_feed(key)
         if action == 'kill_all':
             return engine.kill_all(bool(args.get('close_positions', False)))
         if action == 'resume':

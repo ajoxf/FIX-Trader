@@ -78,6 +78,14 @@ class ContractRuntime:
         #: the wording of an event line.
         self.closes: int = 0
         self.last_close = None
+        #: A Close @ LMT resting on PAPER: filled here when the touch it
+        #: would close at reaches the price. Nothing is sent.
+        self.paper_close_limit: Optional[Dict[str, Any]] = None
+        #: The day's open / high / low of the mid this system watched — the
+        #: ladder's quote strip. FIX market data carries no session figures
+        #: here, so they are OURS, and the strip says so.
+        self.hlo: Optional[Dict[str, Any]] = None
+        self.last_trade: Optional[float] = None
         self.last_trade_at: Optional[datetime] = None
         self.trades_today: int = 0
         self.pnl_today: float = 0.0
@@ -93,6 +101,15 @@ class ContractRuntime:
             self.day = today
             self.trades_today = 0
             self.pnl_today = 0.0
+
+
+    def note_mid(self, mid: float, now: datetime) -> None:
+        day = now.date().isoformat()
+        if self.hlo is None or self.hlo['day'] != day:
+            self.hlo = {'day': day, 'open': mid, 'high': mid, 'low': mid}
+            return
+        self.hlo['high'] = max(self.hlo['high'], mid)
+        self.hlo['low'] = min(self.hlo['low'], mid)
 
 
 class Engine:
@@ -314,6 +331,11 @@ class Engine:
         events = self.gateway.drain_events()
         for event in events:
             self._handle_event(event, now)
+        router = getattr(self.gateway, 'algo', None)
+        if router is not None and hasattr(router, 'take_tape'):
+            tape = router.take_tape()
+            if tape and self.db is not None:
+                self.db.save_tt_fills(tape)
         self._venue_housekeeping()
 
         # The FIX receiver publishes normalized, coalesced updates. Consume
@@ -324,6 +346,9 @@ class Engine:
         if market_events is not None:
             for event in market_events:
                 updated_keys.add(event.contract_key)
+                if event.last is not None and event.contract_key in self.runtimes:
+                    # The last trade: shown on the ladder, never used as a price.
+                    self.runtimes[event.contract_key].last_trade = event.last
                 logger.debug('algo consumed quote %s seq=%s bid=%s ask=%s last=%s',
                              event.contract_key, event.sequence, event.bid,
                              event.ask, event.last)
@@ -361,6 +386,9 @@ class Engine:
                         'PERSIST_STATS_SAMPLES', True):
                     self.db.save_samples(contract.key, [(now, book.mid)])
 
+        if book is not None and book.mid is not None:
+            rt.note_mid(book.mid, now)
+        self._paper_close_limit(rt, book, now)
         said = (self.executor.manage(contract, settings, book, now)
                 if self.auto_trade_enabled else [])
         for line in said:
@@ -1236,10 +1264,135 @@ class Engine:
             self.set_algo(key, False)
         settings = dict(self.config.effective(key), exit_order_type='MARKET')
         now = utcnow()
+        rt.paper_close_limit = None
+        # A close already working is turned into the market close, never
+        # joined by a second one: two closes for one position is a close
+        # that finds nothing, or opens the other side.
+        if not self.paper and self._has_working_close(key):
+            n = self.executor.escalate_closes(key, settings)
+            self._say(rt, "ORDER", "CLOSE ALL — the working close is being "
+                      "cancelled and crossed at market" if n else
+                      "CLOSE ALL — a market close is already working")
+            return {'ok': True, 'algo_stood_down': was_armed,
+                    'escalated': n}
         self._close(rt, settings, rt.position.side.opposite,
                     rt.position.qty, ExitReason.CLOSE_NOW,
                     "closed by hand", rt.book, now)
         return {'ok': True, 'algo_stood_down': was_armed}
+
+    def close_at_limit(self, key: str, price) -> Dict[str, Any]:
+        """Close @ LMT on the ladder: rest ONE closing limit for the whole
+        open position at the trader's price, carrying its tickets (77=C).
+
+        It waits there — no re-peg, no timeout. The Algo is stood down with
+        it, for the reason CLOSE NOW stands it down, and because its own
+        exits would otherwise put a second close beside this one. CLOSE ALL
+        still crosses at once: it escalates this order rather than adding
+        another."""
+        rt = self.runtimes.get(key)
+        if rt is None or rt.position is None or not rt.position.is_open:
+            return {'ok': False, 'error': "nothing open on that contract"}
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            return {'ok': False, 'error': "Close @ LMT needs a price"}
+        tick = rt.contract.tick_size or 0
+        if tick:
+            price = round(round(price / tick) * tick, 10)
+        if self._has_working_close(key) or rt.paper_close_limit:
+            return {'ok': False, 'error': "a close is already working on this "
+                    "contract — cancel it, or use CLOSE ALL"}
+        was_armed = rt.contract.algo_on
+        if was_armed:
+            self.set_algo(key, False)
+        side = rt.position.side.opposite
+        now = utcnow()
+        if self.paper:
+            rt.paper_close_limit = {'side': side.value, 'price': price,
+                                    'at': now.isoformat()}
+            self._say(rt, "ORDER", f"Close @ LMT {price:g} resting (PAPER) — "
+                      f"fills when the {'bid' if side is Side.SELL else 'offer'}"
+                      f" reaches it")
+            return {'ok': True, 'algo_stood_down': was_armed, 'paper': True}
+        settings = dict(self.config.effective(key), exit_order_type='LIMIT')
+        wo = self.executor.place(
+            rt.contract, settings, side, rt.position.qty, Intent.CLOSE,
+            rt.book, now, reason=f"Close @ LMT {price:g}",
+            open_qty=rt.position.qty, position_id=rt.position.id,
+            decision=self._exit_decision(rt, settings, rt.book, side,
+                                         order_type='LIMIT'),
+            position=rt.position, limit_price_at=price)
+        if wo is None:
+            return {'ok': False, 'error': "nothing could be sent"}
+        self._exit_reasons[wo.clordid] = ExitReason.CLOSE_LIMIT
+        self._say(rt, "ORDER", f"Close @ LMT {price:g} resting at the venue")
+        return {'ok': True, 'algo_stood_down': was_armed,
+                'clordid': wo.clordid}
+
+    def refresh_feed(self, key: str) -> Dict[str, Any]:
+        """↻ Feed on the ladder: ask TT for this contract's prices again
+        (Market Data Request 263=2 then 263=1). The book is not touched."""
+        rt = self.runtimes.get(key)
+        terminal = getattr(self.gateway, 'terminal', None)
+        if rt is None:
+            return {'ok': False, 'error': "no such contract"}
+        if terminal is None:
+            return {'ok': False, 'error': "the simulator has no TT "
+                    "subscription to refresh"}
+        sid = str(getattr(rt.contract, 'security_id', '') or '')
+        try:
+            with terminal.lock:
+                terminal.session('Market Data')
+                if sid not in terminal.watch:
+                    return {'ok': False, 'error': f"{sid or 'this contract'} is "
+                            "not subscribed on Market Data yet"}
+                if sid in terminal.subscriptions:
+                    terminal._subscribe(sid, '2')
+                    terminal.subscriptions.pop(sid, None)
+                terminal._subscribe(sid)
+        except ConnectionError as e:
+            return {'ok': False, 'error': str(e)}
+        self._say(rt, "FEED", "prices re-requested from TT")
+        return {'ok': True}
+
+    def cancel_close_limit(self, key: str) -> Dict[str, Any]:
+        """Pull a resting Close @ LMT (a cancel REQUEST at a venue)."""
+        rt = self.runtimes.get(key)
+        if rt is None:
+            return {'ok': False, 'error': "no such contract"}
+        if rt.paper_close_limit:
+            rt.paper_close_limit = None
+            self._say(rt, "ORDER", "Close @ LMT pulled (PAPER)")
+            return {'ok': True}
+        n = 0
+        for wo in self.executor.working_for(key):
+            if wo.pinned and not wo.state.is_done:
+                self.gateway.cancel(wo.clordid)
+                n += 1
+        return {'ok': bool(n), 'cancelled': n} if n else {
+            'ok': False, 'error': "no Close @ LMT working"}
+
+    def _paper_close_limit(self, rt, book, now) -> None:
+        lim = rt.paper_close_limit
+        if not lim:
+            return
+        if rt.position is None or not rt.position.is_open:
+            rt.paper_close_limit = None
+            return
+        side = Side(lim['side'])
+        touch = book.executable(side) if book is not None else None
+        if touch is None:
+            return
+        reached = (touch >= lim['price'] if side is Side.SELL
+                   else touch <= lim['price'])
+        if not reached:
+            return
+        rt.paper_close_limit = None
+        settings = self.config.effective(rt.contract.key)
+        self._paper_fill(rt, side, rt.position.qty, Intent.CLOSE, book, now,
+                         decision=self._exit_decision(rt, settings, book, side),
+                         exit_reason=ExitReason.CLOSE_LIMIT,
+                         reason=f"Close @ LMT {lim['price']:g}")
 
     # -- picking up an edited configuration ---------------------------------
 
@@ -1457,6 +1610,8 @@ class Engine:
                             if pos.opened_at else None)
                 max_hold = float(settings.get('max_hold_minutes', 0) or 0)
                 live = {
+                    #: The price it would CLOSE at: the opposite side's touch.
+                    'mark': close_px,
                     # NET: the whole round trip taken off, at the closing side.
                     'net': costs_mod.open_net(pos.side, pos.qty, pos.avg_price,
                                               close_px, contract.tick_size,
@@ -1519,6 +1674,19 @@ class Engine:
                 'algo': (rt.algo.block(self.algo_mode())
                          if rt.algo is not None else None),
                 'last_close': rt.last_close,
+                #: The day's O/H/L of the mid this system watched (ours).
+                'hlo': dict(rt.hlo) if rt.hlo else None,
+                'last_trade': rt.last_trade,
+                #: A resting Close @ LMT: on PAPER here, or our pinned order.
+                'close_limit': (dict(rt.paper_close_limit, paper=True)
+                                if rt.paper_close_limit else next(
+                                    ({'side': w.side.value, 'price': w.price,
+                                      'paper': False, 'clordid': w.clordid,
+                                      'state': w.state.value}
+                                     for w in self.executor.working_for(key)
+                                     if w.pinned and not w.state.is_done),
+                                    None)),
+                'security_id': getattr(contract, 'security_id', ''),
                 'pnl_today': round(rt.pnl_today, 2),
                 'trades_today': rt.trades_today,
                 'last_event': rt.last_event,
@@ -1633,6 +1801,18 @@ class Engine:
                 'open_pnl': pos['open_pnl'] if pos else None,
                 'margin_locked': pos['margin_locked'] if pos else None,
                 'tickets': pos.get('tickets') if pos else None,
+                'id': pos.get('id') if pos else None,
+                'opened_qty': pos.get('opened_qty') if pos else None,
+                'mark': pos.get('mark') if pos else None,
+                'net': pos.get('net') if pos else None,
+                'held_min': pos.get('held_min') if pos else None,
+                'z_close': pos.get('z_close') if pos else None,
+                'entry_slippage': pos.get('entry_slippage') if pos else None,
+                'entry_order_type': pos.get('entry_order_type') if pos else None,
+                'paper': bool(pos.get('paper')) if pos else False,
+                'simulated': bool(pos.get('simulated')) if pos else False,
+                'tick_size': c.get('tick_size'),
+                'market': c.get('market'),
                 'mid': (c.get('market') or {}).get('mid'),
                 'venue_qty': vp.qty if vp is not None else None,
                 'venue_long': vp.long_qty if vp is not None else None,
@@ -1683,4 +1863,13 @@ class Engine:
             'opened_at': pos.opened_at.isoformat() if pos.opened_at else None,
             'open_pnl': round(open_pnl, 2) if open_pnl is not None else None,
             'tickets': list(pos.tickets or []),
+            'id': pos.id,
+            'opened_qty': pos.opened_qty or pos.qty,
+            'entry_mean': pos.entry_mean,
+            'entry_std': pos.entry_std,
+            'entry_slippage': pos.entry_slippage,
+            'entry_order_type': pos.entry_order_type,
+            'simulated': bool(pos.is_simulated),
+            'paper': any(str(t).startswith('PAPER-')
+                         for t in pos.tickets or ()),
         }

@@ -97,8 +97,15 @@ so there are no legs:
   live bid/offer, nothing sent — every restart comes back here), LIVE (sent
   to TT; armed by hand and confirmed).
 
-Each contract on the Algo desk has a **ladder** (the book and the Algo's
-levels on it) and an **Algo window** — Signal & Position, Statistics,
+The top bar puts trading first — **Algo desk**, **Instruments & orders**,
+**Account** — then the connection pages. **Account** is the Trading
+Monitor for FIX: positions with TT's view beside them, working orders, the
+TT fills tape (every fill TT reported, in its own tags), closed trades,
+slippage and the reconciler.
+
+Each contract on the Algo desk has a **ladder** — the MT5 desk's ladder on
+one contract: the book, our working orders and the Algo's levels on it,
+CLOSE ALL and Close @ LMT — and an **Algo window** — Signal & Position, Statistics,
 Filters, the last signal held back, the last order, and a **Backtest** of
 its settings over the recording. Both minimise to the taskbar.
 

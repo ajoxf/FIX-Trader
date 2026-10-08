@@ -202,10 +202,17 @@ def test_the_window_renders_every_field_without_a_page_error(server):
         # the ladder, with the Algo's levels against the book
         ladder = page.locator('.ladderwin')
         assert ladder.count() == 1
-        marks = ladder.locator('.ld-marks').all_inner_texts()
+        marks = ladder.locator('td.work').all_inner_texts()
         assert any('ENTRY' in m for m in marks)
         assert any('TP' in m for m in marks)
-        assert 'manual orders are off' in ladder.locator('.ld-banner').inner_text()
+        assert 'manual orders are off' in ladder.locator('.ld-lock').inner_text()
+        # the MT5 ladder's furniture: the five columns, the rail, the bar
+        heads = ladder.locator('.ld-grid th').all_inner_texts()
+        assert [h.strip() for h in heads] == ['Work', 'Bids', 'Price', 'Asks', 'LTQ']
+        assert ladder.locator('.ld-flatten').is_enabled()      # a close always closes
+        assert not ladder.locator('.ld-buy').is_enabled()      # no manual order here
+        assert ladder.locator('.ld-counts').inner_text().split() == ['B:0', 'S:0', 'W:0']
+        assert ladder.locator('tr.mid-line').count() == 1
         browser.close()
     assert errors == []
 

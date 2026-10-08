@@ -351,32 +351,101 @@
   </section>
 </template>
 
-<!-- The contract's price ladder, beside its Algo. On this desk it shows
-     where the Algo's levels sit against the book; trading by hand is on
-     Instruments &amp; orders, and only in MANUAL mode. CLOSE always closes. -->
+<!-- The contract's price ladder, beside its Algo — the MT5 desk's ladder,
+     on ONE contract (the venue lists the spread itself: no legs). It shows
+     the book, our working orders and the Algo's levels against it. Manual
+     orders are not taken here (they are on Instruments & orders, in MANUAL
+     mode), and the ladder SAYS so rather than letting a click fail. CLOSE
+     ALL and Close @ LMT always close, by the position's own tickets. -->
 <template id="ladder-template">
   <section class="win ladderwin">
     <div class="titlebar">
       <span class="swatch"></span>
       <span class="title"></span>
-      <span class="ld-route"></span>
-      <span class="ld-mode"></span>
-      <span class="winbtns"><button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button><button class="winbtn close" title="Close this window">&times;</button></span>
+      <span class="ld-route" title="TT Security ID"></span>
+      <span class="ld-ordtype" title="How the Algo sends its orders — set in this contract's settings"></span>
+      <span class="ld-mode" title="Who is trading this contract, and whether its orders reach TT"></span>
+      <span class="winbtns"><button class="winbtn ld-cog" title="This contract's settings — order type, levels, Algo">&#9881;</button><button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button><button class="winbtn close" title="Close this window">&times;</button></span>
     </div>
-    <div class="ld-head">
-      <span class="ld-net" title="The open position's net P&amp;L at the side it would close on, after the round trip">&mdash;</span>
-      <span class="ld-hl"></span>
+    <div class="ld-quotestrip">
+      <span class="ld-netchg" title="The mid against today's open, in price">&mdash;</span>
+      <div class="ld-stats">
+        <span><label>H:</label><b class="ld-h">&mdash;</b></span>
+        <span><label>L:</label><b class="ld-l">&mdash;</b></span>
+      </div>
+      <div class="ld-stats">
+        <span><label>O:</label><b class="ld-o">&mdash;</b></span>
+        <span><label>LT:</label><b class="ld-lt">&mdash;</b></span>
+      </div>
+      <span class="ld-ours" title="FIX market data carries no session high/low/open here: these are OUR own figures from the mids this system watched today (UTC). LT is TT's last trade — shown, never used as a price.">ours</span>
     </div>
-    <div class="ld-banner"></div>
-    <div class="ld-scroll"><table class="ld-table">
-      <thead><tr><th>Bids</th><th>Price</th><th>Asks</th><th>Algo</th></tr></thead>
-      <tbody></tbody>
-    </table></div>
-    <div class="ld-actions">
-      <button class="btn danger ld-close" disabled title="Close the open position at market, now, and stand this contract's Algo down">CLOSE</button>
-      <button class="btn ld-centre" title="Put the market back in the middle of the ladder">Centre</button>
+    <div class="ld-lock"></div>
+    <div class="ld-body">
+      <div class="ld-rail">
+        <div class="ld-routebox" title="The contract, its TT Security ID and the account its orders go to">
+          <div class="ld-rb-sym">&mdash;</div>
+          <div class="ld-rb-id">&mdash;</div>
+          <div class="ld-rb-acct">&mdash;</div>
+        </div>
+        <div class="ld-moderow">
+          <select class="ld-ot" disabled title="The Algo's entry order type — set in this contract's settings (gear)">
+            <option value="LIMIT">Lim</option><option value="MARKET">Mkt</option>
+          </select>
+          <select class="ld-tif" disabled title="Time in force — set in this contract's settings">
+            <option value="DAY">Day</option><option value="GTC">GTC</option>
+          </select>
+        </div>
+        <div class="ld-quoting" title="How the Algo's orders are worked">&mdash;</div>
+        <button class="ld-quick ld-buy" disabled title="Manual orders are not taken on the Algo desk — use Instruments &amp; orders in MANUAL mode">BUY 1</button>
+        <button class="ld-quick ld-sell" disabled title="Manual orders are not taken on the Algo desk — use Instruments &amp; orders in MANUAL mode">SELL 1</button>
+        <button class="ld-quick ld-flatten" disabled title="Close the open position at market, NOW, by its own tickets (77=C) — and stand this contract's Algo down. A close already working is escalated, never doubled.">CLOSE ALL</button>
+        <div class="ld-closelmt">
+          <input class="ld-close-px" type="number" step="any" placeholder="Close @ limit" title="The price to rest ONE closing limit at, for the whole open position, carrying its tickets. It waits there; CLOSE ALL crosses now.">
+          <button class="ld-quick ld-close-go" disabled title="Rest a closing limit at the price in the box — a target, and no stop. The Algo is stood down with it.">@ LMT</button>
+        </div>
+        <label class="ld-inline ld-qtyrow"><span class="ld-qty-buy">Qty BUY</span><input class="ld-qtybox buy" type="number" disabled></label>
+        <div class="ld-keypad">
+          <button disabled>1</button><button disabled>5</button><button disabled>10</button>
+          <button disabled>50</button><button disabled>100</button><button disabled>CLR</button>
+        </div>
+        <label class="ld-inline ld-qtyrow"><span class="ld-qty-sell">Qty SELL</span><input class="ld-qtybox sell" type="number" disabled></label>
+        <div class="ld-raillabel">Working orders</div>
+        <div class="ld-cxlrow">
+          <button class="ld-cxl ld-cxl-s" title="Cancel this contract's working SELL orders">S<sup class="ld-n-s"></sup></button>
+          <button class="ld-cxl ld-cxl-all" title="Cancel every working order of ours on this contract">CXL All<sup class="ld-n-all"></sup></button>
+          <button class="ld-cxl ld-cxl-b" title="Cancel this contract's working BUY orders">B<sup class="ld-n-b"></sup></button>
+        </div>
+        <label class="ld-inline"><span>Increment</span><input class="ld-increment" type="number" min="0" step="any" title="One row of the ladder. Blank is the contract's tick."></label>
+        <div class="ld-centrerow">
+          <label class="ld-check" title="Hold the ladder exactly where it is — no automatic re-centring"><input type="checkbox" class="ld-lockscroll"> Lock</label>
+          <label class="ld-check" title="Show only the rows that have something on them"><input type="checkbox" class="ld-filter"> Filter</label>
+          <button class="btn ld-centre" title="Put the window back around the market now">Centre</button>
+        </div>
+      </div>
+      <div class="ld-grid">
+        <table>
+          <thead><tr>
+            <th class="c-work" title="Work — our working orders at this level (blue a buy, red a sell), and where the Algo's levels sit: TP, SL, BE, the band and the mean">Work</th>
+            <th class="c-bid" title="Bids — the size TT shows bid at this price">Bids</th>
+            <th class="c-price" title="The contract's price, one row per increment">Price</th>
+            <th class="c-ask" title="Asks — the size TT shows offered at this price">Asks</th>
+            <th class="c-ltq" title="LTQ — TT's last trade is marked here (a print, not an order); our own fills show their size">LTQ</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="ld-counts"><span class="ld-cnt-b">B:0</span><span class="ld-cnt-s">S:0</span><span class="ld-cnt-w">W:0</span></div>
+      </div>
     </div>
-    <div class="wfoot"><span class="grow ld-quote">&mdash;</span></div>
+    <div class="ld-footer">
+      <span class="ld-feed" title="The staleness and jump guards — a guard may withhold an order; it never prevents a close">&mdash;</span>
+      <button class="btn ld-refresh" title="Ask TT for this contract's prices again (Market Data Request). Use it when the age here keeps climbing.">&#8635; Feed</button>
+      <table class="ld-book"><thead><tr><th class="l">contract</th><th>Bid</th><th>Ask</th><th>Spread</th><th>Age</th></tr></thead><tbody><tr>
+        <td class="l ld-bk-sym">&mdash;</td><td class="b ld-bk-bid">&mdash;</td><td class="a ld-bk-ask">&mdash;</td><td class="ld-bk-spr">&mdash;</td><td class="ld-bk-age">&mdash;</td>
+      </tr></tbody></table>
+      <div class="ld-dirs"><span class="ld-hl" title="H to L: sell the contract into its BID when the bid's z reaches the entry z">H &rarr; L <b class="ld-zb">&mdash;</b></span><span class="ld-lh" title="L to H: buy the contract's OFFER when the offer's z reaches −entry z">L &rarr; H <b class="ld-za">&mdash;</b></span></div>
+      <span class="ld-pos">flat</span>
+      <span class="ld-pnl">&mdash;</span>
+    </div>
   </section>
 </template>
 

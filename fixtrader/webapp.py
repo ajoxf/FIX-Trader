@@ -16,11 +16,11 @@ import io
 import csv
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from flask import Flask, Response, jsonify, render_template, request
 
-from . import atomicfile
+from . import atomicfile, sizing
 from .commands import CommandBridge
 from .config import TraderConfig
 
@@ -90,6 +90,10 @@ def create_app(config_path: str = "config.json",
     @app.get('/instruments')
     def instruments():
         return render_template('instruments.html', asset_version=ASSET_VERSION)
+
+    @app.get('/account')
+    def account_page():
+        return render_template('account.html', asset_version=ASSET_VERSION)
 
     @app.get('/logs')
     def logs_page():
@@ -223,6 +227,88 @@ def create_app(config_path: str = "config.json",
             since.isoformat() if since is not None else None)
             if mode in ('live', 'both') and not key else None)
         return body
+
+    @app.get('/api/journal')
+    def api_journal():
+        """The Algo's record for the Account page: its recent orders, its
+        fills (venue tickets and PAPER ones alike, each marked) and its
+        closed trades, newest first. Read from the book; it prices nothing."""
+        from . import slippage
+        config = load_config()
+        db = _db(config)
+        limit = max(1, min(int(request.args.get('limit', 200) or 200), 1000))
+        closed = []
+        for p in db.closed_positions(limit=limit):
+            contract = config.contracts.get(p.contract_key)
+            row = slippage.row(p, contract) if contract is not None else {}
+            closed.append({
+                'id': p.id, 'contract_key': p.contract_key,
+                'name': contract.name if contract else p.contract_key,
+                'decimals': contract.decimals if contract else 4,
+                'side': p.side.value, 'qty': p.opened_qty or p.qty,
+                'opened_at': p.opened_at.isoformat() if p.opened_at else None,
+                'closed_at': p.closed_at.isoformat() if p.closed_at else None,
+                'entry_price': p.avg_price, 'exit_price': p.exit_price,
+                'entry_z': p.entry_z, 'exit_z': p.exit_z,
+                'exit_reason': p.exit_reason.value if p.exit_reason else None,
+                'gross_pnl': p.gross_pnl, 'fees': p.fees_paid,
+                'net_pnl': p.net_pnl, 'tickets': list(p.tickets or []),
+                'entry_order_type': p.entry_order_type,
+                'exit_order_type': p.exit_order_type,
+                'entry_ticks': row.get('entry_ticks'),
+                'exit_ticks': row.get('exit_ticks'),
+                'paper': any(str(t).startswith('PAPER-') for t in p.tickets or ()),
+                'simulated': bool(p.is_simulated),
+            })
+        orders = db.orders(limit=2000)
+        by_id = {o['clordid']: o for o in orders}
+        positions = {p['id']: p for p in closed}
+        for p in db.open_positions():
+            positions.setdefault(p.id, {'side': p.side.value,
+                                        'entry_price': p.avg_price})
+        tt = db.tt_fills(limit=limit)
+        timing: Dict[str, List[float]] = {}
+        first_fill = set()
+        for f in reversed(tt):                 # oldest first: first fill per order
+            order = by_id.get(f['clordid']) or by_id.get(f['orig_clordid'])
+            contract = config.contracts.get(f.get('contract_key') or
+                                            (order or {}).get('contract_key') or '')
+            f['name'] = contract.name if contract else (f['symbol'] or f['security_id'])
+            f['decimals'] = contract.decimals if contract else None
+            f['intent'] = (order or {}).get('intent')
+            f['order_type'] = (order or {}).get('order_type')
+            f['position_id'] = (order or {}).get('position_id')
+            f['pnl'] = None
+            pos = positions.get(f['position_id'])
+            if (order and order.get('intent') == 'CLOSE' and pos and contract
+                    and pos.get('entry_price') is not None):
+                sign = 1 if pos['side'] == 'BUY' else -1
+                f['pnl'] = round(sizing.to_money(
+                    (f['price'] - pos['entry_price']) * sign, contract.tick_size,
+                    contract.tick_value, f['qty']), 2)
+            if order and order.get('sent_at') and f['clordid'] not in first_fill:
+                first_fill.add(f['clordid'])
+                try:
+                    ms = (datetime.fromisoformat(f['received']) -
+                          datetime.fromisoformat(order['sent_at'])).total_seconds() * 1000
+                    if ms >= 0:
+                        timing.setdefault(order.get('order_type') or '?', []).append(ms)
+                except (TypeError, ValueError):
+                    pass
+        timings = {k: {'n': len(v), 'median': sorted(v)[len(v) // 2],
+                       'worst': max(v)} for k, v in timing.items()}
+        return jsonify({'ok': True, 'orders': orders[:limit],
+                        'fills': db.fills(limit=limit), 'closed': closed,
+                        'tt_fills': tt, 'timings': timings,
+                        'account': next((v.account for v in config.venues.values()
+                                         if getattr(v, 'account', '')), '')})
+
+    @app.get('/api/tt_fills.csv')
+    def api_tt_fills_csv():
+        """The TT fills tape as TT sent it, newest first."""
+        from .database import Database
+        rows = _db(load_config()).tt_fills(limit=100000)
+        return _csv('tt_fills.csv', list(Database.TT_FILL_COLUMNS), rows)
 
     @app.get('/api/slippage')
     def api_slippage():

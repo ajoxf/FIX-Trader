@@ -2,8 +2,7 @@
 (() => {
   const $ = id => document.getElementById(id);
   let snapshot = {}, data = {}, selected = null, optionSignature = '', confirmation = null, searchRequest = '';
-  const ladderState = new Map();
-  let pinned = null, explorerSignature = '', streamState = 'connecting', streamLatency = null, latestReceived = 0;
+  let explorerSignature = '', streamState = 'connecting', streamLatency = null, latestReceived = 0;
   const EXPLORER_TYPES=[['FUT','Future'],['MLEG','Spread'],['OPT','Option'],['CS','Stock'],['FOR','Forward'],['SPOT','Spot']];
   const explorer = {exchange:'CME', type:'MLEG', product:'', contract:'', filter:''};
   // The last exchange/type/product is a per-viewer convenience: it may be
@@ -40,7 +39,7 @@
     }
     const md=snapshot.engine?.fix_connection?.sessions?.find(s=>s.name==='Market Data');
     $('feed-status').textContent=`Source: TT ${snapshot.engine?.environment||'UAT'} FIX · ${streamState} · FIX-to-screen ${streamLatency} ms · Last heartbeat: ${clock(md?.last_heartbeat)}. Quote age is measured in milliseconds from the last TT update.`;
-    renderWatch();renderLadders();
+    renderWatch();
   }
   function connectQuoteStream() {
     if(!window.EventSource)return;
@@ -137,7 +136,7 @@
       stamp.append(text('div',quoteStatus(q),q.stale?'stale':'quote-live'));
       if (q.error) stamp.append(text('div',q.error,'quote-message'));
       row.append(stamp);
-      const actions=document.createElement('td');actions.append(button('Buy',()=>ticketFor(i,'BUY'),'buy'),button('Sell',()=>ticketFor(i,'SELL'),'sell'),button('Ladder',()=>{if(!pinned)pinned=[];if(!pinned.includes(i.security_id)){if(pinned.length>=4)throw new Error('Close a ladder before opening another.');pinned.push(i.security_id);}renderLadders();$('ladders').scrollIntoView({behavior:'smooth'});}),button('Remove',async()=>{await command('remove',{security_id:i.security_id});notice('Removed from the watchlist.');}),button('Algo desk…',()=>toAlgoDesk(i)));row.append(actions);rows.append(row);
+      const actions=document.createElement('td');actions.append(button('Buy',()=>ticketFor(i,'BUY'),'buy'),button('Sell',()=>ticketFor(i,'SELL'),'sell'),button('Remove',async()=>{await command('remove',{security_id:i.security_id});notice('Removed from the watchlist.');}),button('Algo desk…',()=>toAlgoDesk(i)));row.append(actions);rows.append(row);
     }
     $('watchlist').replaceChildren(rows);
     if (!data.watchlist?.length) empty($('watchlist'),10,'Add a returned TT instrument to subscribe to its prices.');
@@ -161,60 +160,6 @@
       text('p',`Closes fills from ${order.id}. Market execution price is not guaranteed.`),
       text('p','Quantity is based on this ticket’s fills. Confirm it is still open in TT if you traded it elsewhere.'));
     confirmDialog('Review close position',content,'Confirm · Close position',()=>command('submit',{token:review.token,confirmed:true}));
-  }
-  function renderLadders() {
-    const watched=data.watchlist||[];
-    if(pinned===null && watched.length)pinned=[...watched].sort((a,b)=>Number(!a.quote.timestamp)-Number(!b.quote.timestamp)||(a.instrument.maturity||'').localeCompare(b.instrument.maturity||'')).slice(0,4).map(w=>w.instrument.security_id);
-    const root=document.createDocumentFragment();
-    for(const id of pinned||[]) {
-      const item=watched.find(w=>w.instrument.security_id===id);if(!item)continue;
-      const i=item.instrument,q=item.quote;
-      if(!ladderState.has(id))ladderState.set(id,{qty:'1',tif:'DAY',type:'LIMIT',locked:false,center:null,price:null});
-      const state=ladderState.get(id), card=document.createElement('section');card.className='ladder';
-      const heading=document.createElement('div');heading.className='ladder-title';
-      heading.append(text('strong',i.display_name||i.symbol),button('×',()=>{pinned=pinned.filter(k=>k!==id);renderLadders();}));card.append(heading);
-      card.append(text('div',[i.exchange,i.security_type,i.maturity,i.tick_size&&'tick '+i.tick_size,'FIX prices'].filter(Boolean).join(' · '),'muted'));
-      card.append(text('div',`Bid ${fmt(q.bid)}   Ask ${fmt(q.ask)}   Spread ${fmt(q.spread)}`,'ladder-quote'));
-      card.append(text('div',quoteStatus(q),q.stale?'stale':'quote-live'));
-      const controls=document.createElement('div');controls.className='ladder-controls';
-      const qty=document.createElement('input');qty.type='number';qty.min='0.00000001';qty.step='any';qty.value=state.qty;qty.setAttribute('aria-label','Order quantity '+(i.display_name||id));qty.oninput=()=>state.qty=qty.value;
-      const type=document.createElement('select');for(const t of ['LIMIT','MARKET'])type.append(new Option(t,t));type.value=state.type;type.onchange=()=>state.type=type.value;
-      const tif=document.createElement('select');for(const t of ['DAY','GTC','IOC','FOK'])tif.append(new Option(t,t));tif.value=state.tif;tif.onchange=()=>state.tif=tif.value;
-      controls.append(qty,type,tif);card.append(controls);
-      const actions=document.createElement('div');actions.className='ladder-actions';
-      for(const side of ['BUY','SELL'])actions.append(button('Review '+side,()=>{
-        const current=data.watchlist?.find(w=>w.instrument.security_id===id)?.quote;
-        if(!current||current.stale||!snapshot.engine?.alive)throw new Error('Wait for fresh quotes before using the ladder.');
-        ticketFor(i,side);const form=$('ticket-form');form.elements.quantity.value=state.qty;form.elements.order_type.value=state.type;form.elements.tif.value=state.tif;
-        if(state.price!==null)form.elements.price.value=state.price;
-        conditionals();form.requestSubmit();
-      },side==='BUY'?'buy':'sell'));
-      actions.append(button('Centre',()=>{state.center=null;state.price=null;renderLadders();}));
-      const lock=document.createElement('label');lock.className='check';const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=state.locked;checkbox.onchange=()=>state.locked=checkbox.checked;lock.append(checkbox,text('span','Lock centre'));actions.append(lock);card.append(actions);
-      const levels=document.createElement('table');levels.className='ladder-levels';const head=document.createElement('tr');for(const h of ['Working','Bid qty','Price','Ask qty'])head.append(text('th',h));levels.append(head);
-      const tick=Number(i.tick_size), midpoint=q.mid??q.bid??q.ask;
-      if(tick>0&&midpoint!==null&&midpoint!==undefined) {
-        if(state.center===null||!state.locked)state.center=Math.round(midpoint/tick)*tick;
-        const bids=q.bid_levels?.length?q.bid_levels:[{price:q.bid,size:q.bid_size}], asks=q.ask_levels?.length?q.ask_levels:[{price:q.ask,size:q.ask_size}];
-        for(let offset=15;offset>=-15;offset--){
-          const price=Number((state.center+offset*tick).toPrecision(14)),row=document.createElement('tr');
-          if(state.price===price)row.className='selected-price';
-          const equal=value=>value!==null&&value!==undefined&&Math.abs(Number(value)-price)<tick/100;
-          const work=(data.orders||[]).filter(o=>o.ticket.security_id===id&&!['FILLED','CANCELED','REJECTED','EXPIRED','UNKNOWN'].includes(o.status)&&equal(o.ticket.price));
-          row.append(text('td',work.map(o=>`${o.ticket.side[0]} ${fmt(o.remaining_qty)}`).join(', ')));
-          const bid=bids.find(l=>equal(l.price)),ask=asks.find(l=>equal(l.price));
-          row.append(text('td',bid?fmt(bid.size):'','ladder-bid'),text('td',fmt(price),'ladder-price'),text('td',ask?fmt(ask.size):'','ladder-ask'));
-          row.onclick=()=>{state.price=price;state.locked=true;renderLadders();};levels.append(row);
-        }
-      }else{const row=document.createElement('tr'),cell=text('td','Waiting for a quote and a valid tick size');cell.colSpan=4;row.append(cell);levels.append(row);}
-      const scroll=document.createElement('div');scroll.className='ladder-scroll';scroll.append(levels);card.append(scroll);
-      const depth=button(i.full_depth?'Use top of book':'Request full depth',async()=>{await command('depth',{security_id:id,enabled:!i.full_depth});notice('Market-data subscription updated.');});card.append(depth);
-      card.append(button('Refresh quotes',async()=>{await command('depth',{security_id:id,enabled:!!i.full_depth});notice('Requested a new TT snapshot. Waiting for venue data.');}));
-      for(const order of (data.orders||[]).filter(o=>o.ticket.security_id===id&&o.close_available>0))card.append(button(`Close ${fmt(order.close_available)} ${order.ticket.side} fills`,()=>reviewClose(order)));
-      card.append(text('div',i.full_depth?'Venue depth; unreported quantities stay blank.':'Top-of-book feed; other quantities are blank.','muted'));root.append(card);
-    }
-    // Avoid replacing an input while the operator types quantity or chooses a TIF.
-    if(!$('ladders').contains(document.activeElement)||!['INPUT','SELECT'].includes(document.activeElement.tagName))$('ladders').replaceChildren(root);
   }
   function explorerMatches(){
     const catalogue=data.catalogue||[];
@@ -332,21 +277,6 @@
       :`${label}: mean ${(st.ticks_mean>0?'+':'')+st.ticks_mean.toFixed(2)} t · worst ${(st.ticks_worst>0?'+':'')+st.ticks_worst.toFixed(2)} t · ${st.money_total==null?'—':(st.money_total<0?'-':'')+'$'+Math.abs(st.money_total).toFixed(2)} over ${st.measured} ticket(s)`+(st.unmeasured?` · ${st.unmeasured} unmeasured`:'');
     host.textContent=part('Entries',s.entry)+'   |   '+part('Closes',s.exit);
   }
-  function renderPnl() {
-    const pnl=data.pnl||{}, account=pnl.account||{}, currency=pnl.currency||'';
-    const cards=document.createDocumentFragment();
-    for(const [label,value,unavailable] of [
-      ['FIX account',account.name||'Unavailable',false],
-      ['Realized gross P&L',pnl.realized_total, pnl.realized_total===null||pnl.realized_total===undefined],
-      ['Floating gross P&L',pnl.floating_total,pnl.floating_total===null||pnl.floating_total===undefined],
-      ['Venue balance / equity','Unavailable',true]]) {
-      const card=text('div','', 'pnl-card'), shown=typeof value==='number'?`${currency} ${fmt(value)}`:String(value??'Unavailable');
-      card.append(text('span',label),text('strong',shown,unavailable?'pnl-unavailable':typeof value==='number'?(value>=0?'pnl-positive':'pnl-negative'):''));cards.append(card);
-    }
-    $('account-summary').replaceChildren(cards);$('account-summary').title=account.status||'';
-    const floating=document.createDocumentFragment();for(const p of pnl.positions||[]){const row=document.createElement('tr');for(const v of [p.instrument,p.side,p.quantity,p.entry_price,p.mark_price,p.floating_pnl===null?'Unavailable':`${p.currency||''} ${fmt(p.floating_pnl)}`,`${p.mark_source} · FIX seq ${p.quote_sequence||'—'}`])row.append(text('td',fmt(v)));floating.append(row)}$('floating-pnl').replaceChildren(floating);if(!(pnl.positions||[]).length)empty($('floating-pnl'),7,'No locally observed open filled quantity.');
-    const realized=document.createDocumentFragment();for(const p of pnl.trades||[]){const row=document.createElement('tr');for(const v of [clock(p.closed_at),p.instrument,p.side,p.quantity,p.entry_price,p.exit_price,p.realized_pnl===null?'Unavailable':`${p.currency||''} ${fmt(p.realized_pnl)}`,`${p.entry_order_id} → ${p.exit_order_id}`])row.append(text('td',fmt(v)));realized.append(row)}$('realized-pnl').replaceChildren(realized);if(!(pnl.trades||[]).length)empty($('realized-pnl'),8,'No completed entry/close pair received from TT.');
-  }
   function renderRisk() {
     const risk=data.risk||{}, form=$('risk-form'), enabled=risk.trading_enabled!==false;
     if(!form)return;
@@ -401,8 +331,8 @@
       if(!engine.alive)notice('The engine is offline. Prices below are historical and orders are unavailable.',true);
       if(!engine.alive)for(const w of data.watchlist||[])w.quote.stale=true;
       if(!$('account').value&&data.account)$('account').value=data.account;
-      renderResults();renderWatch();renderOrders();renderPnl();renderRisk();renderLadders();renderExplorer();
-    }catch(error){for(const w of data.watchlist||[])w.quote.stale=true;if(snapshot.engine)snapshot.engine.alive=false;$('session').textContent='Engine unavailable';$('session').className='tag error';$('review-order').disabled=true;notice(error.message,true);renderWatch();renderLadders();}
+      renderResults();renderWatch();renderOrders();renderRisk();renderExplorer();
+    }catch(error){for(const w of data.watchlist||[])w.quote.stale=true;if(snapshot.engine)snapshot.engine.alive=false;$('session').textContent='Engine unavailable';$('session').className='tag error';$('review-order').disabled=true;notice(error.message,true);renderWatch();}
     setTimeout(poll,1000);
   }
   async function switchMode(next){

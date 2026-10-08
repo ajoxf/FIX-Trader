@@ -63,10 +63,24 @@ the drawing wins.
     new exposure only. A manual order recovered as UNKNOWN after a restart
     is named, not counted as open (it would block the switch for ever).
 - **The Algo desk is a ladder and an Algo window per contract**, each with
-  a taskbar button that minimises and restores it. The desk ladder shows the
-  book and the Algo's levels against it; it does not take manual orders
-  (those are on Instruments & orders, in MANUAL mode). Its CLOSE always
-  closes.
+  a taskbar button that minimises and restores it. The desk ladder is the
+  MT5 desk's ladder on ONE contract (Work / Bids / Price / Asks / LTQ, the
+  rail, the B/S/W bar, the footer book): it shows the book, our working
+  orders and the Algo's levels against it; it does not take manual orders
+  (those are on Instruments & orders, in MANUAL mode) and its lock banner
+  says so. CLOSE ALL and Close @ LMT always close.
+- **Close @ LMT rests ONE closing limit at the trader's price**, by the
+  position's tickets (77=C), PINNED: never re-pegged, never timed out. It
+  stands the Algo down (its exits would be a second close). On PAPER it
+  fills here when the touch reaches the price. **CLOSE ALL over a working
+  close ESCALATES it** (cancel, then market on the CANCELLED event for what
+  is left) — never a second close beside the first.
+- **The Account tab is the Trading Monitor for FIX**: Positions, Working
+  orders, Fills, Closed trades, Slippage, Reconciler. Its Fills tab is the
+  TT FILLS TAPE — every execution report with a fill on the Order Routing
+  session, ours or not, in TT's own tags (60, 1, 48, 54, 77, 32, 31, 37, 17,
+  11, 58), kept in `tt_fills`. Display only: the book is built from OUR
+  fills (`_execution`), never from the tape.
 - **CLOSE NOW stands that contract's algo down.** The z that put the position
   on has not moved, so an algo left armed re-enters on the next pass — a
   tenth of a second after the trader pressed the button to get out.

@@ -58,6 +58,10 @@ class WorkingOrder:
         self.text = ""
         self.escalated = False
         self.position_effect = PositionEffect.OPEN
+        #: A price the TRADER named (Close @ LMT on the ladder): never
+        #: re-pegged and never timed out — it waits there until it fills,
+        #: is cancelled, or CLOSE ALL escalates it to market.
+        self.pinned = False
 
     @property
     def remaining(self) -> float:
@@ -78,6 +82,7 @@ class WorkingOrder:
             'sent_at': self.sent_at.isoformat() if self.sent_at else None,
             'sent_at_touch': self.sent_at_touch, 'escalated': self.escalated,
             'position_effect': self.position_effect.value,
+            'pinned': self.pinned,
         }
 
 
@@ -171,7 +176,8 @@ class Executor:
               intent: Intent, book, now: datetime, reason: str = "",
               open_qty: float = 0.0, position_id: Optional[int] = None,
               decision: Optional[Dict[str, Any]] = None,
-              position=None) -> Optional[WorkingOrder]:
+              position=None,
+              limit_price_at: Optional[float] = None) -> Optional[WorkingOrder]:
         """Send one order. Returns None when there is nothing safe to send.
 
         A CLOSE is never a bare opposite order. It carries an explicit
@@ -192,7 +198,10 @@ class Executor:
             return None
 
         price = None
-        if order_type is OrderType.LIMIT:
+        if limit_price_at is not None:
+            # The trader's own price: a LIMIT at exactly that level.
+            order_type, price = OrderType.LIMIT, float(limit_price_at)
+        elif order_type is OrderType.LIMIT:
             price = limit_price(book, side,
                                 float(settings.get(f'{prefix}_limit_offset_ticks',
                                                    1.0) or 0.0),
@@ -222,6 +231,7 @@ class Executor:
                           price, now, touch, reason,
                           position_id or getattr(position, 'id', None))
         wo.position_effect = effect
+        wo.pinned = limit_price_at is not None
         self.working[clordid] = wo
         self.intents[clordid] = intent
         if decision is not None:
@@ -247,6 +257,8 @@ class Executor:
                 continue
             if wo.state.is_done or wo.order_type is not OrderType.LIMIT:
                 continue
+            if wo.pinned and not wo.escalated:
+                continue              # the trader's price: it waits there
 
             prefix = 'exit' if wo.is_close else 'entry'
             timeout = float(settings.get(f'{prefix}_limit_timeout_sec', 0) or 0)
@@ -293,12 +305,36 @@ class Executor:
             self._persist(wo, now)
         return said
 
-    def cancel_all(self, contract_key: Optional[str] = None) -> int:
+    def escalate_closes(self, contract_key: str,
+                        settings: Dict[str, Any]) -> int:
+        """Turn this contract's working CLOSE limits into market closes.
+
+        The same path an unfilled exit limit takes on its timeout: armed
+        here, the cancel requested, and the market order SENT on the
+        CANCELLED event for whatever is still open then — never a second
+        close alongside the first."""
+        n = 0
+        for wo in list(self.working.values()):
+            if (wo.contract_key != contract_key or not wo.is_close
+                    or wo.state.is_done or wo.escalated
+                    or wo.order_type is not OrderType.LIMIT):
+                continue
+            wo.escalated = True
+            self.escalating[wo.clordid] = dict(settings)
+            self.gateway.cancel(wo.clordid)
+            n += 1
+        return n
+
+    def cancel_all(self, contract_key: Optional[str] = None,
+                   side: Optional[str] = None) -> int:
         """Cancel OUR working orders, scoped by ClOrdID. Never touches an
-        order this system did not send — a hand order in TT is not ours."""
+        order this system did not send — a hand order in TT is not ours.
+        `side` ('BUY'/'SELL') pulls one side only — the ladder's B and S."""
         n = 0
         for wo in list(self.working.values()):
             if contract_key and wo.contract_key != contract_key:
+                continue
+            if side and wo.side.value != side:
                 continue
             if wo.state.is_done:
                 continue
