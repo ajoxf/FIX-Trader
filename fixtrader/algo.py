@@ -204,7 +204,7 @@ def entry_z_taken(p):
 _POSITION_DISPLAY = ('quantity', 'opened_at', 'age_sec', 'entry_atr',
                      'entry_slip_ticks',
                      'stop_mode', 'target_mode', 'tp_money', 'sl_money',
-                     'entry_z', 'paper')
+                     'entry_z', 'paper', 'manual', 'levels_why')
 
 
 class AlgoSignal:

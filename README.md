@@ -22,8 +22,8 @@ events and strategy consumption. The Algo's orders go to TT over the Order
 Routing session (TT UAT, FIX 4.2) — but only once a person arms **LIVE**.
 
 Each contract's **Algo button** (on its ladder and its Algo window) is Off,
-Dry run (signals only) or Trades; on a live venue every Algo comes back in a
-dry run after a restart. **Master** on the taskbar stands every Algo down at
+Signals or Trades; on a live venue every armed Algo comes back in Signals
+after a restart. **Master** on the taskbar stands every Algo down at
 once. **Execution** is PAPER or LIVE, on the taskbar — where a trading Algo's
 orders go. Every restart comes back on
 PAPER: fills simulated at the live bid/offer, nothing sent. LIVE sends the
@@ -43,7 +43,8 @@ review/send manual orders with cancel/replace and execution reports.
 See [symbol and order instructions](docs/INSTRUMENTS_AND_ORDERS.md).
 This manual workflow was added explicitly at the operator's request. Each
 contract has ONE Algo switch, on its ladder and its Algo window — **Off**,
-**Dry run** (signals only) or **Trades** (PAPER or LIVE) — so hand trades and
+**Signals** (the Algo alerts its entries and watches your position's TP/SL;
+you trade on the ladder) or **Trades** (PAPER or LIVE) — so hand trades and
 algo trades are never on the same contract: while its Algo trades, hand orders
 on it are refused, and the Algo never trades a contract a hand is holding.
 Closing and cancelling always work. Algorithmic execution and complete account-position
@@ -94,8 +95,9 @@ so there are no legs:
   margin you enter per contract, or an ATR multiple) and the stop loss (2%,
   or an ATR multiple). Optional: z stop, back at the mean in profit, time
   stop.
-- **Modes**, per contract on its Algo button: OFF (traded by hand), DRY RUN
-  (signals only), and Trades — PAPER (filled at the live bid/offer, nothing
+- **Modes**, per contract on its Algo button: OFF (traded by hand), SIGNALS
+  (alerts on entries; your position watched with its TP/SL; you trade), and
+  Trades — PAPER (filled at the live bid/offer, nothing
   sent — every restart comes back here) or LIVE (sent to TT; armed by hand
   and confirmed).
 

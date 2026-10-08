@@ -89,6 +89,12 @@ class ContractRuntime:
         #: here, so they are OURS, and the strip says so.
         self.hlo: Optional[Dict[str, Any]] = None
         self.last_trade: Optional[float] = None
+        #: SIGNALS mode: the trader's own position on this contract, watched
+        #: by the Algo — its levels frozen when it was first seen.
+        self.manual_watch: Optional[Dict[str, Any]] = None
+        #: The last Signals-mode alert (an entry signal, or the watched
+        #: position reaching an exit), with a sequence the screen keys on.
+        self.signal_alert: Optional[Dict[str, Any]] = None
         self.last_trade_at: Optional[datetime] = None
         self.trades_today: int = 0
         self.pnl_today: float = 0.0
@@ -432,6 +438,76 @@ class Engine:
                 'slippage': breakdown['slippage_budget'],
                 'fee_points': breakdown['round_trip_points']}
 
+    def _manual_position(self, rt, contract, settings, book, now, p):
+        """SIGNALS mode: the trader's own position on this contract, as the
+        Algo reads a position — so it is given the SAME break-even, target
+        and stop (the per-direction ones included), frozen when first seen,
+        and its exits are SIGNALLED. Nothing here closes it: the trader does.
+        None when the hand holds nothing here."""
+        terminal = getattr(self.gateway, 'terminal', None)
+        sid = str(getattr(contract, 'security_id', '') or '')
+        if terminal is None or not sid:
+            rt.manual_watch = None
+            return None
+        with terminal.lock:
+            rows = [r for r in terminal._pnl_snapshot([])['positions']
+                    if str(r.get('security_id')) == sid]
+            opened = [terminal.orders.get(r['entry_order_id'], {}).get('updated')
+                      for r in rows]
+        net = sum((1 if r['side'] == 'BUY' else -1) * float(r['quantity'])
+                  for r in rows)
+        if not rows or not net:
+            rt.manual_watch = None
+            return None
+        side = Side.BUY if net > 0 else Side.SELL
+        same = [r for r in rows if r['side'] == side.value]
+        qty = abs(net)
+        held = sum(float(r['quantity']) for r in same)
+        entry = (sum(float(r['entry_price']) * float(r['quantity']) for r in same)
+                 / held) if held else None
+        sig = (side.value, tuple(sorted(r['entry_order_id'] for r in rows)), qty)
+        watch = rt.manual_watch
+        if watch is None or watch['sig'] != sig:
+            money = self._algo_costs(contract, settings, qty)
+            atr = rt.algo.atr() if rt.algo is not None else None
+            be, tp, sl, why = algo_mod.levels(
+                side.value, entry, money['fee_points'], p,
+                (money['k'] * qty) if money['k'] else None,
+                self._margin(contract, settings, qty), atr)
+            first = min((o for o in opened if o), default=None)
+            try:
+                opened_at = datetime.fromisoformat(first) if first else now
+            except ValueError:
+                opened_at = now
+            watch = rt.manual_watch = {'sig': sig, 'break_even': be, 'tp': tp,
+                                       'sl': sl, 'why': why, 'atr': atr,
+                                       'opened_at': opened_at}
+        close_px = book.executable(side.opposite) if book else None
+
+        def worth(level):
+            return costs_mod.open_net(side, qty, entry, level,
+                                      contract.tick_size, contract.tick_value,
+                                      settings)
+        return {
+            'position_id': 'manual', 'manual': True,
+            'side': side.value, 'entry': entry,
+            'opened_at': watch['opened_at'].timestamp(),
+            'age_sec': (now - watch['opened_at']).total_seconds(),
+            'break_even': watch['break_even'], 'tp': watch['tp'],
+            'sl': watch['sl'], 'quantity': qty, 'entry_z': None,
+            'entry_atr': watch['atr'], 'paper': False,
+            'net_pnl': worth(close_px), 'tp_money': worth(watch['tp']),
+            'sl_money': worth(watch['sl']), 'levels_why': watch['why'],
+            'tickets': [r['entry_order_id'] for r in rows],
+        }
+
+    def _signal_alert(self, rt, kind: str, text: str, now) -> None:
+        """Something a trader in SIGNALS mode should act on, said once."""
+        seq = (rt.signal_alert or {}).get('seq', 0) + 1
+        rt.signal_alert = {'seq': seq, 'kind': kind, 'text': text,
+                           'at': now.isoformat()}
+        self._say(rt, "SIGNAL", text)
+
     def _algo_position(self, rt, contract, settings, book, now):
         """The open position as the Algo reads it, or None."""
         pos = rt.position
@@ -504,6 +580,17 @@ class Engine:
         open_pos = self._algo_position(rt, contract, settings, book, now)
         if open_pos is not None:
             positions.append(open_pos)
+        signals_mode = self.algo_state(contract.key) == 'DRY'
+        watched = None
+        if open_pos is None and signals_mode:
+            # The trader trades, the Algo watches: their position gets the
+            # Algo's levels and exit SIGNALS — never an order.
+            watched = self._manual_position(rt, contract, settings, book,
+                                            now, p)
+            if watched is not None:
+                positions.append(watched)
+        else:
+            rt.manual_watch = None
         rt.roll_day(now)
         algo.settle_day(now.date().isoformat())
 
@@ -571,6 +658,14 @@ class Engine:
                     'reason': words, 'ts': now.isoformat()}
                 if mode == 'DRY RUN' or rt.position is None:
                     algo.record(intent, now.timestamp(), mode)
+                    if signals_mode and watched is not None:
+                        net = intent.get('net_pnl')
+                        self._signal_alert(rt, 'EXIT', (
+                            f"{words} — close your {watched['side']} "
+                            f"{watched['quantity']:g} at "
+                            f"{intent.get('price') if intent.get('price') is not None else '—'}"
+                            + (f" (net {net:+.2f})" if net is not None else '')),
+                            now)
                     continue
                 if self._has_working_close(contract.key):
                     continue
@@ -593,6 +688,11 @@ class Engine:
                            'ts': now.isoformat()}
             if mode == 'DRY RUN':
                 algo.record(intent, now.timestamp(), mode)
+                if signals_mode:
+                    self._signal_alert(rt, 'ENTRY', (
+                        f"{'H to L' if side is Side.SELL else 'L to H'} — "
+                        f"{side.value} {qty:g} @ {intent.get('price')} "
+                        f"(z {intent['z']:+.2f})"), now)
                 continue
             if self.executor.working_for(contract.key):
                 continue
@@ -1115,6 +1215,7 @@ class Engine:
         if rt is None:
             return {'ok': False, 'error': f"no contract {key}"}
         state = str(state or '').upper()
+        state = {'SIGNALS': 'DRY', 'DRY_RUN': 'DRY'}.get(state, state)
         if state not in ALGO_STATES:
             return {'ok': False, 'error': f"unknown Algo state {state!r} — OFF, DRY or TRADE"}
         name = rt.contract.name or key
@@ -1745,6 +1846,7 @@ class Engine:
                 #: The day's O/H/L of the mid this system watched (ours).
                 'hlo': dict(rt.hlo) if rt.hlo else None,
                 'last_trade': rt.last_trade,
+                'signal_alert': rt.signal_alert,
                 #: A resting Close @ LMT: on PAPER here, or our pinned order.
                 'close_limit': (dict(rt.paper_close_limit, paper=True)
                                 if rt.paper_close_limit else next(

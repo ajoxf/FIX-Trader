@@ -262,7 +262,7 @@ def test_the_algo_switch_sends_a_command(server):
         win = page.locator('.contractwin')
         win.locator('.algo-btn').click()
         items = win.locator('.algo-menu button').all_inner_texts()
-        assert [i.split()[0] for i in items] == ['Off', 'Dry', 'Trades']
+        assert [i.split()[0] for i in items] == ['Off', 'Signals', 'Trades']
         win.locator('.algo-menu button[data-algo="DRY"]').click()
         page.wait_for_timeout(400)
         sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
@@ -1310,7 +1310,7 @@ def test_a_trading_algo_locks_its_ladder_and_says_how_to_unlock_it(server):
         ladder = page.locator('.ladderwin')
         assert 'ALGO PAPER' in ladder.locator('.ld-lock').inner_text()
         assert 'manual orders are off' in ladder.locator('.ld-lock').inner_text()
-        assert 'Off or Dry run' in ladder.locator('.ld-lock').get_attribute('title')
+        assert 'Off or Signals' in ladder.locator('.ld-lock').get_attribute('title')
         browser.close()
     assert errors == []
 
@@ -1326,6 +1326,65 @@ def test_a_dry_run_leaves_the_ladder_to_the_hand(server):
     with sync_playwright() as p:
         browser, page = open_page(p, url, [])
         page.wait_for_selector('.ladderwin.manual-on')
-        assert 'DRY RUN' in page.locator('.ladderwin .ld-lock').inner_text()
+        assert 'SIGNALS' in page.locator('.ladderwin .ld-lock').inner_text()
+        assert page.locator('.ladderwin .algo-btn').inner_text().startswith('ALGO SIGNALS')
         assert page.locator('.ladderwin .ld-buy').is_enabled()
         browser.close()
+
+
+def test_a_signal_alerts_once_and_a_reload_does_not_replay_it(server):
+    """SIGNALS mode: a new call from the Algo is a toast (and a chime) that
+    stays until dismissed — read off `signal_alert.seq`, so the alert that
+    was already there when the page loaded is not said again."""
+    url, tmp = server
+    manual_desk(tmp)
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['contracts'][0].update({'algo_state': 'DRY', 'algo_on': True,
+        'signal_alert': {'seq': 1, 'kind': 'ENTRY', 'text': 'old call', 'at': ''}})
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin.manual-on')
+        page.wait_for_timeout(800)
+        assert 'old call' not in page.locator('#toasts').inner_text()
+        snap['contracts'][0]['signal_alert'] = {
+            'seq': 2, 'kind': 'ENTRY', 'at': '',
+            'text': 'H to L — SELL 1 @ 0.48 (z +2.60)'}
+        (tmp / 'status.json').write_text(json.dumps(snap))
+        page.wait_for_selector('#toasts .toast.SIGNAL')
+        assert 'H to L — SELL 1' in page.locator('#toasts .toast.SIGNAL').inner_text()
+        page.wait_for_timeout(1500)
+        assert page.locator('#toasts .toast.SIGNAL').count() == 1   # once
+        browser.close()
+    assert errors == []
+
+
+def test_signals_mode_puts_the_traders_tp_and_sl_on_the_ladder(server):
+    """The trader's own position, watched in SIGNALS mode: its TP and SL
+    from the Algo are on the ladder and in the Algo window, marked as theirs."""
+    url, tmp = server
+    manual_desk(tmp)
+    snap = json.loads((tmp / 'status.json').read_text())
+    c = snap['contracts'][0]
+    c.update({'algo_state': 'DRY', 'algo_on': True})
+    c['algo']['positions'] = [{
+        'position_id': 'manual', 'manual': True, 'side': 'BUY', 'entry': 0.48,
+        'quantity': 1, 'break_even': 0.49, 'tp': 0.52, 'sl': 0.45,
+        'closing': 0.48, 'net_pnl': -1.0, 'tp_money': 3.0, 'sl_money': -4.0,
+        'progress': 0.0, 'opened_at': 0, 'age_sec': 30}]
+    snap['engine']['manual_terminal']['pnl']['positions'] = [{
+        'entry_order_id': 'FTM-1', 'security_id': '777', 'side': 'BUY',
+        'quantity': 1, 'entry_price': 0.48, 'floating_pnl': 0.5}]
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin .ld-grid tbody tr')
+        page.wait_for_timeout(800)
+        work = ' '.join(page.locator('.ladderwin td.work').all_inner_texts())
+        assert 'TP' in work and 'SL' in work and 'BE' in work
+        assert 'TP 0.5200' in page.locator('.ladderwin .ld-pos').inner_text()
+        assert 'YOUR LONG' in page.locator('.contractwin .aw-pos').inner_text()
+        browser.close()
+    assert errors == []

@@ -46,8 +46,9 @@ the drawing wins.
   trades by hand (Instruments & orders: tickets; and the desk ladder) and by
   algo (the Algo desk). Each contract has ONE Algo switch — the MT5 desk's,
   on its ladder AND its Algo window, always reading the same word —
-  `Engine.set_algo_state(key, OFF | DRY | TRADE)`, shown as ALGO OFF / ALGO
-  DRY RUN / ALGO PAPER / ALGO LIVE (`algo_state`). An algo and a hand on the
+  `Engine.set_algo_state(key, OFF | DRY | TRADE)` — DRY is shown as
+  **SIGNALS** — read as ALGO OFF / ALGO SIGNALS / ALGO PAPER / ALGO LIVE
+  (`algo_state`). An algo and a hand on the
   same book fight — the trader puts a position on and the algo closes it at
   its own target, or the trader gets flat and the algo re-enters on the next
   pass. So:
@@ -55,24 +56,31 @@ the drawing wins.
     THAT contract is refused by `ManualTerminal` itself (`mode_block(ticket)`
     → `Engine._manual_block`), at the review AND at the send, so no page or
     command can go round it; it is also refused while the Algo still holds a
-    position or order there. Off and Dry run leave the contract to the hand,
+    position or order there. Off and Signals leave the contract to the hand,
     as on the MT5 desk. Other instruments are never refused.
+  - **SIGNALS: the Algo signals, the trader trades.** An entry signal is an
+    ALERT (`signal_alert`, keyed by `seq` — toast + chime, said once, never
+    replayed on a reload). The trader's own position on that contract is
+    WATCHED (`_manual_position`): the same `levels` (per-direction ones
+    included), frozen when first seen, on the ladder and in the Algo window
+    marked as theirs, and its exits (TP, SL, z/mean/time stops if on) are
+    alerts too. Nothing in SIGNALS ever sends or closes an order.
   - A contract a hand is holding (a working manual order or an unclosed
     manual fill on its Security ID) gets no Algo entry, and cannot be set to
-    TRADE; a contract whose Algo holds a position cannot be set Off or Dry
-    run (nothing would manage the exit) — CLOSE ALL closes it and stands the
+    TRADE; a contract whose Algo holds a position cannot be set Off or
+    Signals (nothing would manage the exit) — CLOSE ALL closes it and stands the
     Algo down. Each refusal names what is open.
   - Setting ONE contract to TRADE turns automatic trading on without setting
-    any other armed contract trading: they stay dry runs. Dry-run choices
+    any other armed contract trading: they stay in Signals. Signals choices
     are kept beside the status file; a live venue still comes back with
-    automatic trading off, i.e. every Algo in a dry run.
+    automatic trading off, i.e. every armed Algo in Signals.
   - Closes and cancels are never refused. A manual order recovered as
     UNKNOWN after a restart is named, not counted as open.
 - **The Algo desk is a ladder and an Algo window per contract**, each with
   a taskbar button that minimises and restores it. The desk ladder is the
   MT5 desk's ladder on ONE contract (Work / Bids / Price / Asks / LTQ, the
   rail, the B/S/W bar, the footer book): it shows the book, our working
-  orders and the Algo's levels against it. With its Algo Off or in a Dry run
+  orders and the Algo's levels against it. With its Algo Off or in Signals
   it trades by hand THROUGH `ManualTerminal` — BUY / SELL, or a click in Bids (buys at that
   price) / Asks (sells), each a `terminal_preview` reviewed in the shared
   modal before `terminal_submit`, an `FTM-` ticket flagged 77=O with the

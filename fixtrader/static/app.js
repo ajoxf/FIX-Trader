@@ -78,6 +78,10 @@ const SOUNDS = {
   CLOSED: () => beep([880, 660], 0.08),
   REJECT: () => beep([220], 0.18),
   GUARD: () => beep([220], 0.14),
+  // SIGNALS mode: the Algo calls a trade for the trader to take — a chime
+  // of its own, rising for an entry, falling for an exit on their position.
+  SIGNAL: () => beep([523, 659, 784, 1047], 0.09),
+  EXIT_SIGNAL: () => beep([1047, 784, 659, 523], 0.09),
 };
 
 /* -- toasts: errors stay until dismissed --------------------------------- */
@@ -99,7 +103,9 @@ function toast(kind, title, message, sub) {
   if (SOUNDS[kind]) SOUNDS[kind]();
   // A reject or a withheld order STAYS: a failure that vanishes in three
   // seconds is one the operator misses.
-  if (kind !== 'REJECT' && kind !== 'GUARD') {
+  // A SIGNAL stays too: it is a trade the trader still has to take.
+  if (kind !== 'REJECT' && kind !== 'GUARD' && kind !== 'SIGNAL' &&
+      kind !== 'EXIT_SIGNAL') {
     setTimeout(() => el.remove(), 12000);
   }
   while (host.children.length > 4) host.lastChild.remove();
@@ -231,13 +237,13 @@ function setMinimised(el, on) {
 
 /* -- the Algo switch ----------------------------------------------------------
  *
- * ONE per contract, the MT5 desk's: OFF (traded by hand), DRY RUN (signals
+ * ONE per contract, the MT5 desk's: OFF (traded by hand), SIGNALS (signals
  * only — still traded by hand) or TRADES (PAPER or LIVE, as the desk's
  * Execution says; hand orders on this contract are refused). The ladder and
  * the Algo window carry the same button and always read the same word.
  */
 
-const ALGO_WORDS = { OFF: 'ALGO OFF', DRY: 'ALGO DRY RUN', PAPER: 'ALGO PAPER', LIVE: 'ALGO LIVE' };
+const ALGO_WORDS = { OFF: 'ALGO OFF', DRY: 'ALGO SIGNALS', PAPER: 'ALGO PAPER', LIVE: 'ALGO LIVE' };
 
 function renderAlgoSwitch(el, c) {
   const st = c.algo_state || (c.algo_on ? 'DRY' : 'OFF');
@@ -250,7 +256,8 @@ function renderAlgoSwitch(el, c) {
       'hand orders on it are refused; CLOSE ALL still closes. Click to change.'
     : st === 'PAPER' ? 'The Algo trades this contract on PAPER — filled here at the live ' +
       'bid/offer, nothing sent. Hand orders on it are refused. Click to change.'
-    : st === 'DRY' ? 'Dry run: the Algo shows its signals and sends nothing. You may trade ' +
+    : st === 'DRY' ? 'Signals: the Algo signals entries — with an alert — and watches YOUR ' +
+      'position with its take-profit and stop loss; it sends nothing. You trade on the ladder. ' +
       'this contract by hand. Click to change.'
     : 'The Algo is off: you trade this contract by hand. Click to turn the Algo on.';
 }
@@ -640,7 +647,7 @@ function lastOrderHtml(block) {
     ' · ' + new Date(last.at * 1000).toLocaleTimeString();
   let outcome;
   if (last.mode === 'DRY RUN') {
-    outcome = '<div class="hint">dry run — nothing sent</div>';
+    outcome = '<div class="hint">signal — nothing sent; you trade it</div>';
   } else if (last.done) {
     outcome = '<div class="up">' + (last.mode === 'PAPER'
       ? 'filled on paper — nothing sent' : 'sent — done') + '</div>';
@@ -727,14 +734,18 @@ function renderAlgoBody(el, c) {
       tp + ' · SL ' + sl + (own ? ' <small>own</small>' : '') + '</div>';
   }
   const first = (block.positions || [])[0] || null;
-  const position = first ? (first.side === 'BUY' ? 'LONG' : 'SHORT') + ' ' +
-    num(first.quantity, 0) : 'FLAT';
+  // SIGNALS mode: the position is the TRADER's, watched by the Algo — said.
+  const position = first ? (first.manual ? 'YOUR ' : '') +
+    (first.side === 'BUY' ? 'LONG' : 'SHORT') + ' ' + num(first.quantity, 0) : 'FLAT';
   let html = '<div class="aw-head">Signal &amp; Position</div>' +
     '<div class="aw-tiles">' + tile(true) + tile(false) +
     '<div class="aw-pos ' + (first ? (first.side === 'BUY' ? 'long' : 'short')
       : 'flat') + '">' + position + '</div></div>' +
     '<div class="aw-line" title="' + esc(block.blocked || '') + '">' +
     esc(algoLine(block, d)) + '</div>';
+  if (first && first.manual && first.levels_why) {
+    html += '<div class="aw-line warn">' + esc(first.levels_why) + '</div>';
+  }
   if (first) {
     const delta = first.closing === null || first.closing === undefined ||
       first.entry === null ? null : first.closing - first.entry;
@@ -761,7 +772,8 @@ function renderAlgoBody(el, c) {
       kv('Age', first.age_sec === null || first.age_sec === undefined ? DASH
         : Math.floor(first.age_sec / 60) + 'm ' + Math.floor(first.age_sec % 60) + 's') +
       kv('Size', num(first.quantity, 0) + ' contract(s)' +
-        (first.paper ? ' <small>paper</small>' : '')) +
+        (first.paper ? ' <small>paper</small>' : '') +
+        (first.manual ? ' <small>yours — the Algo signals its exits, you close it</small>' : '')) +
       '</div>' +
       kv('Levels', 'BE ' + num(first.break_even, d) + ' · TP ' +
         (first.tp === null || first.tp === undefined ? DASH
@@ -1082,6 +1094,26 @@ async function closeAtLimitAsk(el, key) {
   }
 }
 
+/* SIGNALS mode: the Algo's call, said ONCE — read off `signal_alert.seq`,
+ * never off the wording of an event line. First sight of a contract is not
+ * an alert: a reload must not replay the last one. */
+const signalSeen = {};
+
+function signalAlert(el, c) {
+  const a = c.signal_alert;
+  const seq = (a && a.seq) || 0;
+  if (signalSeen[c.key] === undefined) { signalSeen[c.key] = seq; return; }
+  if (seq === signalSeen[c.key]) return;
+  signalSeen[c.key] = seq;
+  if (!a) return;
+  const exit = a.kind === 'EXIT';
+  toast(exit ? 'EXIT_SIGNAL' : 'SIGNAL', exit ? 'SIGNAL · EXIT' : 'SIGNAL · ENTRY',
+    a.text, c.name);
+  el.classList.remove('signal-flash');
+  void el.offsetWidth;
+  el.classList.add('signal-flash');
+}
+
 /* -- hand trading on the desk ladder (MANUAL mode) ------------------------- */
 
 const ladderData = {};           // key -> {c, engine}: the last snapshot drawn
@@ -1197,8 +1229,9 @@ function renderLadder(c, engine) {
   const orders = c.orders || [];
   const has = (v) => v !== null && v !== undefined;
   ladderData[c.key] = { c, engine };
+  signalAlert(el, c);
   const term = (engine || {}).manual_terminal;
-  // Hand trading on this ladder: its Algo not trading it (Off or Dry run)
+  // Hand trading on this ladder: its Algo not trading it (Off or Signals)
   // and holding nothing here, a TT manual ticket behind it, and the session
   // up. Anything else and the order controls are off — and the banner says
   // which.
@@ -1208,6 +1241,9 @@ function renderLadder(c, engine) {
   el.classList.toggle('manual-on', manualOn);
   const mWorking = ladderManualWorking(c.key);
   const mOpen = ladderManualPositions(c.key);
+  // SIGNALS mode: the trader's position as the Algo watches it — with the
+  // Algo's break-even, take-profit and stop loss, and its net P&L.
+  const watched = (block.positions || []).find((x) => x.manual) || null;
 
   el.querySelector('.title').textContent = c.name;
   el.querySelector('.ld-route').textContent = c.security_id || c.symbol || '';
@@ -1247,7 +1283,7 @@ function renderLadder(c, engine) {
     lock.className = 'ld-lock';
     lockText.textContent = word + ' — manual orders are off on this ladder. ' +
       'CLOSE ALL and Close @ LMT still close.';
-    lock.title = 'Set the Algo to Off or Dry run (the button in the title bar) to trade ' +
+    lock.title = 'Set the Algo to Off or Signals (the button in the title bar) to trade ' +
       'this contract by hand.';
   } else if (c.manual_block) {
     lock.className = 'ld-lock';
@@ -1255,7 +1291,7 @@ function renderLadder(c, engine) {
     lock.title = '';
   } else if (manualOn) {
     lock.className = 'ld-lock manual';
-    lockText.textContent = (algoState === 'DRY' ? 'DRY RUN — the Algo shows signals, you trade. '
+    lockText.textContent = (algoState === 'DRY' ? 'SIGNALS — the Algo signals and watches your TP/SL, you trade. '
       : 'ALGO OFF — you trade. ') + 'BUY / SELL, or click a price: Bids buys, Asks sells.';
     lock.title = 'Every order is reviewed before it goes to TT: a manual ticket (FTM-), with ' +
       'the same checks and safety limits as Instruments & orders. Right-click a Work cell to ' +
@@ -1351,10 +1387,15 @@ function renderLadder(c, engine) {
       mOpen.reduce((a, p) => a + p.quantity, 0);
     const fl = mOpen.every((p) => has(p.floating_pnl))
       ? mOpen.reduce((a, p) => a + p.floating_pnl, 0) : null;
-    pe.textContent = (net > 0 ? '+' : '') + net + ' @ ' + num(avg, d) + ' (manual)';
-    pn.textContent = has(fl) ? money(fl) : DASH;
-    pn.className = 'ld-pnl ' + (fl > 0 ? 'up' : fl < 0 ? 'dn' : '');
-    pn.title = 'Gross, marked at the TT mid — the manual ticket\'s own figure';
+    pe.textContent = (net > 0 ? '+' : '') + net + ' @ ' + num(avg, d) + ' (manual)' +
+      (watched ? ' · TP ' + num(watched.tp, d) + ' · SL ' +
+        (has(watched.sl) ? num(watched.sl, d) : 'off') : '');
+    const shown = watched && has(watched.net_pnl) ? watched.net_pnl : fl;
+    pn.textContent = has(shown) ? money(shown) : DASH;
+    pn.className = 'ld-pnl ' + (shown > 0 ? 'up' : shown < 0 ? 'dn' : '');
+    pn.title = watched ? 'Net after the round trip, at the side it would close on — ' +
+      'the Algo watching your position (Signals)'
+      : 'Gross, marked at the TT mid — the manual ticket\'s own figure';
   } else {
     pe.textContent = 'flat';
     pn.textContent = '';
@@ -1387,6 +1428,13 @@ function renderLadder(c, engine) {
     level(block.lower, '−' + (block.params || {}).entry_z + 'σ', 'band');
   }
   mOpen.forEach((p) => level(p.entry_price, 'ENTRY', 'en'));
+  // SIGNALS: the Algo watches the trader's position — its levels go on the
+  // ladder like the Algo's own.
+  if (watched && !pos) {
+    level(watched.break_even, 'BE', 'be');
+    level(watched.tp, 'TP', 'tp');
+    level(watched.sl, 'SL', 'sl');
+  }
   if (pos) {
     level(pos.avg_price, 'ENTRY', 'en');
     level(pos.break_even, 'BE', 'be');

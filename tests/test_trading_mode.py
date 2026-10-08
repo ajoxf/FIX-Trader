@@ -15,7 +15,7 @@ from fixtrader.engine import Engine
 from fixtrader.fake_gateway import FakeGateway, SimContract
 from tests.conftest import ALGO_TEST_SETTINGS
 from tests.test_engine import put_book_at_z, warm_the_window
-from tests.test_manual_terminal import report, terminal, ticket  # noqa: F401
+from tests.test_manual_terminal import report, sent, terminal, ticket  # noqa: F401
 
 
 def desk(tmp_path, terminal, mode_path=None):
@@ -48,7 +48,7 @@ def manual_fill(terminal):
     p = terminal.preview(ticket(quantity='2'))
     oid = terminal.submit({'token': p['token'], 'confirmed': True})['order_id']
     report(terminal, {'35': '8', '11': oid, '39': '2', '150': '2', '17': 'F1',
-                      '14': '2', '151': '0', '32': '2', '31': '-0.5'})
+                      '14': '2', '151': '0', '32': '2', '31': '-0.5', '6': '-0.5'})
     return oid
 
 
@@ -208,3 +208,73 @@ def test_a_dry_run_survives_a_restart(tmp_path, terminal):
     again, _ = desk(tmp_path, terminal, mode_path=path)
     assert again.algo_state('fef') == 'DRY'
     assert again.snapshot()['contracts'][0]['algo_state'] == 'DRY'
+
+
+# -- SIGNALS: the Algo signals and watches, the trader trades -------------------
+
+def test_signals_mode_watches_the_traders_position_with_the_algos_levels(tmp_path, terminal):
+    """The trader's own position, in SIGNALS mode, gets the Algo's break-even,
+    target and stop — the same `levels` the Algo prices its own with — and
+    the screen shows it as THEIRS."""
+    from fixtrader import algo as algo_mod
+    engine, gw = desk(tmp_path, terminal)
+    assert engine.set_algo_state('fef', 'SIGNALS')['ok']
+    assert engine.algo_state('fef') == 'DRY'
+    rt = warm_the_window(engine, gw)
+    manual_fill(terminal)                                # BUY 2 @ -0.5
+    engine.poll(now=gw.now)
+    watched = engine.snapshot()['contracts'][0]['algo']['positions'][0]
+    assert watched['manual'] is True and watched['side'] == 'BUY'
+    assert watched['quantity'] == 2 and watched['entry'] == -0.5
+    money = engine._algo_costs(rt.contract, engine.config.effective('fef'), 2)
+    be, tp, sl, _ = algo_mod.levels(
+        'BUY', -0.5, money['fee_points'], rt.algo.params, money['k'] * 2,
+        engine._margin(rt.contract, engine.config.effective('fef'), 2),
+        rt.manual_watch['atr'])
+    assert (watched['break_even'], watched['tp'], watched['sl']) == (be, tp, sl)
+    assert rt.position is None                           # nothing booked as the Algo's
+
+
+def test_a_watched_position_at_its_target_is_signalled_never_closed(tmp_path, terminal):
+    engine, gw = desk(tmp_path, terminal)
+    engine.set_algo_state('fef', 'SIGNALS')
+    rt = warm_the_window(engine, gw)
+    manual_fill(terminal)                                # far below: TP already reached
+    before = len(sent(terminal, 'D'))                    # the entry ticket
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    alert = rt.signal_alert
+    assert alert is not None and alert['kind'] == 'EXIT'
+    assert 'close your BUY 2' in alert['text']
+    # said once: the same reason on the next pass is not a second alert
+    seq = alert['seq']
+    engine.poll(now=gw.now)
+    assert rt.signal_alert['seq'] == seq
+    # and nothing was closed for the trader
+    assert terminal.open_business()
+    assert len(sent(terminal, 'D')) == before == 1       # no close was sent
+
+
+def test_signals_mode_alerts_an_entry_and_sends_nothing(tmp_path, terminal):
+    engine, gw = desk(tmp_path, terminal)
+    engine.set_algo_state('fef', 'SIGNALS')
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    assert rt.position is None
+    assert rt.signal_alert is not None and rt.signal_alert['kind'] == 'ENTRY'
+    assert 'H to L' in rt.signal_alert['text']
+
+
+def test_no_signal_alert_when_the_algo_trades_or_is_off(tmp_path, terminal):
+    """The control: a trading Algo ENTERS (no alert to take it by hand), and
+    an Algo that is Off neither enters nor alerts."""
+    for state, entered in (('TRADE', True), ('OFF', False)):
+        where = tmp_path / state
+        where.mkdir()
+        engine, gw = desk(where, terminal)
+        engine.set_algo_state('fef', state)
+        rt = warm_the_window(engine, gw)
+        put_book_at_z(engine, gw, 2.5)
+        engine.poll(now=gw.now); engine.poll(now=gw.now)
+        assert (rt.position is not None) is entered
+        assert rt.signal_alert is None

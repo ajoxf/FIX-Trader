@@ -1001,3 +1001,9 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 .algo-menu button.live { color: #a02828; }
 .ladderwin .titlebar .algo-switch { margin-left: 6px; }
 .algowin .badgebar .algo-switch { margin-left: auto; }
+
+.toast.SIGNAL { border-left-color: #7a3d9a; } .toast.SIGNAL .kind { color: #5d2e86; }
+.toast.EXIT_SIGNAL { border-left-color: #b07a14; } .toast.EXIT_SIGNAL .kind { color: #7d5606; }
+/* A Signals-mode call: the ladder's FRAME flashes, never a layer over the prices. */
+@keyframes signal-flash { 0%, 60% { box-shadow: 0 0 0 3px #7a3d9a; } 100% { box-shadow: none; } }
+.win.signal-flash { animation: signal-flash 3s ease-out; }
