@@ -1388,3 +1388,28 @@ def test_signals_mode_puts_the_traders_tp_and_sl_on_the_ladder(server):
         assert 'YOUR LONG' in page.locator('.contractwin .aw-pos').inner_text()
         browser.close()
     assert errors == []
+
+
+def test_the_taskbar_buttons_hold_still_while_the_figures_change(server):
+    """The loop timer changes every second, at the END of a right-aligned bar:
+    without a fixed width it pushed every button sideways each time."""
+    url, _ = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_timeout(600)
+        moved = page.evaluate("""() => {
+          const bar = document.getElementById('taskbar');
+          const stat = document.getElementById('loop-stat');
+          const badge = document.getElementById('link-badge');
+          const where = () => [...bar.querySelectorAll('button, a')]
+            .map((b) => Math.round(b.getBoundingClientRect().left));
+          stat.textContent = 'loop 2ms · 0.2s'; badge.textContent = 'OK';
+          const a = where();
+          stat.textContent = 'loop 12.4ms · 10.5s'; badge.textContent = 'CONNECTED';
+          const b = where();
+          return a.filter((x, i) => x !== b[i]).length;
+        }""")
+        assert moved == 0
+        browser.close()
+    assert errors == []

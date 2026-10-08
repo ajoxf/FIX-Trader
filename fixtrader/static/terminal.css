@@ -1007,3 +1007,15 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 /* A Signals-mode call: the ladder's FRAME flashes, never a layer over the prices. */
 @keyframes signal-flash { 0%, 60% { box-shadow: 0 0 0 3px #7a3d9a; } 100% { box-shadow: none; } }
 .win.signal-flash { animation: signal-flash 3s ease-out; }
+
+/* The taskbar holds still. It is right-aligned, so anything that changes
+ * width — the loop timer every second, a badge's word — pushed every button
+ * to its left sideways. Each changing item gets a fixed width and fixed-width
+ * digits, so a button is always where the hand left it. */
+#taskbar .stat, #taskbar .link, #taskbar .tk { white-space: nowrap; font-variant-numeric: tabular-nums; }
+#loop-stat { display: inline-block; width: calc(108px * var(--fs)); text-align: left; overflow: hidden; }
+#text-size { display: inline-block; width: calc(54px * var(--fs)); text-align: center; }
+#link-badge { display: inline-block; min-width: calc(112px * var(--fs)); text-align: center; box-sizing: border-box; }
+#master-toggle { min-width: calc(86px * var(--fs)); }
+#execution-toggle { min-width: calc(118px * var(--fs)); }
+#sound-toggle { min-width: calc(76px * var(--fs)); }
