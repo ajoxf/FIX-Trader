@@ -377,9 +377,22 @@ class Executor:
         return self.decisions.get(clordid, {})
 
     def intent_of(self, clordid: str) -> Intent:
-        """What an order was for. Defaults to OPEN only for an order this
-        system never sent — one of ours is always recorded."""
-        return self.intents.get(clordid, Intent.OPEN)
+        """What an order was for: from memory, else from the orders table
+        it was written to when it was SENT. A restart forgets the first;
+        reading a close that was still working as an OPEN applied its fill
+        the wrong way. OPEN only for an order this system never sent."""
+        if clordid in self.intents:
+            return self.intents[clordid]
+        if self.db is not None and hasattr(self.db, 'order_intent'):
+            try:
+                recorded = self.db.order_intent(clordid)
+            except Exception:                            # noqa: BLE001
+                recorded = None
+            if recorded:
+                intent = Intent(str(recorded).split('.')[-1])
+                self.intents[clordid] = intent
+                return intent
+        return Intent.OPEN
 
     def working_for(self, contract_key: str) -> List[WorkingOrder]:
         return [w for w in self.working.values()

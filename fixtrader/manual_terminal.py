@@ -12,6 +12,8 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
+from . import slippage as slippage_mod
+
 
 ORDER_TYPES = {'MARKET': '1', 'LIMIT': '2', 'STOP': '3', 'STOP_LIMIT': '4',
                'MARKET_ON_CLOSE': '5', 'LIMIT_ON_CLOSE': 'B', 'POST_ONLY': 'p'}
@@ -760,6 +762,9 @@ class ManualTerminal:
                      'filled_qty': 0, 'remaining_qty': float(ticket['quantity']), 'avg_price': None, 'venue_order_id': '', 'pending': None}
             if close_of:
                 order['close_of'] = close_of
+            # The price the trader could have crossed at when the ticket was
+            # SENT — the anchor this order's slippage is measured against.
+            order['decision'] = self._touch(ticket)
             self.orders[order_id] = order
             self._save('order', order_id, order)  # Durable idempotency before any bytes go out.
             del self.previews[token]
@@ -840,10 +845,89 @@ class ManualTerminal:
             order['text'] = self.gateway._redact(fields.get('58', ''))
             if fields.get('17') and fields.get('150') in ('1', '2', 'F'):
                 fill = {'exec_id': fields['17'], 'order_id': order['id'], 'symbol': order['ticket']['instrument']['description'],
-                        'side': order['ticket']['side'], 'quantity': fields.get('32'), 'price': fields.get('31'), 'time': now()}
+                        'side': order['ticket']['side'], 'quantity': fields.get('32'), 'price': fields.get('31'), 'time': now(),
+                        'order_type': order['ticket']['order_type'], 'close': bool(order.get('close_of'))}
+                fill.update(self._fill_slippage(order, fields.get('31'), fields.get('32')))
                 self.db.execute('INSERT OR IGNORE INTO manual_fills VALUES (?,?)', (fields['17'], json.dumps(fill)))
         order['updated'] = now()
         self._save('order', order['id'], order)
+
+    def _touch(self, ticket):
+        """The book when a ticket is sent: the side it would cross — the
+        offer for a BUY, the bid for a SELL — and both sides beside it. A
+        missing or stale quote leaves the price None: that order's slippage
+        is then unmeasured, never zero."""
+        book = self.books.get(ticket['security_id']) or {}
+        stamp = book.get('timestamp')
+        try:
+            age = ((datetime.now(timezone.utc) - datetime.fromisoformat(stamp))
+                   .total_seconds() if stamp else None)
+        except (TypeError, ValueError):
+            age = None
+        fresh = age is not None and age <= 15 and book.get('integrity_ok') is not False
+        price = book.get('ask') if ticket['side'] == 'BUY' else book.get('bid')
+        return {'price': price if fresh else None, 'bid': book.get('bid'),
+                'ask': book.get('ask'), 'at': now(),
+                'why_not': None if fresh and price is not None else
+                ('no fresh TT quote when the ticket was sent')}
+
+    @staticmethod
+    def _slip_values(instrument, side, expected, filled, quantity):
+        """(points, ticks, money) of a fill against `expected`, positive a
+        cost; each None where it cannot be priced."""
+        try:
+            points = slippage_mod.slip(side, None if expected is None else float(expected),
+                                       None if filled is None else float(filled))
+        except (TypeError, ValueError):
+            points = None
+        if points is None:
+            return None, None, None
+        try:
+            tick = float(instrument.get('tick_size') or 0)
+        except (TypeError, ValueError):
+            tick = 0.0
+        ticks = round(points / tick, 4) if tick > 0 else None
+        try:
+            value = float(instrument.get('tick_value') or 0)
+            money = (ticks * value * float(quantity)
+                     if ticks is not None and value > 0 and quantity not in (None, '') else None)
+        except (TypeError, ValueError):
+            money = None
+        return points, ticks, money
+
+    def _fill_slippage(self, order, price, quantity):
+        decision = order.get('decision') or {}
+        points, ticks, money = self._slip_values(
+            order['ticket']['instrument'], order['ticket']['side'],
+            decision.get('price'), price, quantity)
+        return {'decision_price': decision.get('price'),
+                'slippage_points': points, 'slippage_ticks': ticks,
+                'slippage_money': money}
+
+    def slippage_rows(self):
+        """One row per manual ticket with fills: its average fill against
+        the touch when it was sent, positive a cost. ENTRY for an opening
+        ticket, EXIT for a close. Rows recorded before the touch was kept are
+        unmeasured, never zero."""
+        rows = []
+        for order in self.orders.values():
+            if not order.get('filled_qty') or order.get('avg_price') is None:
+                continue
+            ticket = order['ticket']
+            decision = order.get('decision') or {}
+            points, ticks, money = self._slip_values(
+                ticket['instrument'], ticket['side'], decision.get('price'),
+                order['avg_price'], order['filled_qty'])
+            rows.append({'order_id': order['id'], 'end': 'exit' if order.get('close_of') else 'entry',
+                         'instrument': ticket['instrument'].get('display_name') or ticket['instrument'].get('description'),
+                         'security_id': ticket['security_id'], 'side': ticket['side'],
+                         'order_type': ticket['order_type'], 'quantity': float(order['filled_qty']),
+                         'decision_price': decision.get('price'), 'avg_price': order['avg_price'],
+                         'slippage_points': points, 'slippage_ticks': ticks, 'slippage_money': money,
+                         'why_not': (None if ticks is not None else decision.get('why_not')
+                                     or 'sent before the touch was recorded'),
+                         'time': order.get('updated')})
+        return rows
 
     @staticmethod
     def _money_pnl(instrument, entry, exit_price, quantity, side):
@@ -939,5 +1023,6 @@ class ManualTerminal:
                     for o in list(self.orders.values())[-200:][::-1]],
                 'fills': [json.loads(row[0]) for row in self.db.execute('SELECT data FROM manual_fills ORDER BY rowid DESC LIMIT 100')],
                 'errors': self.errors, 'account': self.gateway.venue.account, 'pnl': pnl,
+                'slippage': slippage_mod.manual_summary(self.slippage_rows()),
                 'risk': copy.deepcopy(self.risk),
                 'order_types': list(ORDER_TYPES), 'tifs': list(TIFS)})

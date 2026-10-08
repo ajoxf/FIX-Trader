@@ -32,6 +32,16 @@ the drawing wins.
   that keeps long and short apart, an opposite order flagged OPEN opens the
   other side: the desk is long AND short, both posting margin, and a netting
   screen calls it flat. An unknown flag degrades to CLOSE, never to OPEN.
+- **What comes BACK is applied as a close, never as a new position.** An
+  order's purpose survives a restart: `Executor.intent_of` reads it from the
+  orders table it was written to when sent — a close still working when the
+  engine stopped was otherwise read as an OPEN. And the book guards itself
+  whatever the record says: a fill on the OPPOSITE side of an open position
+  only reduces it (never averaged in, never opens the other side); a
+  "close" on the SAME side is reported, not applied; a close larger than
+  what is open closes it and the excess is reported, never booked; a close
+  with nothing open opens nothing. `tests/test_close_safety.py` pins each,
+  for a Take Profit and a Stop Loss alike.
 - **Manual AND algo, but never at the same time.** This program trades by
   hand (Instruments & orders: tickets, ladders) and by algo (the Algo desk),
   and the desk is in exactly ONE trading mode, `ALGO` or `MANUAL`
@@ -173,6 +183,10 @@ the drawing wins.
   falls back to its fills' send-touch figure. A round turn counts only with
   both ends measured, and an open position has no exit, not an unmeasured
   one.
+- **A manual ticket's slippage** is its fills against the touch when it was
+  SENT — the offer for a buy, the bid for a sell (`ManualTerminal._touch`).
+  No fresh quote then means unmeasured, never zero. It is shown on the
+  Executions table and joins the Analysis slippage card under live only.
 - **Slippage can be NEGATIVE** — the market moving our way between the price an
   order was aimed at and the fill. That is a price improvement, not a cost, and
   a budget is never negative: proposing one would have the edge filter pay the

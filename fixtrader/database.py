@@ -274,6 +274,14 @@ class Database:
                 f"VALUES ({','.join('?' * len(cols))})", values)
             conn.commit()
 
+    def order_intent(self, clordid: str) -> Optional[str]:
+        """What an order of ours was FOR, as recorded when it was sent —
+        'OPEN' or 'CLOSE' — or None if this book never sent it."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT intent FROM orders WHERE clordid = ?",
+                               (clordid,)).fetchone()
+        return row['intent'] if row is not None else None
+
     def save_fill(self, fill) -> None:
         """INSERT OR IGNORE: a venue that resends an execution report must not
         double-count the fill."""

@@ -312,8 +312,25 @@
       row.append(actions);rows.append(row);
     }
     $('orders').replaceChildren(rows);if(!data.orders?.length)empty($('orders'),8,'No orders sent from this manual ticket.');
-    const fills=document.createDocumentFragment();for(const f of data.fills||[]){const row=document.createElement('tr');for(const value of [clock(f.time),f.symbol,f.side,f.quantity,f.price,f.exec_id])row.append(text('td',fmt(value)));fills.append(row);}
-    $('fills').replaceChildren(fills);if(!data.fills?.length)empty($('fills'),6,'No executions received.');
+    const fills=document.createDocumentFragment();for(const f of data.fills||[]){const row=document.createElement('tr');for(const value of [clock(f.time),f.symbol,f.side,f.quantity,f.price,f.decision_price])row.append(text('td',fmt(value)));row.append(slipCell(f));row.append(text('td',fmt(f.exec_id)));fills.append(row);}
+    $('fills').replaceChildren(fills);if(!data.fills?.length)empty($('fills'),8,'No executions received.');
+    renderSlipSummary(data.slippage);
+  }
+  // Slippage: positive a cost (red), negative an improvement (green), and
+  // blank where nothing was measured — never a zero.
+  function slipCell(f) {
+    const ticks=f.slippage_ticks, cell=document.createElement('td');
+    if(ticks===null||ticks===undefined){cell.textContent='—';cell.title=f.decision_price==null?'no fresh TT quote when the ticket was sent':'';return cell;}
+    cell.textContent=(ticks>0?'+':'')+Number(ticks).toFixed(2)+' t'+(f.slippage_money==null?'':' · '+(f.slippage_money<0?'-':'')+'$'+Math.abs(f.slippage_money).toFixed(2));
+    cell.className=ticks>0?'slip-cost':ticks<0?'slip-better':'';
+    return cell;
+  }
+  function renderSlipSummary(s) {
+    const host=$('slip-summary');if(!host)return;
+    if(!s||!s.counts||!s.counts.tickets){host.textContent='';return;}
+    const part=(label,st)=>!st||!st.measured?`${label}: — (${st?st.unmeasured:0} unmeasured)`
+      :`${label}: mean ${(st.ticks_mean>0?'+':'')+st.ticks_mean.toFixed(2)} t · worst ${(st.ticks_worst>0?'+':'')+st.ticks_worst.toFixed(2)} t · ${st.money_total==null?'—':(st.money_total<0?'-':'')+'$'+Math.abs(st.money_total).toFixed(2)} over ${st.measured} ticket(s)`+(st.unmeasured?` · ${st.unmeasured} unmeasured`:'');
+    host.textContent=part('Entries',s.entry)+'   |   '+part('Closes',s.exit);
   }
   function renderPnl() {
     const pnl=data.pnl||{}, account=pnl.account||{}, currency=pnl.currency||'';

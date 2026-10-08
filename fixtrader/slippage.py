@@ -177,3 +177,30 @@ def report(positions: Iterable, contracts: Dict[str, Any],
                    'closed': sum(1 for r in rows if not r['open']),
                    'paper': sum(1 for r in rows if r['paper'])},
     }
+
+
+def manual_summary(rows: List[Dict[str, Any]],
+                   since: Optional[str] = None) -> Dict[str, Any]:
+    """Manual tickets, each ticket's average fill against the touch when it
+    was SENT (`ManualTerminal.slippage_rows`): entries, exits, by order type,
+    and the worst. `since` (ISO time) cuts by the ticket's last update."""
+    if since:
+        rows = [r for r in rows if (r.get('time') or '') >= since]
+
+    def stats(group):
+        return _stats([(r['slippage_ticks'], r['slippage_money'])
+                       for r in group])
+    entries = [r for r in rows if r['end'] == 'entry']
+    exits = [r for r in rows if r['end'] == 'exit']
+    by_type: Dict[str, List] = {}
+    for r in rows:
+        by_type.setdefault(r['order_type'] or 'UNKNOWN', []).append(r)
+    measured = [r for r in rows if r['slippage_money'] is not None]
+    return {
+        'entry': stats(entries), 'exit': stats(exits), 'all': stats(rows),
+        'by_order_type': {k: stats(g) for k, g in sorted(by_type.items())},
+        'worst': sorted(measured, key=lambda r: -r['slippage_money'])[:WORST_N],
+        'rows': sorted(rows, key=lambda r: r.get('time') or '',
+                       reverse=True)[:500],
+        'counts': {'tickets': len(rows)},
+    }

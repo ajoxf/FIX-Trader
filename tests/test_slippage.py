@@ -239,3 +239,28 @@ def test_an_escalated_limit_keeps_its_decision_and_says_so():
     assert d == {'price': 0.6, 'order_type': 'LIMIT escalated'}
     assert Executor._escalated(d)['order_type'] == 'LIMIT escalated'
     assert Executor._escalated(None) is None
+
+
+def test_manual_tickets_join_the_report_under_live_only(tmp_path):
+    import json
+    from fixtrader.config import TraderConfig
+    from fixtrader.webapp import create_app
+    cfg = TraderConfig(path=str(tmp_path / 'config.json'))
+    cfg.settings['DATABASE_PATH'] = str(tmp_path / 'm.db')
+    cfg.save()
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [{'order_id': 'FTM-1', 'end': 'entry', 'order_type': 'MARKET',
+             'slippage_ticks': 2.0, 'slippage_money': 25.0, 'time': now},
+            {'order_id': 'FTM-2', 'end': 'exit', 'order_type': 'MARKET',
+             'slippage_ticks': None, 'slippage_money': None, 'time': now}]
+    status = {'ts': now, 'engine': {'alive': True, 'manual_terminal': {
+        'slippage': slippage.manual_summary(rows)}}, 'contracts': []}
+    (tmp_path / 's.json').write_text(json.dumps(status))
+    app = create_app(str(tmp_path / 'config.json'), str(tmp_path / 's.json'),
+                     str(tmp_path / 'c.jsonl'), str(tmp_path / 'r.json'))
+    c = app.test_client()
+    live = c.get('/api/slippage?period=all&mode=live').get_json()
+    assert live['manual']['entry']['ticks_mean'] == pytest.approx(2.0)
+    assert live['manual']['exit']['unmeasured'] == 1
+    # never blended into a simulated figure
+    assert c.get('/api/slippage?period=all&mode=sim').get_json()['manual'] is None

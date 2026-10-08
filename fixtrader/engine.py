@@ -725,6 +725,26 @@ class Engine:
         # The state the DECISION was made on, not the state now.
         decided = self.executor.decision_of(event.clordid)
 
+        # A fill on the OPPOSITE side of an open position can only reduce
+        # it. Whatever the order was recorded as, it is never added to the
+        # position's size and never opens the other side: that is how an
+        # exit becomes a second position, long AND short at once.
+        if (intent is Intent.OPEN and rt.position is not None
+                and rt.position.is_open and fill.side is not rt.position.side):
+            logger.warning("%s: %s fill %s against an open %s was recorded "
+                           "as an OPEN — applied as a CLOSE", contract.key,
+                           fill.side.value, event.clordid,
+                           rt.position.side.value)
+            intent = Intent.CLOSE
+        # And a "close" on the SAME side as the position is not a close: it
+        # would grow the position. It is reported, not applied.
+        if (intent is Intent.CLOSE and rt.position is not None
+                and rt.position.is_open and fill.side is rt.position.side):
+            self._say(rt, "REJECT", f"a {fill.side.value} fill recorded as a "
+                      f"close of a {rt.position.side.value} position — not "
+                      f"applied; check the venue")
+            return
+
         if intent is Intent.OPEN:
             if rt.position is None or not rt.position.is_open:
                 margin = self._margin(contract, settings, fill.qty)
@@ -785,8 +805,20 @@ class Engine:
         # a close
         pos = rt.position
         if pos is None or not pos.is_open:
+            # Nothing open to close: the fill is reported, and NEVER becomes
+            # a position on the other side.
+            self._say(rt, "REJECT", f"close fill {fill.side.value} "
+                      f"{fill.qty:g} @ {fill.price:g} with nothing open — "
+                      f"not applied; check the venue")
             return
-        pos.qty = round(pos.qty - fill.qty, 10)
+        if fill.qty > pos.qty + 1e-9:
+            # More than was open. The position closes; the excess is said,
+            # never booked as a position the other way.
+            self._say(rt, "REJECT", f"close fill {fill.qty:g} is more than "
+                      f"the {pos.qty:g} open — the excess is not booked; "
+                      f"check the venue")
+        closing_qty = min(fill.qty, pos.qty)
+        pos.qty = max(0.0, round(pos.qty - fill.qty, 10))
         pos.tickets.append(fill.exec_id)
         if pos.qty > 1e-9:
             if self.db is not None:
@@ -805,7 +837,7 @@ class Engine:
         pos.exit_reason = self._exit_reasons.pop(event.clordid,
                                                  ExitReason.TARGET)
         filled = pos.tickets
-        result = costs_mod.net_pnl(pos.side, fill.qty, pos.avg_price,
+        result = costs_mod.net_pnl(pos.side, closing_qty, pos.avg_price,
                                    fill.price, contract.tick_size,
                                    contract.tick_value,
                                    fees_paid=self._fees_for(filled, settings,
@@ -832,7 +864,7 @@ class Engine:
             'seq': rt.closes,
             'net': pos.net_pnl,
             'side': pos.side.value,
-            'qty': fill.qty,
+            'qty': closing_qty,
             'price': fill.price,
             'reason': pos.exit_reason.value if pos.exit_reason else None,
             'ts': now.isoformat(),

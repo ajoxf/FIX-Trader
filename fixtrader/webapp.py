@@ -213,6 +213,15 @@ def create_app(config_path: str = "config.json",
                             or 0) for k in config.contracts}
         body = slippage.report(positions, config.contracts, budgets)
         body.update(period=period, mode=mode, contract=key)
+        # Manual tickets, from the engine's snapshot: each ticket's fills
+        # against the touch when it was SENT. Live TT orders only, so they
+        # are shown under live, never blended into a simulated figure.
+        manual = (((read_status().get('engine') or {}).get('manual_terminal')
+                   or {}).get('slippage') or {})
+        body['manual'] = (slippage.manual_summary(
+            manual.get('rows') or [],
+            since.isoformat() if since is not None else None)
+            if mode in ('live', 'both') and not key else None)
         return body
 
     @app.get('/api/slippage')

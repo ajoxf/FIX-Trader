@@ -159,3 +159,69 @@ def test_saved_watchlist_resubscribes_after_new_market_session(terminal):
     messages=terminal.gateway._sessions['Market Data'].sent
     assert len(messages)==2 and all(msg=='V' for msg,_ in messages)
     assert all(not r['quote'].get('timestamp') for r in terminal.snapshot()['watchlist'])
+
+
+# -- slippage on manual tickets ----------------------------------------------
+
+def quote(terminal, bid, ask, key='101', age_sec=0.0):
+    from datetime import datetime, timedelta, timezone
+    stamp = (datetime.now(timezone.utc) - timedelta(seconds=age_sec)).isoformat()
+    terminal.books[key].update(bid=bid, ask=ask, timestamp=stamp,
+                               integrity_ok=True)
+
+
+def test_a_manual_fill_is_measured_against_the_touch_when_it_was_sent(terminal):
+    """The price you could have crossed at when you clicked Send: the offer
+    for a buy. A buy filled two ticks above it cost two ticks."""
+    quote(terminal, 10.0, 10.25)
+    preview = terminal.preview(ticket(order_type='MARKET', quantity='1', price=''))
+    oid = terminal.submit({'token': preview['token'], 'confirmed': True})['order_id']
+    assert terminal.orders[oid]['decision']['price'] == 10.25
+    report(terminal, {'35':'8','11':oid,'37':'TT-1','39':'2','150':'2','17':'EX1',
+                      '14':'1','151':'0','32':'1','31':'10.75','6':'10.75'})
+    fill = terminal.snapshot()['fills'][0]
+    assert fill['slippage_points'] == pytest.approx(0.5)
+    assert fill['slippage_ticks'] == pytest.approx(2.0)          # tick 0.25
+    assert fill['slippage_money'] == pytest.approx(2.0 * 12.5)   # $12.50 a tick
+    summary = terminal.snapshot()['slippage']
+    assert summary['entry']['measured'] == 1
+    assert summary['entry']['ticks_mean'] == pytest.approx(2.0)
+
+
+def test_a_passive_limit_filled_inside_the_spread_is_an_improvement(terminal):
+    quote(terminal, 10.0, 10.25)
+    preview = terminal.preview(ticket(price='10', quantity='1'))
+    oid = terminal.submit({'token': preview['token'], 'confirmed': True})['order_id']
+    report(terminal, {'35':'8','11':oid,'37':'TT-1','39':'2','150':'2','17':'EX2',
+                      '14':'1','151':'0','32':'1','31':'10','6':'10'})
+    assert terminal.snapshot()['fills'][0]['slippage_ticks'] == pytest.approx(-1.0)
+
+
+def test_no_fresh_quote_at_send_is_unmeasured_never_zero(terminal):
+    quote(terminal, 10.0, 10.25, age_sec=600)            # stale
+    preview = terminal.preview(ticket(order_type='MARKET', quantity='1', price=''))
+    oid = terminal.submit({'token': preview['token'], 'confirmed': True})['order_id']
+    report(terminal, {'35':'8','11':oid,'37':'TT-1','39':'2','150':'2','17':'EX3',
+                      '14':'1','151':'0','32':'1','31':'10.25','6':'10.25'})
+    fill = terminal.snapshot()['fills'][0]
+    assert fill['slippage_ticks'] is None
+    summary = terminal.snapshot()['slippage']
+    assert summary['entry']['measured'] == 0 and summary['entry']['unmeasured'] == 1
+
+
+def test_a_close_is_measured_as_an_exit_on_its_own_side(terminal):
+    """The close of a long SELLS: measured against the bid when it was sent."""
+    quote(terminal, 10.0, 10.25)
+    preview = terminal.preview(ticket(order_type='MARKET', quantity='1', price=''))
+    oid = terminal.submit({'token': preview['token'], 'confirmed': True})['order_id']
+    report(terminal, {'35':'8','11':oid,'37':'TT-1','39':'2','150':'2','17':'EX4',
+                      '14':'1','151':'0','32':'1','31':'10.25','6':'10.25'})
+    quote(terminal, 11.0, 11.25)
+    close = terminal.preview_close({'order_id': oid})
+    cid = terminal.submit({'token': close['token'], 'confirmed': True})['order_id']
+    report(terminal, {'35':'8','11':cid,'37':'TT-2','39':'2','150':'2','17':'EX5',
+                      '14':'1','151':'0','32':'1','31':'10.75','6':'10.75'})
+    summary = terminal.snapshot()['slippage']
+    assert summary['exit']['measured'] == 1
+    assert summary['exit']['ticks_mean'] == pytest.approx(1.0)  # sold 11.0 -> 10.75
+    assert summary['entry']['ticks_mean'] == pytest.approx(0.0)  # a measured 0.00

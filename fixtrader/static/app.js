@@ -1724,7 +1724,8 @@ function renderSlippage(el, report, key) {
     return;
   }
   const counts = report.counts || {};
-  if (!counts.positions) {
+  if (!counts.positions && !(report.manual && report.manual.counts &&
+      report.manual.counts.tickets)) {
     body.innerHTML = '';
     note.textContent = 'Nothing was traded under these filters. That is not ' +
       'a slippage of zero — there is nothing to measure yet.';
@@ -1760,6 +1761,14 @@ function renderSlippage(el, report, key) {
             minute: '2-digit' }) : '') + '</td>' + slipCell(r.entry_ticks) +
         '<td></td><td></td><td></td>' + slipCash(r.entry_money) + '<td></td></tr>';
     });
+  }
+  const manual = report.manual;
+  if (manual && manual.counts && manual.counts.tickets) {
+    html += '<tr class="an-slip-head"><td colspan="9">Manual tickets ' +
+      '<span class="hint">(average fill against the touch when the ticket ' +
+      'was sent)</span></td></tr>' +
+      slipRow('Manual entries', manual.entry) +
+      slipRow('Manual closes', manual.exit);
   }
   body.innerHTML = html;
   note.textContent = counts.positions + ' position(s) · ' + counts.open +
