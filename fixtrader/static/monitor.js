@@ -1,5 +1,8 @@
 'use strict';
-/* The Account tab — the MT5 desk's Trading Monitor, on one contract per row.
+/* The Trading Monitor — the MT5 desk's Trading Monitor, for FIX, on one
+ * contract per row. ONE renderer, mounted twice: the Account tab (its own
+ * page, polling for itself) and the Trading Monitor window on the Algo desk
+ * (fed the desk's own snapshot on every tick).
  *
  * Positions, Working orders, Fills, Closed trades, Slippage and the
  * Reconciler: the Algo's book (from the engine's snapshot and the recorded
@@ -7,12 +10,15 @@
  * saying which it is. Unmeasured is a dash, never 0; a venue that could not
  * be read is said, never shown as flat.
  */
-(() => {
-  const $ = (id) => document.getElementById(id);
+window.TradingMonitor = function (root, opts) {
+  opts = opts || {};
+  const q = (sel) => root.querySelector(sel);
   const DASH = '—';
+  const tabKey = opts.storageKey || 'ft.account.tab';
   const state = { tab: 'positions', snap: null, journal: null, slip: null,
                   journalAt: 0, slipAt: 0, oursOnly: false, showPaper: true };
-  try { state.tab = localStorage.getItem('ft.account.tab') || 'positions'; } catch (e) {}
+  try { state.tab = localStorage.getItem(tabKey) || 'positions'; } catch (e) {}
+  if (state.tab === 'closed') state.tab = 'analysis';     // folded into Analysis
 
   const esc = (v) => String(v === null || v === undefined ? '' : v)
     .replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -40,7 +46,8 @@
     return r.json();
   }
 
-  async function command(action, contract, args) {
+  // Throws on a refusal, with the engine's (or TT's) own words.
+  const command = opts.command || async function (action, contract, args) {
     const r = await fetch('/api/command', { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, contract: contract || '', args: args || {} }) });
@@ -52,29 +59,31 @@
       await new Promise((ok) => setTimeout(ok, 60));
     }
     throw new Error('The engine did not answer.');
-  }
+  };
 
-  function ask(title, body, label) {
+  // One shared modal: never a native confirm().
+  const ask = opts.ask || function (title, body, label) {
     return new Promise((resolve) => {
-      const d = $('acct-modal');
-      $('acct-modal-title').textContent = title;
-      $('acct-modal-body').textContent = body;
-      $('acct-modal-ok').textContent = label;
+      const d = document.getElementById('acct-modal');
+      document.getElementById('acct-modal-title').textContent = title;
+      document.getElementById('acct-modal-body').textContent = body;
+      document.getElementById('acct-modal-ok').textContent = label;
       const done = (v) => { d.close(); resolve(v); };
-      $('acct-modal-ok').onclick = () => done(true);
-      $('acct-modal-cancel').onclick = () => done(false);
+      document.getElementById('acct-modal-ok').onclick = () => done(true);
+      document.getElementById('acct-modal-cancel').onclick = () => done(false);
       d.oncancel = () => resolve(false);
       d.showModal();
     });
-  }
+  };
 
-  function say(text, bad) {
-    const b = $('acct-banner');
+  const say = opts.say || function (text, bad) {
+    const b = document.getElementById('acct-banner');
+    if (!b) return;
     b.textContent = text;
     b.className = 'acct-banner' + (bad ? ' bad' : '');
     clearTimeout(say.t);
     say.t = setTimeout(() => { b.className = 'acct-banner hidden'; }, 8000);
-  }
+  };
 
   // -- the pieces of the snapshot ------------------------------------------
 
@@ -100,42 +109,67 @@
   // -- the cards --------------------------------------------------------------
 
   function renderCards() {
+    const e = engine(), p = portfolio(), pnl = manual().pnl || {};
+    const algoOpen = (p.rows || []).filter((r) => r.side).length;
+    const manualOpen = (pnl.positions || []).length;
+    const brow = document.getElementById('acct-eyebrow');
+    if (brow) brow.textContent = (e.environment || 'TT') + ' · ACCOUNT · TRADING MONITOR' +
+      (e.alive === false ? ' · ENGINE OFFLINE' : '');
+    q('.n-positions').textContent = algoOpen + manualOpen || '';
+    q('.n-orders').textContent = algoWorking().length + manualWorking().length || '';
+  }
+
+  // -- Accounts -----------------------------------------------------------------
+
+  function accountsPane() {
     const e = engine(), p = portfolio(), m = manual(), pnl = m.pnl || {};
     const ex = e.execution || {};
     const rows = p.rows || [];
     const algoOpen = rows.filter((r) => r.side).length;
     const manualOpen = (pnl.positions || []).length;
-    const positionsStatus = ex.positions || {};
+    const ps = ex.positions || {};
+    const sessions = ((e.fix_connection || {}).sessions || []);
     const cards = [
-      ['FIX account', (pnl.account || {}).name || m.account || DASH, ''],
+      ['FIX account (tag 1)', (pnl.account || {}).name || m.account || DASH, ''],
+      ['Venue', e.environment || DASH, ''],
       ['Execution', ex.mode || DASH, ex.mode === 'LIVE' ? 'live' : 'paper'],
       ['Trading mode', e.trading_mode || DASH, ''],
       ['Open positions', String(algoOpen + manualOpen) +
         (manualOpen ? '  (' + algoOpen + ' algo · ' + manualOpen + ' manual)' : ''), ''],
-      ['Algo open P&L', money(p.open_pnl), cls(p.open_pnl)],
+      ['Algo open P&L (net)', money(p.open_pnl), cls(p.open_pnl)],
       ['Algo realised today', money(p.realised_today) + ' · ' + (p.trades_today || 0) +
         ' trades', cls(p.realised_today)],
       ['Manual floating (gross)', money(pnl.floating_total), cls(pnl.floating_total)],
       ['Manual realised (gross)', money(pnl.realized_total), cls(pnl.realized_total)],
-      ['TT positions', positionsStatus.status === 'complete' ? 'read from TT'
-        : positionsStatus.status ? positionsStatus.status.toUpperCase() : 'not asked',
-        positionsStatus.status === 'complete' ? 'up' : 'warn'],
+      ['Margin in use (configured)', money(p.margin), ''],
+      ['TT positions (AN)', ps.status === 'complete' ? 'read from TT'
+        : ps.status ? ps.status.toUpperCase() : 'not asked', ps.status === 'complete' ? 'up' : 'warn'],
       ['Venue balance / equity', 'Unavailable', 'warn'],
     ];
-    $('acct-cards').innerHTML = cards.map(([label, value, c]) =>
+    let html = '<div class="acct-cards">' + cards.map(([label, value, c]) =>
       '<div class="acct-card"><span>' + esc(label) + '</span><strong class="' + c + '">' +
-      esc(value) + '</strong></div>').join('');
-    $('acct-cards').title = positionsStatus.why || '';
-    $('acct-eyebrow').textContent = (e.environment || 'TT') + ' · ACCOUNT · POSITIONS & P&L' +
-      (e.alive === false ? ' · ENGINE OFFLINE' : '');
-    $('n-positions').textContent = algoOpen + manualOpen || '';
-    $('n-orders').textContent = algoWorking().length + manualWorking().length || '';
+      esc(value) + '</strong></div>').join('') + '</div>';
+    html += '<table class="mon"><thead><tr><th>FIX session</th><th>Status</th><th>Sender / target</th>' +
+      '<th class="r">In seq</th><th class="r">Out seq</th><th>Last heartbeat</th><th>Error</th></tr></thead><tbody>';
+    sessions.forEach((x) => {
+      html += '<tr><td><b>' + esc(x.name) + '</b></td><td class="' +
+        (x.status === 'CONNECTED' ? 'up' : 'warn') + '">' + esc(x.status || DASH) + '</td><td class="mono">' +
+        esc((x.sender_comp_id || '') + ' → ' + (x.target_comp_id || '')) + '</td><td class="r">' +
+        esc(has(x.in_seq) ? x.in_seq : DASH) + '</td><td class="r">' + esc(has(x.out_seq) ? x.out_seq : DASH) +
+        '</td><td>' + esc(clock(x.last_heartbeat)) + '</td><td class="wrap">' + esc(x.error || '') + '</td></tr>';
+    });
+    if (!sessions.length) html += '<tr><td colspan="7" class="empty">' +
+      (e.simulated ? 'The simulator has no FIX sessions.' : 'No FIX session reported.') + '</td></tr>';
+    html += '</tbody></table>';
+    html += '<p class="tiny pad">' + esc(ps.why || '') + ' Balance and equity are not published on these ' +
+      'FIX sessions: they need TT\'s Account/Risk access, and are shown as unavailable rather than as 0.</p>';
+    return html;
   }
 
   // -- Positions ----------------------------------------------------------------
 
   function venueSays(r) {
-    if (!r.venue_readable) return '<span class="warn">not read</span>';
+    if (!r.venue_readable) return '<span class="warn">could not read</span>';
     if (r.both_sides_open) return '<span class="dn">LONG ' + qty(r.venue_long) +
       ' + SHORT ' + qty(r.venue_short) + '</span>';
     if (!has(r.venue_qty)) return 'nothing';
@@ -203,7 +237,8 @@
         '</td><td class="r">' + DASH + '</td><td class="r">' + DASH + '</td><td class="r">' +
         DASH + '</td><td class="r">' + DASH + '</td><td class="r">' + DASH + '</td><td class="r">' +
         DASH + '</td><td>' + DASH + '</td>' +
-        '<td><a class="btn-link" href="/instruments" title="A manual position is closed from its own ticket">Close on Instruments</a></td></tr>' +
+        '<td><button type="button" class="danger-btn close-manual" data-id="' + esc(m.entry_order_id) +
+          '" data-name="' + esc(m.instrument) + '" title="A closing manual ticket (77=C) for this order\'s open fills, at market — reviewed before it is sent">Close</button></td></tr>' +
         '<tr class="detail"><td colspan="18">manual fills · marked at ' + esc(m.mark_source || DASH) +
         ' · FIX seq ' + esc(m.quote_sequence || DASH) + '</td></tr>';
     });
@@ -358,10 +393,49 @@
     ZSCORE: 'z stop', MEAN: 'Back at the mean', TIME_STOP: 'Time stop', CLOSE_NOW: 'CLOSE ALL (by hand)',
     CLOSE_LIMIT: 'Close @ LMT', KILL_ALL: 'Kill all', SESSION_FLAT: 'Session end', LIMIT_BREACH: 'Limit breach' };
 
+  function analysisSummary(j) {
+    // Each closed trade once, with the figure that decides it: the Algo's NET,
+    // the manual ticket's gross (it has no configured round trip).
+    const trades = (j.closed || []).map((t) => ({ name: t.name,
+      origin: t.paper ? 'PAPER' : t.simulated ? 'SIM' : 'ALGO', net: t.net_pnl,
+      why: EXIT_WORDS[t.exit_reason] || t.exit_reason || DASH }))
+      .concat(((manual().pnl || {}).trades || []).map((t) => ({ name: t.instrument,
+        origin: 'MANUAL', net: t.realized_pnl, why: 'Closed by hand' })));
+    if (!trades.length) return '';
+    const groups = [['All trades', trades]];
+    const by = (f, label) => {
+      const m = {};
+      trades.forEach((t) => { (m[f(t)] = m[f(t)] || []).push(t); });
+      Object.keys(m).sort().forEach((k) => groups.push([label + k, m[k]]));
+    };
+    by((t) => t.origin, 'Origin: ');
+    by((t) => t.name, '');
+    by((t) => t.why, 'Exit: ');
+    let html = '<table class="mon"><thead><tr><th>Group</th><th class="r">Trades</th>' +
+      '<th class="r">Won</th><th class="r">Lost</th><th class="r">Win rate</th>' +
+      '<th class="r">Net</th><th class="r">Average</th><th class="r">Best</th>' +
+      '<th class="r">Worst</th><th class="r">Unmeasured</th></tr></thead><tbody>';
+    groups.forEach(([label, g], i) => {
+      const nets = g.map((t) => t.net).filter(has);
+      const won = nets.filter((n) => n > 0).length, lost = nets.filter((n) => n < 0).length;
+      const sum = nets.reduce((a, n) => a + n, 0);
+      html += '<tr' + (i === 0 ? ' class="grp"' : '') + '><td>' + (i === 0 ? '<b>' + esc(label) + '</b>' : esc(label)) +
+        '</td><td class="r">' + g.length + '</td><td class="r up">' + won + '</td><td class="r dn">' + lost +
+        '</td><td class="r">' + (nets.length ? Math.round(100 * won / nets.length) + '%' : DASH) +
+        '</td><td class="r ' + cls(sum) + '"><b>' + (nets.length ? money(sum) : DASH) + '</b></td><td class="r">' +
+        (nets.length ? money(sum / nets.length) : DASH) + '</td><td class="r up">' +
+        (nets.length ? money(Math.max(...nets)) : DASH) + '</td><td class="r dn">' +
+        (nets.length ? money(Math.min(...nets)) : DASH) + '</td><td class="r">' + (g.length - nets.length) + '</td></tr>';
+    });
+    return html + '</tbody></table>';
+  }
+
   function closedPane() {
     const j = state.journal;
     if (!j) return '<p class="empty">Loading the journal…</p>';
-    let html = '<table class="mon"><thead><tr><th>Closed</th><th>Contract</th><th>Origin</th>' +
+    let html = (state.tab === 'analysis' ? analysisSummary(j) : '') +
+      '<div class="mon-sum"><span><b>Closed trades</b>, newest first</span></div>' +
+      '<table class="mon"><thead><tr><th>Closed</th><th>Contract</th><th>Origin</th>' +
       '<th>Side</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Exit</th>' +
       '<th class="r">Entry z</th><th>Why it closed</th><th class="r">Held</th>' +
       '<th class="r">Gross</th><th class="r">Fees</th><th class="r">Net</th>' +
@@ -475,7 +549,8 @@
       'it opens. Close sends a closing order by the position\'s own tickets (77=C) and stands that contract\'s Algo down.',
     orders: 'cancel is a REQUEST: an order stays working until TT says it is cancelled, and it can fill in between.',
     fills: 'Each row is a TT Execution Report (35=8) carrying a fill. P&L is shown on a closing fill of ours, against the position it closed, before fees. Sending is not a fill.',
-    closed: 'Net is after the configured round trip. A figure nobody measured is a dash, never 0.',
+    accounts: 'The account this desk trades, the FIX sessions it trades over, and the P&L by origin. A figure TT does not publish here is said, never shown as 0.',
+    analysis: 'Built from what is recorded: the Algo\'s closed positions and the manual ticket\'s closed trades. Net is after the configured round trip; a figure nobody measured is a dash, never 0.',
     slippage: 'Measured against the price each decision was made at. Positive is a cost at both ends; negative an improvement.',
     reconcile: 'TT\'s own positions against this book. A difference is SHOWN, never smoothed and never closed automatically.',
   };
@@ -483,13 +558,14 @@
   function render() {
     if (!state.snap) return;
     renderCards();
-    document.querySelectorAll('.mon-tabs button').forEach((b) =>
+    root.querySelectorAll('.mon-tabs button').forEach((b) =>
       b.classList.toggle('on', b.dataset.tab === state.tab));
-    const pane = $('pane');
+    const pane = q('.mon-pane');
     const view = { positions: positionsPane, orders: ordersPane, fills: fillsPane,
-                   closed: closedPane, slippage: slippagePane, reconcile: reconcilePane }[state.tab] || positionsPane;
+                   slippage: slippagePane, accounts: accountsPane, reconcile: reconcilePane,
+                   analysis: closedPane, closed: closedPane }[state.tab] || positionsPane;
     pane.innerHTML = view();
-    $('mon-note').textContent = NOTES[state.tab] || '';
+    q('.mon-note').textContent = NOTES[state.tab] || '';
   }
 
   async function loadJournal(force) {
@@ -503,37 +579,42 @@
     try { state.slip = await getJSON('/api/slippage?mode=both'); } catch (e) { /* kept */ }
   }
 
+  async function update(snap) {
+    state.snap = snap;
+    if (['fills', 'closed', 'analysis'].includes(state.tab)) await loadJournal();
+    if (state.tab === 'slippage') await loadSlippage();
+    render();
+  }
+
   async function poll() {
     try {
-      state.snap = await getJSON('/api/snapshot');
-      if (state.tab === 'fills' || state.tab === 'closed') await loadJournal();
-      if (state.tab === 'slippage') await loadSlippage();
-      render();
+      await update(await getJSON('/api/snapshot'));
     } catch (e) {
       say('The engine did not answer: ' + e.message, true);
     }
     setTimeout(poll, 1000);
   }
 
-  document.querySelector('.mon-tabs').addEventListener('click', async (e) => {
+  q('.mon-tabs').addEventListener('click', async (e) => {
     const b = e.target.closest('button');
     if (!b) return;
     state.tab = b.dataset.tab;
-    try { localStorage.setItem('ft.account.tab', state.tab); } catch (err) {}
+    try { localStorage.setItem(tabKey, state.tab); } catch (err) {}
     render();
-    if (state.tab === 'fills' || state.tab === 'closed') { await loadJournal(true); render(); }
+    if (['fills', 'closed', 'analysis'].includes(state.tab)) { await loadJournal(true); render(); }
     if (state.tab === 'slippage') { await loadSlippage(true); render(); }
   });
 
-  $('pane').addEventListener('change', (e) => {
+  q('.mon-pane').addEventListener('change', (e) => {
     if (e.target.classList.contains('ours-only')) { state.oursOnly = e.target.checked; render(); }
     if (e.target.classList.contains('show-paper')) { state.showPaper = e.target.checked; render(); }
   });
 
-  $('pane').addEventListener('click', async (e) => {
+  q('.mon-pane').addEventListener('click', async (e) => {
     const close = e.target.closest('.close-pos');
     const algo = e.target.closest('.cancel-algo');
     const man = e.target.closest('.cancel-manual');
+    const closeMan = e.target.closest('.close-manual');
     try {
       if (close) {
         const ok = await ask('Close ' + close.dataset.name + '?',
@@ -545,6 +626,16 @@
           'A cancel request goes to TT for every working order of ours on this contract. They stay ' +
           'working until TT confirms.', 'Request cancel');
         if (ok) { await command('cancel_all', algo.dataset.key); say('Cancel requested.'); }
+      } else if (closeMan) {
+        const review = await command('terminal_preview_close', '', { order_id: closeMan.dataset.id });
+        const t = review.ticket || {};
+        const ok = await ask('Close ' + closeMan.dataset.name + '?',
+          t.side + ' ' + t.quantity + ' at MARKET · account ' + t.account + ' · Open/Close: CLOSE (77=C). ' +
+          'It closes the fills of ' + closeMan.dataset.id + ' and no more.', 'Send the close');
+        if (ok) {
+          await command('terminal_submit', '', { token: review.token, confirmed: true });
+          say('Close sent for ' + closeMan.dataset.name + '.');
+        }
       } else if (man) {
         const ok = await ask('Cancel manual order ' + man.dataset.id + '?',
           'It remains working until TT confirms the cancellation.', 'Request cancel');
@@ -553,5 +644,5 @@
     } catch (err) { say(err.message, true); }
   });
 
-  poll();
-})();
+  return { update, start: poll, render };
+};

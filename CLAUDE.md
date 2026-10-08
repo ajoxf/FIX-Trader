@@ -43,7 +43,8 @@ the drawing wins.
   with nothing open opens nothing. `tests/test_close_safety.py` pins each,
   for a Take Profit and a Stop Loss alike.
 - **Manual AND algo, but never at the same time.** This program trades by
-  hand (Instruments & orders: tickets, ladders) and by algo (the Algo desk),
+  hand (Instruments & orders: tickets; and the desk ladder in MANUAL mode)
+  and by algo (the Algo desk),
   and the desk is in exactly ONE trading mode, `ALGO` or `MANUAL`
   (`Engine.trading_mode`, switched from the Algo desk taskbar or the
   Instruments page, kept beside the status file so a restart comes back in
@@ -66,17 +67,25 @@ the drawing wins.
   a taskbar button that minimises and restores it. The desk ladder is the
   MT5 desk's ladder on ONE contract (Work / Bids / Price / Asks / LTQ, the
   rail, the B/S/W bar, the footer book): it shows the book, our working
-  orders and the Algo's levels against it; it does not take manual orders
-  (those are on Instruments & orders, in MANUAL mode) and its lock banner
-  says so. CLOSE ALL and Close @ LMT always close.
+  orders and the Algo's levels against it. In MANUAL mode it trades by hand
+  THROUGH `ManualTerminal` — BUY / SELL, or a click in Bids (buys at that
+  price) / Asks (sells), each a `terminal_preview` reviewed in the shared
+  modal before `terminal_submit`, an `FTM-` ticket flagged 77=O with the
+  manual safety limits; never an order path of its own. In ALGO mode its
+  order controls are off and the lock banner says so (ManualTerminal refuses
+  regardless). CLOSE ALL and Close @ LMT always close — a manual position by
+  `preview_close` (77=C, capped at the ticket's open fills; a price makes it
+  a LIMIT).
 - **Close @ LMT rests ONE closing limit at the trader's price**, by the
   position's tickets (77=C), PINNED: never re-pegged, never timed out. It
   stands the Algo down (its exits would be a second close). On PAPER it
   fills here when the touch reaches the price. **CLOSE ALL over a working
   close ESCALATES it** (cancel, then market on the CANCELLED event for what
   is left) — never a second close beside the first.
-- **The Account tab is the Trading Monitor for FIX**: Positions, Working
-  orders, Fills, Closed trades, Slippage, Reconciler. Its Fills tab is the
+- **The Trading Monitor is the MT5 desk's, for FIX** — Positions, Working
+  Orders, Fills, Slippage, Accounts, Reconciler, Analysis — ONE renderer
+  (`static/monitor.js`) mounted twice: the desk's Trading Monitor window
+  (fed the desk's snapshot) and the Account tab (polling for itself). Its Fills tab is the
   TT FILLS TAPE — every execution report with a fill on the Order Routing
   session, ours or not, in TT's own tags (60, 1, 48, 54, 77, 32, 31, 37, 17,
   11, 58), kept in `tt_fills`. Display only: the book is built from OUR

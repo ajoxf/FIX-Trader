@@ -725,7 +725,11 @@ class ManualTerminal:
             try:
                 result = self._preview({'security_id': key, 'account': original['account'],
                     'side': 'SELL' if original['side'] == 'BUY' else 'BUY',
-                    'order_type': 'MARKET', 'quantity': str(self.closeable(source)),
+                    # A price makes it a resting LIMIT close (the ladder's
+                    # Close @ LMT); without one it crosses at market.
+                    'order_type': 'LIMIT' if args.get('price') not in (None, '') else 'MARKET',
+                    'price': args.get('price') if args.get('price') not in (None, '') else '',
+                    'quantity': str(self.closeable(source)),
                     'tif': 'DAY', 'open_close': 'C', 'capacity': original.get('capacity', ''),
                     'customer_capacity': original.get('customer_capacity', ''),
                     'text': 'Close ' + source['id']}, risk_reducing=True)

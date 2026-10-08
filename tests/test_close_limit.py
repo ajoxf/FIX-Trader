@@ -234,7 +234,8 @@ def test_the_account_page_and_its_journal(tmp_path):
     c = app.test_client()
     page = c.get('/account').data
     for tab in (b'data-tab="positions"', b'data-tab="orders"', b'data-tab="fills"',
-                b'data-tab="closed"', b'data-tab="slippage"', b'data-tab="reconcile"'):
+                b'data-tab="slippage"', b'data-tab="accounts"', b'data-tab="reconcile"',
+                b'data-tab="analysis"'):
         assert tab in page
     body = c.get('/api/journal').get_json()
     fills = {f['exec_id']: f for f in body['tt_fills']}

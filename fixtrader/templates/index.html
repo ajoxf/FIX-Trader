@@ -10,6 +10,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}?v={{ asset_version }}">
 <script>try{var fs=localStorage.getItem('ft.fs');if(fs)document.documentElement.style.setProperty('--fs',fs);}catch(e){}</script>
 <link rel="stylesheet" href="{{ url_for('static', filename='app_nav.css') }}?v={{ asset_version }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='monitor.css') }}?v={{ asset_version }}">
 </head>
 <body>
 
@@ -64,39 +65,25 @@
      with what the VENUE says beside what this book holds, because the two
      disagreeing is the thing worth seeing. -->
 <template id="positions-template">
-  <section class="win winwide" data-key="__positions__">
+  <section class="win winwide tmonwin" data-key="__positions__">
     <div class="titlebar">
       <span class="swatch" style="background:#1c1c1c"></span>
-      <span class="title">Positions</span>
-      <span class="venue pv-count"></span>
-      <span class="winbtns"><button class="winbtn close" title="Close this window">&times;</button></span>
+      <span class="title">Trading Monitor</span>
+      <span class="venue tm-count"></span>
+      <span class="winbtns"><button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button><button class="winbtn close" title="Close this window">&times;</button></span>
     </div>
-    <div class="wbody" style="padding:0">
-      <div class="pv-banner banner critical hidden"></div>
-      <div class="tablewrap">
-        <table class="grid">
-          <thead>
-            <tr>
-              <th>Contract</th><th>Side</th><th class="r">Qty</th>
-              <th class="r">Filled @</th><th class="r">Mid</th>
-              <th class="r" title="The z the entry actually fired at">Z in</th>
-              <th class="r">B/E</th><th class="r">Target</th><th class="r">Stop</th>
-              <th class="r">Held</th><th class="r">Margin</th>
-              <th class="r">Open P&amp;L</th>
-              <th title="What the venue says, beside what this book holds">At the venue</th>
-              <th title="The venue's execution ids for the fills that built this position — a close carries them">Tickets</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody class="pv-rows"></tbody>
-          <tfoot><tr class="pv-total"></tr></tfoot>
-        </table>
+    <div class="wbody tmon" style="padding:0">
+      <div class="mon-tabs" role="tablist">
+        <button type="button" data-tab="positions" class="on">Positions <sup class="n-positions"></sup></button>
+        <button type="button" data-tab="orders">Working Orders <sup class="n-orders"></sup></button>
+        <button type="button" data-tab="fills">Fills</button>
+        <button type="button" data-tab="slippage">Slippage</button>
+        <button type="button" data-tab="accounts">Accounts</button>
+        <button type="button" data-tab="reconcile">Reconciler</button>
+        <button type="button" data-tab="analysis">Analysis</button>
       </div>
-      <div class="pv-empty flatline">nothing open</div>
-    </div>
-    <div class="wfoot">
-      <span class="pv-foot"></span>
-      <span class="grow pv-day"></span>
+      <div class="mon-pane"></div>
+      <div class="mon-note"></div>
     </div>
   </section>
 </template>
@@ -353,10 +340,10 @@
 
 <!-- The contract's price ladder, beside its Algo — the MT5 desk's ladder,
      on ONE contract (the venue lists the spread itself: no legs). It shows
-     the book, our working orders and the Algo's levels against it. Manual
-     orders are not taken here (they are on Instruments & orders, in MANUAL
-     mode), and the ladder SAYS so rather than letting a click fail. CLOSE
-     ALL and Close @ LMT always close, by the position's own tickets. -->
+     the book, our working orders and the Algo's levels against it. In MANUAL
+     mode it trades by hand through the manual ticket (reviewed, then sent as
+     FTM-); in ALGO mode its order controls are off and it SAYS so. CLOSE ALL
+     and Close @ LMT always close, by the position's own tickets. -->
 <template id="ladder-template">
   <section class="win ladderwin">
     <div class="titlebar">
@@ -388,16 +375,16 @@
           <div class="ld-rb-acct">&mdash;</div>
         </div>
         <div class="ld-moderow">
-          <select class="ld-ot" disabled title="The Algo's entry order type — set in this contract's settings (gear)">
+          <select class="ld-ot" disabled title="ALGO mode: the Algo's entry order type (set in the gear). MANUAL mode: how BUY / SELL go out">
             <option value="LIMIT">Lim</option><option value="MARKET">Mkt</option>
           </select>
-          <select class="ld-tif" disabled title="Time in force — set in this contract's settings">
+          <select class="ld-tif" disabled title="Time in force of a manual order from this ladder">
             <option value="DAY">Day</option><option value="GTC">GTC</option>
           </select>
         </div>
         <div class="ld-quoting" title="How the Algo's orders are worked">&mdash;</div>
-        <button class="ld-quick ld-buy" disabled title="Manual orders are not taken on the Algo desk — use Instruments &amp; orders in MANUAL mode">BUY 1</button>
-        <button class="ld-quick ld-sell" disabled title="Manual orders are not taken on the Algo desk — use Instruments &amp; orders in MANUAL mode">SELL 1</button>
+        <button class="ld-quick ld-buy" disabled title="MANUAL mode: BUY at the offer (or at market) — reviewed, then sent to TT as a manual ticket. Off in ALGO mode.">BUY 1</button>
+        <button class="ld-quick ld-sell" disabled title="MANUAL mode: SELL at the bid (or at market) — reviewed, then sent to TT as a manual ticket. Off in ALGO mode.">SELL 1</button>
         <button class="ld-quick ld-flatten" disabled title="Close the open position at market, NOW, by its own tickets (77=C) — and stand this contract's Algo down. A close already working is escalated, never doubled.">CLOSE ALL</button>
         <div class="ld-closelmt">
           <input class="ld-close-px" type="number" step="any" placeholder="Close @ limit" title="The price to rest ONE closing limit at, for the whole open position, carrying its tickets. It waits there; CLOSE ALL crosses now.">
@@ -449,6 +436,7 @@
   </section>
 </template>
 
+<script src="{{ url_for('static', filename='monitor.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='app.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

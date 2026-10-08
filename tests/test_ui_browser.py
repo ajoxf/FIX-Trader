@@ -391,20 +391,31 @@ def test_eight_windows_fit_a_desk_without_the_body_scrolling_sideways(server):
     assert errors == []
 
 
-# -- the Positions window -------------------------------------------------
+# -- the Trading Monitor window ---------------------------------------------
 
-def test_the_positions_window_lists_every_open_position_with_its_tickets(server):
-    """The screen that answers 'what am I in, across everything'."""
+POS_ROW = '.tmonwin .mon-pane tr.pos'
+
+
+def test_the_trading_monitor_lists_every_open_position_with_its_tickets(server):
+    """The screen that answers 'what am I in, across everything' — the
+    Trading Monitor's Positions tab, on the desk."""
     url, _ = server
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
-        page.wait_for_selector('.pv-rows tr')
-        row = page.locator('.pv-rows tr').first.inner_text()
+        page.wait_for_selector(POS_ROW)
+        tabs = page.locator('.tmonwin .mon-tabs button').all_inner_texts()
+        # the MT5 Trading Monitor's own tabs, in its own order
+        assert [t.split()[0] for t in tabs] == ['Positions', 'Working', 'Fills', 'Slippage',
+                                                'Accounts', 'Reconciler', 'Analysis']
+        row = page.locator(POS_ROW).first.inner_text()
+        detail = page.locator('.tmonwin .mon-pane tr.detail').first.inner_text()
         for expected in ('Iron ore Oct/Nov', 'BUY', '0.4800', '-2.14',
-                         '0.5180', '0.5700', '$1,300', 'E000004'):
+                         '0.5180', '0.5700'):
             assert expected in row, f"{expected!r} missing from {row!r}"
-        assert 'realised today' in page.locator('.pv-foot').inner_text()
+        for expected in ('$1,300', 'E000004'):
+            assert expected in detail, f"{expected!r} missing from {detail!r}"
+        assert 'Trading Monitor' in page.locator('#tabs').inner_text()
         browser.close()
     assert errors == []
 
@@ -421,9 +432,9 @@ def test_both_sides_open_is_called_out_and_never_netted_to_flat(server):
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
-        page.wait_for_selector('.pv-rows tr')
+        page.wait_for_selector(POS_ROW)
         page.wait_for_timeout(900)
-        row = page.locator('.pv-rows tr').first
+        row = page.locator(POS_ROW).first
         text = row.inner_text()
         assert 'LONG 5' in text and 'SHORT 5' in text
         assert 'hedged' in (row.get_attribute('class') or '')
@@ -440,29 +451,108 @@ def test_an_unreadable_venue_says_so_instead_of_showing_an_empty_table(server):
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
-        page.wait_for_selector('.pv-rows tr')
+        page.wait_for_selector(POS_ROW)
         page.wait_for_timeout(900)
-        banner = page.locator('.pv-banner')
-        assert not banner.is_hidden()
-        assert 'NOT confirmation' in banner.inner_text()
-        assert 'could not read' in page.locator('.pv-rows tr').first.inner_text()
+        check = page.locator('.tmonwin .mon-check')
+        assert 'NOT confirmation' in check.inner_text()
+        assert 'could not read' in page.locator(POS_ROW).first.inner_text()
         browser.close()
     assert errors == []
 
 
-def test_closing_from_the_positions_window_asks_and_then_sends(server):
+def test_closing_from_the_trading_monitor_asks_and_then_sends(server):
     url, tmp = server
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
-        page.wait_for_selector('.pv-rows tr')
-        page.locator('.pv-rows tr .btn').first.click()
+        page.wait_for_selector(POS_ROW)
+        page.locator(POS_ROW + ' .close-pos').first.click()
         page.wait_for_selector('#modal:not(.hidden)')
         assert 'tickets' in page.locator('#modal-body').inner_text()
         page.locator('#modal-confirm').click()
         page.wait_for_timeout(400)
         sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
         assert sent['action'] == 'close_now' and sent['contract'] == 'fef'
+        browser.close()
+    assert errors == []
+
+
+# -- hand trading on the desk ladder (MANUAL mode) -------------------------------
+
+def manual_desk(tmp, mode='MANUAL'):
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['engine'].update({'trading_mode': mode,
+                           'session': {'state': 'LOGGED_ON', 'text': 'up'},
+                           'manual_terminal': {'account': 'ACC1', 'orders': [],
+                                               'pnl': {'positions': []}}})
+    for c in snap['contracts']:
+        c['security_id'] = '777'
+        c['position'] = None
+    snap['portfolio']['rows'] = []
+    (tmp / 'status.json').write_text(json.dumps(snap))
+
+
+def test_manual_mode_ladder_buy_goes_to_the_manual_ticket_review(server):
+    """MANUAL: BUY on the desk ladder asks the manual ticket for a REVIEW of
+    a buy at the offer, flagged OPEN — never straight to the venue."""
+    url, tmp = server
+    manual_desk(tmp)
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        ladder = page.locator('.ladderwin')
+        page.wait_for_selector('.ladderwin.manual-on')
+        assert ladder.locator('.ld-buy').is_enabled()
+        assert 'Bids buys' in ladder.locator('.ld-lock').inner_text()
+        ladder.locator('.ld-buy').click()
+        page.wait_for_timeout(600)
+        sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
+        assert sent['action'] == 'terminal_preview'
+        args = sent['args']
+        assert args['side'] == 'BUY' and args['security_id'] == '777'
+        assert args['open_close'] == 'O' and args['account'] == 'ACC1'
+        assert args['order_type'] == 'LIMIT'
+        ask = json.loads((tmp / 'status.json').read_text())['contracts'][0]['market']['ask']
+        assert float(args['price']) == ask
+        browser.close()
+    assert errors == [e for e in errors if 'NO ANSWER' in e]
+
+
+def test_a_click_in_asks_reviews_a_sell_at_that_price(server):
+    url, tmp = server
+    manual_desk(tmp)
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin.manual-on')
+        row = page.locator('.ladderwin .ld-grid tbody tr').nth(3)
+        price = row.locator('td.price').inner_text()
+        row.locator('td.ask').click()
+        page.wait_for_timeout(600)
+        sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
+        assert sent['action'] == 'terminal_preview'
+        assert sent['args']['side'] == 'SELL'
+        assert float(sent['args']['price']) == float(price)
+        browser.close()
+
+
+def test_algo_mode_ladder_takes_no_hand_order(server):
+    """The control: in ALGO mode the same ladder's order controls are off and
+    a click in the book sends nothing."""
+    url, tmp = server
+    manual_desk(tmp, mode='ALGO')
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin .ld-grid tbody tr')
+        page.wait_for_timeout(600)
+        ladder = page.locator('.ladderwin')
+        assert 'manual-on' not in (ladder.get_attribute('class') or '')
+        assert not ladder.locator('.ld-buy').is_enabled()
+        ladder.locator('.ld-grid tbody tr').nth(3).locator('td.ask').click()
+        page.wait_for_timeout(400)
+        log = tmp / 'commands.jsonl'
+        assert not log.exists() or 'terminal_preview' not in log.read_text()
         browser.close()
     assert errors == []
 
@@ -717,7 +807,7 @@ def test_a_sticky_table_header_does_not_punch_through_the_window_above_it(analys
           const an = document.querySelector('.win[data-key="__analysis__"]');
           const anR = an.getBoundingClientRect();
           // a header cell that genuinely lies underneath the Analysis window
-          const cell = Array.from(pos.querySelectorAll('table.grid th'))
+          const cell = Array.from(pos.querySelectorAll('table.grid th, table.mon th'))
             .map((t) => ({t, r: t.getBoundingClientRect()}))
             .find((o) => o.r.x > anR.x + 20 && o.r.y > anR.y && o.r.bottom < anR.bottom);
           if (!cell) return {found: false};

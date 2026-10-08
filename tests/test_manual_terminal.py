@@ -225,3 +225,20 @@ def test_a_close_is_measured_as_an_exit_on_its_own_side(terminal):
     assert summary['exit']['measured'] == 1
     assert summary['exit']['ticks_mean'] == pytest.approx(1.0)  # sold 11.0 -> 10.75
     assert summary['entry']['ticks_mean'] == pytest.approx(0.0)  # a measured 0.00
+
+
+def test_a_close_with_a_price_rests_as_a_limit_close(terminal):
+    """The desk ladder's Close @ LMT on a manual position: a LIMIT at the
+    trader's price, flagged CLOSE (77=C), capped at what the ticket has open
+    — and, the control, without a price it crosses at MARKET."""
+    preview = terminal.preview(ticket(quantity='2'))
+    oid = terminal.submit({'token': preview['token'], 'confirmed': True})['order_id']
+    report(terminal, {'35': '8', '11': oid, '37': 'TT-1', '39': '2', '150': '2', '17': 'EX-L',
+                      '14': '2', '151': '0', '32': '2', '31': '10', '6': '10'})
+    limit = terminal.preview_close({'order_id': oid, 'price': '10.5'})
+    assert limit['ticket']['order_type'] == 'LIMIT' and limit['ticket']['price'] == '10.5'
+    assert limit['ticket']['open_close'] == 'C' and float(limit['ticket']['quantity']) == 2
+    fields = dict(limit['fields'])
+    assert fields['40'] == '2' and fields['44'] == '10.5' and fields['77'] == 'C'
+    market = terminal.preview_close({'order_id': oid})
+    assert market['ticket']['order_type'] == 'MARKET' and market['ticket']['price'] is None

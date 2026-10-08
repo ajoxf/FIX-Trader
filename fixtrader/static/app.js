@@ -903,14 +903,18 @@ function ladderFor(key) {
   };
   el.querySelector('.ld-centre').onclick = () => { delete ladderCentre[key]; el.dataset.recentre = '1'; };
   el.querySelector('.ld-cog').onclick = () => configWindow(key);
-  el.querySelector('.ld-flatten').onclick = () => closeNowAsk(key,
-    el.querySelector('.title').textContent);
+  el.querySelector('.ld-flatten').onclick = () => (ladderManualPositions(key).length
+    ? closeManual(el, key, null)
+    : closeNowAsk(key, el.querySelector('.title').textContent));
   el.querySelector('.ld-close-go').onclick = () => closeAtLimitAsk(el, key);
   el.querySelector('.ld-refresh').onclick = async () => {
     const r = await command('refresh_feed', key);
     if (r && r.ok) toast('OK', 'FEED', 'prices re-requested from TT', key);
   };
   const cxl = (side, label) => async () => {
+    if (el.classList.contains('manual-on')) {
+      return cancelManual(el, key, (o) => !side || o.ticket.side === side, label);
+    }
     const ok = await ask('Cancel ' + label + ' on ' + el.querySelector('.title').textContent + '?',
       'A cancel request goes to TT for each of our working orders. They stay working until TT ' +
       'confirms — and can fill in between.', 'Request cancel');
@@ -919,6 +923,40 @@ function ladderFor(key) {
   el.querySelector('.ld-cxl-s').onclick = cxl('SELL', 'the working SELL orders');
   el.querySelector('.ld-cxl-b').onclick = cxl('BUY', 'the working BUY orders');
   el.querySelector('.ld-cxl-all').onclick = cxl(null, 'every working order');
+  // MANUAL mode: hand trading on this ladder, through the manual ticket —
+  // every order reviewed, then sent as an FTM- order. ManualTerminal refuses
+  // it in ALGO mode whatever this page does.
+  el.querySelector('.ld-buy').onclick = () => manualOrder(el, key, 'BUY', null);
+  el.querySelector('.ld-sell').onclick = () => manualOrder(el, key, 'SELL', null);
+  el.querySelectorAll('.ld-keypad button').forEach((b) => {
+    b.onclick = () => {
+      const v = b.textContent === 'CLR' ? '' : b.textContent;
+      el.querySelectorAll('.ld-qtybox').forEach((box) => {
+        box.value = v;
+        box.dataset.cleared = v === '' ? '1' : '';
+      });
+    };
+  });
+  el.querySelectorAll('.ld-qtybox').forEach((box) => {
+    box.oninput = () => { box.dataset.cleared = box.value === '' ? '1' : ''; };
+  });
+  el.querySelector('.ld-ot').onchange = (e) => { pref.ot = e.target.value; saveLadderPref(key); };
+  el.querySelector('.ld-tif').onchange = (e) => { pref.tif = e.target.value; saveLadderPref(key); };
+  // TT's convention: a click in Bids BUYS at that price, in Asks SELLS.
+  el.querySelector('.ld-grid tbody').addEventListener('click', (e) => {
+    const cell = e.target.closest('td.bid, td.ask');
+    if (!cell || !el.classList.contains('manual-on')) return;
+    const price = parseFloat(cell.parentElement.querySelector('td.price').textContent);
+    manualOrder(el, key, cell.classList.contains('bid') ? 'BUY' : 'SELL', price);
+  });
+  el.querySelector('.ld-grid tbody').addEventListener('contextmenu', (e) => {
+    const cell = e.target.closest('td.work');
+    if (!cell || !el.classList.contains('manual-on')) return;
+    e.preventDefault();
+    const price = parseFloat(cell.parentElement.querySelector('td.price').textContent);
+    cancelManual(el, key, (o) => Math.abs(Number(o.ticket.price) - price) < 1e-9,
+      'the manual orders at ' + cell.parentElement.querySelector('td.price').textContent);
+  });
   document.getElementById('desktop').appendChild(el);
   const place = state.places[wkey];
   if (place) placeWindow(el, place.x, place.y);
@@ -927,6 +965,11 @@ function ladderFor(key) {
 
 async function closeAtLimitAsk(el, key) {
   const box = el.querySelector('.ld-close-px');
+  if (ladderManualPositions(key).length) {
+    const price = parseFloat(box.value);
+    if (!(price || price === 0)) { toast('REJECT', 'CLOSE @ LMT', 'type the price to close at first', key); return; }
+    return closeManual(el, key, price);
+  }
   const resting = el.querySelector('.ld-closelmt').classList.contains('resting');
   const name = el.querySelector('.title').textContent;
   if (resting) {
@@ -948,6 +991,103 @@ async function closeAtLimitAsk(el, key) {
   }
 }
 
+/* -- hand trading on the desk ladder (MANUAL mode) ------------------------- */
+
+const ladderData = {};           // key -> {c, engine}: the last snapshot drawn
+
+function ladderManual(key) {
+  const d = ladderData[key];
+  return (d && (d.engine || {}).manual_terminal) || null;
+}
+
+function ladderSecurity(key) {
+  const d = ladderData[key];
+  return d ? String(d.c.security_id || '') : '';
+}
+
+// This contract's manual orders still working at TT.
+function ladderManualWorking(key) {
+  const term = ladderManual(key), sid = ladderSecurity(key);
+  if (!term || !sid) return [];
+  return (term.orders || []).filter((o) => o.ticket && String(o.ticket.security_id) === sid &&
+    ['PENDING', 'NEW', 'PARTIALLY_FILLED', 'REPLACED'].includes(o.status));
+}
+
+// This contract's open manual fills, one row per opening ticket.
+function ladderManualPositions(key) {
+  const term = ladderManual(key), sid = ladderSecurity(key);
+  if (!term || !sid) return [];
+  return ((term.pnl || {}).positions || []).filter((p) => String(p.security_id) === sid);
+}
+
+async function manualOrder(el, key, side, price) {
+  if (!el.classList.contains('manual-on')) return;
+  const d = ladderData[key];
+  if (!d) return;
+  const m = d.c.market || {};
+  const ot = el.querySelector('.ld-ot').value;
+  const tif = el.querySelector('.ld-tif').value;
+  const qty = parseFloat(el.querySelector('.ld-qtybox.' + (side === 'BUY' ? 'buy' : 'sell')).value);
+  if (!(qty > 0)) { toast('REJECT', 'NOT SENT', 'type the ' + side + ' quantity first', key); return; }
+  let px = price;
+  if (px === null && ot === 'LIMIT') px = side === 'BUY' ? m.ask : m.bid;   // at the touch
+  if (ot === 'LIMIT' && (px === null || px === undefined)) {
+    toast('REJECT', 'NOT SENT', 'no ' + (side === 'BUY' ? 'offer' : 'bid') + ' to price the limit at', key);
+    return;
+  }
+  const term = ladderManual(key);
+  const args = { security_id: d.c.security_id, account: term.account || '', side,
+                 order_type: price !== null ? 'LIMIT' : ot, quantity: String(qty),
+                 price: (price !== null || ot === 'LIMIT') ? String(px) : '', tif,
+                 open_close: 'O' };
+  const review = await command('terminal_preview', '', args);
+  if (!review || !review.ok || !review.token) return;      // refused: already toasted
+  const t = review.ticket || {};
+  const dec = d.c.decimals === undefined ? 4 : d.c.decimals;
+  const ok = await ask(side + ' ' + t.quantity + ' ' + (d.c.name || key) + ' — send to TT?',
+    side + ' ' + t.quantity + ' @ ' + (t.order_type === 'MARKET' ? 'MARKET' : num(Number(t.price), dec) +
+    ' LIMIT') + ' · ' + t.tif + ' · account ' + t.account + ' · Open/Close: OPEN (77=O). ' +
+    'A manual ticket (FTM-), sent to TT ' + ((d.engine || {}).environment || '') +
+    ' on your confirmation; an acknowledgement or fill comes from TT.',
+    'Send ' + side);
+  if (!ok) return;
+  const sent = await command('terminal_submit', '', { token: review.token, confirmed: true });
+  if (sent && sent.ok) toast('ORDER', 'SENT', side + ' ' + t.quantity + ' — ' + (sent.order_id || ''), key);
+}
+
+async function cancelManual(el, key, which, label) {
+  const orders = ladderManualWorking(key).filter((o) => !o.pending && which(o));
+  if (!orders.length) { toast('REJECT', 'CANCEL', 'no manual order to cancel', key); return; }
+  const ok = await ask('Cancel ' + label + '?',
+    orders.length + ' manual order(s): ' + orders.map((o) => o.id).join(', ') +
+    '. Each stays working until TT confirms the cancel — and can fill in between.', 'Request cancel');
+  if (!ok) return;
+  for (const o of orders) await command('terminal_cancel', '', { order_id: o.id });
+}
+
+// CLOSE ALL (price null: at market) or Close @ LMT on the manual position:
+// one CLOSING ticket (77=C) per opening ticket, for its open fills and no more.
+async function closeManual(el, key, price) {
+  const open = ladderManualPositions(key);
+  if (!open.length) return;
+  const reviews = [];
+  for (const p of open) {
+    const r = await command('terminal_preview_close', '', price === null
+      ? { order_id: p.entry_order_id } : { order_id: p.entry_order_id, price: String(price) });
+    if (!r || !r.ok) return;                                  // refused: already toasted
+    reviews.push(r);
+  }
+  const lines = reviews.map((r) => (r.ticket || {}).side + ' ' + (r.ticket || {}).quantity +
+    (price === null ? ' at MARKET' : ' @ ' + price + ' LIMIT') + ' closing ' + r.close_of);
+  const ok = await ask((price === null ? 'CLOSE ALL' : 'Close @ LMT') + ' — ' +
+    el.querySelector('.title').textContent + '?',
+    lines.join('; ') + '. Open/Close: CLOSE (77=C), capped at what each ticket has open.',
+    price === null ? 'CLOSE NOW' : 'Rest the close');
+  if (!ok) return;
+  for (const r of reviews) await command('terminal_submit', '', { token: r.token, confirmed: true });
+  toast('ORDER', 'CLOSING', lines.join('; '), key);
+}
+
 function renderLadder(c, engine) {
   const wkey = '__ladder__' + c.key;
   if (state.closed.has(wkey)) return;
@@ -964,12 +1104,32 @@ function renderLadder(c, engine) {
   const st = c.settings || {};
   const orders = c.orders || [];
   const has = (v) => v !== null && v !== undefined;
+  ladderData[c.key] = { c, engine };
+  const term = (engine || {}).manual_terminal;
+  // Hand trading on this ladder: MANUAL mode, a TT manual ticket behind it,
+  // and the session up. Anything else and the order controls are off.
+  const sessionUp = ((engine || {}).session || {}).state === 'LOGGED_ON';
+  const manualOn = tradingMode === 'MANUAL' && !!term && !!c.security_id && sessionUp &&
+    (engine || {}).alive !== false;
+  el.classList.toggle('manual-on', manualOn);
+  const mWorking = ladderManualWorking(c.key);
+  const mOpen = ladderManualPositions(c.key);
 
   el.querySelector('.title').textContent = c.name;
   el.querySelector('.ld-route').textContent = c.security_id || c.symbol || '';
-  const ot = String(st.entry_order_type || 'MARKET').toUpperCase();
-  el.querySelector('.ld-ordtype').textContent = ot + ' · DAY';
-  el.querySelector('.ld-ot').value = ot === 'LIMIT' ? 'LIMIT' : 'MARKET';
+  const algoOt = String(st.entry_order_type || 'MARKET').toUpperCase();
+  const otSel = el.querySelector('.ld-ot'), tifSel = el.querySelector('.ld-tif');
+  otSel.disabled = tifSel.disabled = !manualOn;
+  // MANUAL: the trader's own choice on this ladder. ALGO: what the Algo sends.
+  if (manualOn) {
+    if (document.activeElement !== otSel) otSel.value = pref.ot || 'LIMIT';
+    if (document.activeElement !== tifSel) tifSel.value = pref.tif || 'DAY';
+  } else {
+    otSel.value = algoOt === 'LIMIT' ? 'LIMIT' : 'MARKET';
+    tifSel.value = 'DAY';
+  }
+  const ot = otSel.value;
+  el.querySelector('.ld-ordtype').textContent = ot + ' · ' + tifSel.value;
 
   // Who trades this contract, and whether its orders reach TT.
   const mode = el.querySelector('.ld-mode');
@@ -1001,12 +1161,20 @@ function renderLadder(c, engine) {
     lock.textContent = modeText + ' — manual orders are off on this ladder. ' +
       'CLOSE ALL and Close @ LMT still close.';
     lock.title = 'Switch the desk to MANUAL (taskbar) to trade by hand on Instruments & orders.';
+  } else if (manualOn) {
+    lock.className = 'ld-lock manual';
+    lock.textContent = 'MANUAL — BUY / SELL, or click a price: Bids buys, Asks sells. ' +
+      'Every order is reviewed before it goes to TT.';
+    lock.title = 'Orders from this ladder are manual tickets (FTM-), with the same checks ' +
+      'and safety limits as Instruments & orders. Right-click a Work cell to cancel there.';
   } else {
     lock.className = 'ld-lock manual';
-    lock.textContent = 'MANUAL — the Algo is not entering. Trade by hand on ' +
-      'Instruments & orders. CLOSE ALL and Close @ LMT still close.';
+    lock.textContent = 'MANUAL — ' + (!term ? 'hand orders need the TT session (not the simulator).'
+      : !c.security_id ? 'this contract has no TT Security ID.'
+      : 'the TT session is not logged on.') + ' CLOSE ALL still closes.';
+    lock.title = '';
   }
-  el.classList.toggle('algo-locked', true);
+  el.classList.toggle('algo-locked', !manualOn);
 
   // The rail.
   el.querySelector('.ld-rb-sym').innerHTML = 'Contract <b>' + esc(c.symbol || c.name) + '</b>';
@@ -1016,24 +1184,38 @@ function renderLadder(c, engine) {
   el.querySelector('.ld-quoting').textContent = ex.mode === 'PAPER' || ex.mode === 'SIMULATOR'
     ? 'PAPER: filled here at the bid/offer'
     : ot === 'LIMIT' ? 'LIMIT: rests at the touch, escalates' : 'MARKET: crosses the touch';
+  if (manualOn) el.querySelector('.ld-quoting').textContent =
+    ot === 'LIMIT' ? 'LIMIT: BUY at the offer, SELL at the bid' : 'MARKET: crosses now';
   const q = st.quantity || 1;
-  el.querySelector('.ld-buy').textContent = 'BUY ' + q;
-  el.querySelector('.ld-sell').textContent = 'SELL ' + q;
-  el.querySelectorAll('.ld-qtybox').forEach((b) => { b.value = q; });
-  el.querySelector('.ld-flatten').disabled = !pos;
+  const qb = el.querySelector('.ld-qtybox.buy'), qs = el.querySelector('.ld-qtybox.sell');
+  [qb, qs].forEach((b) => {
+    b.disabled = !manualOn;
+    // The trader's own size stays put; it is only filled in when empty.
+    if (!manualOn || (b.value === '' && document.activeElement !== b && !b.dataset.cleared)) b.value = q;
+  });
+  el.querySelectorAll('.ld-keypad button').forEach((b) => { b.disabled = !manualOn; });
+  el.querySelector('.ld-buy').disabled = !manualOn;
+  el.querySelector('.ld-sell').disabled = !manualOn;
+  el.querySelector('.ld-buy').textContent = 'BUY ' + (qb.value || '');
+  el.querySelector('.ld-sell').textContent = 'SELL ' + (qs.value || '');
+  el.querySelector('.ld-flatten').disabled = !pos && !mOpen.length;
   const cl = c.close_limit;
   const lmtRow = el.querySelector('.ld-closelmt');
   lmtRow.classList.toggle('resting', !!cl);
   const go = el.querySelector('.ld-close-go');
-  go.disabled = !pos && !cl;
+  go.disabled = !pos && !cl && !mOpen.length;
   go.textContent = cl ? 'Pull' : '@ LMT';
   go.title = cl ? 'A Close @ LMT is resting at ' + num(cl.price, d) +
     (cl.paper ? ' (PAPER)' : '') + ' — click to pull it' : go.title;
   const box = el.querySelector('.ld-close-px');
   if (cl && document.activeElement !== box) box.value = num(cl.price, d);
-  if (!cl && !pos && document.activeElement !== box) box.value = '';
+  if (!cl && !pos && !mOpen.length && document.activeElement !== box) box.value = '';
 
   const working = orders.filter((o) => !['FILLED', 'CANCELLED', 'REJECTED', 'EXPIRED'].includes(o.state));
+  // The manual tickets working on this contract are on the ladder too.
+  mWorking.forEach((o) => working.push({ side: o.ticket.side,
+    price: o.ticket.price === null || o.ticket.price === undefined || o.ticket.price === '' ? null : Number(o.ticket.price),
+    qty: Number(o.ticket.quantity), filled_qty: Number(o.filled_qty || 0), manual: true }));
   const nB = working.filter((o) => o.side === 'BUY').length;
   const nS = working.filter((o) => o.side === 'SELL').length;
   el.querySelector('.ld-n-b').textContent = nB || '';
@@ -1069,6 +1251,17 @@ function renderLadder(c, engine) {
     pn.textContent = has(pos.net) ? money(pos.net) : DASH;
     pn.className = 'ld-pnl ' + (pos.net > 0 ? 'up' : pos.net < 0 ? 'dn' : '');
     pn.title = 'Net after the round trip, at the side it would close on';
+  } else if (mOpen.length) {
+    // The manual position: its open fills, netted for the label only.
+    const net = mOpen.reduce((a, p) => a + (p.side === 'BUY' ? 1 : -1) * p.quantity, 0);
+    const avg = mOpen.reduce((a, p) => a + p.entry_price * p.quantity, 0) /
+      mOpen.reduce((a, p) => a + p.quantity, 0);
+    const fl = mOpen.every((p) => has(p.floating_pnl))
+      ? mOpen.reduce((a, p) => a + p.floating_pnl, 0) : null;
+    pe.textContent = (net > 0 ? '+' : '') + net + ' @ ' + num(avg, d) + ' (manual)';
+    pn.textContent = has(fl) ? money(fl) : DASH;
+    pn.className = 'ld-pnl ' + (fl > 0 ? 'up' : fl < 0 ? 'dn' : '');
+    pn.title = 'Gross, marked at the TT mid — the manual ticket\'s own figure';
   } else {
     pe.textContent = 'flat';
     pn.textContent = '';
@@ -1100,6 +1293,7 @@ function renderLadder(c, engine) {
     level(block.upper, '+' + (block.params || {}).entry_z + 'σ', 'band');
     level(block.lower, '−' + (block.params || {}).entry_z + 'σ', 'band');
   }
+  mOpen.forEach((p) => level(p.entry_price, 'ENTRY', 'en'));
   if (pos) {
     level(pos.avg_price, 'ENTRY', 'en');
     level(pos.break_even, 'BE', 'be');
@@ -1222,138 +1416,49 @@ function flash(el, cls) {
   }, HIGHLIGHT_HOLD_MS);
 }
 
-/* -- the Positions window -------------------------------------------------
+/* -- the Trading Monitor window ---------------------------------------------
  *
- * The per-contract window shows its own position. This is the one screen that
- * answers "what am I in, across everything" — and it puts what the VENUE says
- * beside what this book holds, because the two disagreeing is the whole
+ * The MT5 desk's Trading Monitor, on the desk: Positions, Working orders,
+ * Fills (the TT fills tape), Closed trades, Slippage and the Reconciler —
+ * the SAME renderer as the Account tab (monitor.js), fed this desk's
+ * snapshot on every tick rather than polling for itself. What the VENUE says
+ * sits beside what this book holds, because the two disagreeing is the whole
  * reason to look.
  */
+
+let tradingMonitor = null;
 
 function positionsWindow() {
   let el = document.querySelector('.win[data-key="__positions__"]');
   if (el) return el;
   const tpl = document.getElementById('positions-template');
   el = tpl.content.firstElementChild.cloneNode(true);
-  el.querySelector('.close').onclick = () => {
-    state.closed.add('__positions__');
-    localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));
-    el.remove();
-    renderTabs();
-  };
-  el.onmousedown = () => raise(el);
-  makeDraggable(el, '__positions__');
+  wireWindow(el, '__positions__');
   document.getElementById('desktop').prepend(el);
   const place = state.places['__positions__'];
   if (place) placeWindow(el, place.x, place.y);
+  tradingMonitor = TradingMonitor(el.querySelector('.tmon'), {
+    storageKey: 'ft.monitor.tab',
+    // The desk's own command(): it toasts a refusal itself, so the monitor
+    // is told of it as an error and does not say it twice.
+    command: async (action, contract, args) => {
+      const r = await command(action, contract, args);
+      if (!r || r.ok === false) throw new Error((r && r.error) || 'refused');
+      return r;
+    },
+    ask: ask,
+    say: (text, bad) => { if (!bad) toast('OK', 'MONITOR', text); },
+  });
   return el;
-}
-
-function venueCell(r) {
-  if (!r.venue_readable) return 'could not read';
-  if (r.both_sides_open) {
-    // Long and short at once is a close that went out as an open. It is
-    // never netted to zero and shown as flat.
-    return 'LONG ' + r.venue_long + ' + SHORT ' + r.venue_short;
-  }
-  if (r.venue_qty === null || r.venue_qty === undefined) return 'nothing';
-  return signed(r.venue_qty, 0) + (r.agrees ? '' : '  ≠ book');
 }
 
 function renderPositions(snap) {
   if (state.closed.has('__positions__')) return;
-  const p = snap.portfolio || { rows: [], venue_readable: true };
   const el = positionsWindow();
-  const rows = p.rows || [];
-  const localOnly = p.position_scope === 'algo_local' || p.venue_readable === false;
-  const unsupported = p.account_status === 'unavailable' || snap.engine?.connection_only;
-  el.querySelector('.title').textContent = localOnly ? 'Algo positions' : 'Positions';
-
-  el.querySelector('.pv-count').textContent =
-    rows.length + (localOnly ? ' tracked' : ' open');
-  el.querySelector('.pv-empty').classList.toggle('hidden', rows.length > 0);
-  el.querySelector('.pv-empty').textContent = localOnly
-    ? 'No open algo positions recorded by this app.' : 'No open positions reported.';
-
-  // "could not read" is not "flat", and the table must not imply it is.
-  const banner = el.querySelector('.pv-banner');
-  const unreadable = p.venue_readable === false;
-  banner.classList.toggle('hidden', !unreadable);
-  banner.classList.toggle('critical', unreadable && !unsupported);
-  if (unreadable) {
-    banner.textContent = unsupported
-      ? 'Showing this app\'s algo book. Account-wide positions are not verified. Live quotes and strategy monitoring remain available.'
-      : 'The venue could not be read, so what is shown is ' +
-      'this book alone. It is NOT confirmation that the account is flat.';
-  }
-
-  const body = el.querySelector('.pv-rows');
-  body.innerHTML = '';
-  rows.forEach((r) => {
-    const d = r.decimals === undefined ? 4 : r.decimals;
-    const tr = document.createElement('tr');
-    if (r.both_sides_open) tr.className = 'hedged';
-    else if (r.venue_readable && !r.agrees) tr.className = 'disagrees';
-    const cells = [
-      ['txt', r.name],
-      ['txt', r.side ? '<span class="tag ' + r.side + '">' + r.side + '</span>' : DASH],
-      ['r', r.qty === null ? DASH : String(r.qty)],
-      ['r', num(r.avg_price, d)],
-      ['r', num(r.mid, d)],
-      ['r', signed(r.entry_z, 2)],
-      ['r', num(r.break_even, d)],
-      ['r', num(r.target, d)],
-      ['r', num(r.stop, d)],
-      ['r', held(r.opened_at)],
-      ['r', r.margin_locked === null || r.margin_locked === undefined ? DASH
-        : '$' + Math.round(r.margin_locked).toLocaleString()],
-      ['r pnl ' + (r.open_pnl > 0 ? 'up' : r.open_pnl < 0 ? 'dn' : ''), money(r.open_pnl)],
-      ['txt', venueCell(r)],
-      ['tickets', (r.tickets || []).join(' ') || DASH],
-    ];
-    cells.forEach(([cls, html]) => {
-      const td = document.createElement('td');
-      td.className = cls;
-      td.innerHTML = html;
-      tr.appendChild(td);
-    });
-    const act = document.createElement('td');
-    const btn = document.createElement('button');
-    btn.className = 'btn danger';
-    btn.textContent = 'CLOSE';
-    btn.disabled = !r.side;
-    btn.onclick = async () => {
-      const ok = await ask('Close ' + r.name + '?',
-        'The position is closed at market by its own tickets, now. The algo ' +
-        'on this contract is stood down with it.', 'CLOSE NOW');
-      if (ok) await command('close_now', r.key);
-    };
-    act.appendChild(btn);
-    tr.appendChild(act);
-    body.appendChild(tr);
-  });
-
-  const total = el.querySelector('.pv-total');
-  total.innerHTML = '';
-  if (rows.length) {
-    const spec = [['txt', rows.length + ' open'], ['', ''], ['', ''], ['', ''],
-      ['', ''], ['', ''], ['', ''], ['', ''], ['', ''], ['', ''],
-      ['r', p.margin === null ? DASH : '$' + Math.round(p.margin).toLocaleString()],
-      ['r', money(p.open_pnl)], ['', ''], ['', ''], ['', '']];
-    spec.forEach(([cls, text]) => {
-      const td = document.createElement('td');
-      td.className = cls;
-      td.textContent = text;
-      total.appendChild(td);
-    });
-  }
-
-  el.querySelector('.pv-foot').textContent =
-    'realised today ' + money(p.realised_today) + ' · ' +
-    (p.trades_today || 0) + ' trades';
-  el.querySelector('.pv-day').textContent = p.venue_readable
-    ? (rows.every((r) => r.agrees) ? 'book and venue agree' : 'position reconciliation required')
-    : 'account verification unavailable';
+  const rows = ((snap.portfolio || {}).rows || []).filter((r) => r.side);
+  const manual = (((snap.engine || {}).manual_terminal || {}).pnl || {}).positions || [];
+  el.querySelector('.tm-count').textContent = (rows.length + manual.length) + ' open';
+  if (!el.classList.contains('minimised')) tradingMonitor.update(snap);
 }
 
 /* -- the Analysis window --------------------------------------------------
@@ -2698,7 +2803,7 @@ document.getElementById('add-panel').onclick = () => {
   }
   state.closed.forEach((key) => {
     const b = document.createElement('button');
-    b.textContent = key === '__positions__' ? 'Positions'
+    b.textContent = key === '__positions__' ? 'Trading Monitor'
       : key === '__analysis__' ? 'Analysis' : key;
     b.onclick = () => {
       state.closed.delete(key);
