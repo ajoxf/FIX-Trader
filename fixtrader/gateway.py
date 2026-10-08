@@ -277,6 +277,28 @@ class FixGateway:
                 self.terminal._subscribe(security_id)
         return None
 
+    #: How many levels a side the desk ladder is given — the rows it can
+    #: draw, not the whole book: the snapshot is written twice a second.
+    DEPTH_LEVELS = 30
+
+    def depth(self, key):
+        """The book for the desk ladder: every level TT publishes, each side
+        best first, and whether FULL depth (264=0) was asked for or only the
+        top (264=1). None while Market Data is down or the contract has no
+        Security ID — unknown, never an empty book."""
+        md = self._sessions.get('Market Data')
+        if md is None or md.state.status != 'CONNECTED' or not md.is_running():
+            return None
+        security_id = self._contract_security_ids.get(key)
+        if not security_id:
+            return None
+        with self.terminal.lock:
+            book = self.terminal.books.get(security_id) or {}
+            watch = self.terminal.watch.get(security_id) or {}
+            return {'full': bool(watch.get('full_depth')),
+                    'bids': [dict(x) for x in (book.get('bid_levels') or [])[:self.DEPTH_LEVELS]],
+                    'asks': [dict(x) for x in (book.get('ask_levels') or [])[:self.DEPTH_LEVELS]]}
+
     def top_of_book(self, key):
         md = self._sessions.get('Market Data')
         if md is None or md.state.status != 'CONNECTED' or not md.is_running():

@@ -1519,6 +1519,28 @@ class Engine:
         self._say(rt, "FEED", "prices re-requested from TT")
         return {'ok': True}
 
+    def set_depth(self, key: str, on: bool) -> Dict[str, Any]:
+        """The ladder's Depth button: ask TT for the FULL book on this
+        contract (Market Data Request 264=0) or only its top (264=1). Prices
+        only — nothing about an order or a position changes."""
+        rt = self.runtimes.get(key)
+        terminal = getattr(self.gateway, 'terminal', None)
+        if rt is None:
+            return {'ok': False, 'error': "no such contract"}
+        if terminal is None:
+            return {'ok': False, 'error': "the simulator has no TT book to "
+                    "ask for depth"}
+        sid = str(getattr(rt.contract, 'security_id', '') or '')
+        if not sid:
+            return {'ok': False, 'error': "this contract has no TT Security ID"}
+        try:
+            terminal.depth({'security_id': sid, 'enabled': bool(on)})
+        except (ConnectionError, ValueError) as e:
+            return {'ok': False, 'error': str(e)}
+        self._say(rt, "FEED", "full depth requested from TT" if on
+                  else "top of book only")
+        return {'ok': True, 'full': bool(on)}
+
     def cancel_close_limit(self, key: str) -> Dict[str, Any]:
         """Pull a resting Close @ LMT (a cancel REQUEST at a venue)."""
         rt = self.runtimes.get(key)
@@ -1847,6 +1869,10 @@ class Engine:
                 'hlo': dict(rt.hlo) if rt.hlo else None,
                 'last_trade': rt.last_trade,
                 'signal_alert': rt.signal_alert,
+                #: The book behind the ladder: every level TT sends, or None
+                #: where there is none to read (the simulator, MD down).
+                'depth': (self.gateway.depth(key)
+                          if hasattr(self.gateway, 'depth') else None),
                 #: A resting Close @ LMT: on PAPER here, or our pinned order.
                 'close_limit': (dict(rt.paper_close_limit, paper=True)
                                 if rt.paper_close_limit else next(

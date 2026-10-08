@@ -168,6 +168,8 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
             return {'ok': True,
                     'cancelled': engine.executor.cancel_all(
                         key or None, side=args.get('side') or None)}
+        if action == 'depth':
+            return engine.set_depth(key, args.get('on') is True)
         if action == 'refresh_feed':
             return engine.refresh_feed(key)
         if action == 'kill_all':

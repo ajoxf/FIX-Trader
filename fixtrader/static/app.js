@@ -1009,6 +1009,12 @@ function ladderFor(key) {
     ? closeManual(el, key, null)
     : closeNowAsk(key, el.querySelector('.title').textContent));
   el.querySelector('.ld-close-go').onclick = () => closeAtLimitAsk(el, key);
+  el.querySelector('.ld-depth').onclick = async () => {
+    const full = el.querySelector('.ld-depth').dataset.full === '1';
+    const r = await command('depth', key, { on: !full });
+    if (r && r.ok) toast('OK', 'DEPTH', r.full ? 'full depth requested from TT'
+      : 'top of book only', key);
+  };
   el.querySelector('.ld-refresh').onclick = async () => {
     const r = await command('refresh_feed', key);
     if (r && r.ok) toast('OK', 'FEED', 'prices re-requested from TT', key);
@@ -1456,6 +1462,25 @@ function renderLadder(c, engine) {
   }
   const bidK = has(m.bid) ? key(m.bid) : null;
   const askK = has(m.ask) ? key(m.ask) : null;
+  // The book: every level TT sends (FULL depth), summed into the ladder's
+  // rows; without depth, the touch alone. A level is TT's, never inferred.
+  const depth = c.depth || null;
+  const bidSz = {}, askSz = {};
+  const addLevels = (levels, into) => (levels || []).forEach((lv) => {
+    if (!has(lv.price)) return;
+    const k = key(lv.price);
+    into[k] = (into[k] || 0) + (has(lv.size) ? lv.size : 0);
+  });
+  if (depth && (depth.bids || []).length) addLevels(depth.bids, bidSz);
+  else if (bidK !== null && has(m.bid_size)) bidSz[bidK] = m.bid_size;
+  if (depth && (depth.asks || []).length) addLevels(depth.asks, askSz);
+  else if (askK !== null && has(m.ask_size)) askSz[askK] = m.ask_size;
+  const dBtn = el.querySelector('.ld-depth');
+  dBtn.dataset.full = depth && depth.full ? '1' : '';
+  dBtn.textContent = 'Depth: ' + (depth && depth.full ? 'FULL' : 'TOP');
+  dBtn.classList.toggle('on', !!(depth && depth.full));
+  dBtn.disabled = !depth;
+  const fmtSz = (v) => (Math.round(v * 1e6) / 1e6).toString();
   const midK = key(mid);
   const ltK = has(c.last_trade) ? key(c.last_trade) : null;
   let html = '';
@@ -1463,7 +1488,8 @@ function renderLadder(c, engine) {
     const k = (top - i * inc).toFixed(d);
     const w = work[k];
     const isBid = k === bidK, isAsk = k === askK;
-    if (pref.filter && !w && !levels[k] && !isBid && !isAsk && k !== ltK && k !== midK) continue;
+    if (pref.filter && !w && !levels[k] && !isBid && !isAsk && k !== ltK && k !== midK &&
+        !(k in bidSz) && !(k in askSz)) continue;
     let workCell = '<td class="work">';
     if (w && (w.BUY || w.SELL)) {
       const side = w.BUY ? 'buy' : 'sell';
@@ -1473,9 +1499,11 @@ function renderLadder(c, engine) {
     }
     workCell += (levels[k] || []).join('') + '</td>';
     html += '<tr class="' + (k === midK ? 'mid-line' : '') + '">' + workCell +
-      '<td class="bid' + (isBid ? ' has-qty' : '') + '">' + (isBid && has(m.bid_size) ? m.bid_size : '') + '</td>' +
+      '<td class="bid' + (k in bidSz ? ' has-qty' : '') + (isBid ? ' touch' : '') + '">' +
+        (k in bidSz ? fmtSz(bidSz[k]) : '') + '</td>' +
       '<td class="price' + (k === ltK ? ' last-trade' : '') + (isBid ? ' at-bid' : '') + (isAsk ? ' at-ask' : '') + '">' + k + '</td>' +
-      '<td class="ask' + (isAsk ? ' has-qty' : '') + '">' + (isAsk && has(m.ask_size) ? m.ask_size : '') + '</td>' +
+      '<td class="ask' + (k in askSz ? ' has-qty' : '') + (isAsk ? ' touch' : '') + '">' +
+        (k in askSz ? fmtSz(askSz[k]) : '') + '</td>' +
       '<td class="ltq' + (k === ltK ? ' print' : '') + '" title="' + (k === ltK ? 'TT last trade' : '') + '">' +
       (k === ltK ? '●' : '') + '</td></tr>';
   }

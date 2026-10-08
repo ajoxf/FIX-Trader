@@ -1019,3 +1019,10 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 #master-toggle { min-width: calc(86px * var(--fs)); }
 #execution-toggle { min-width: calc(118px * var(--fs)); }
 #sound-toggle { min-width: calc(76px * var(--fs)); }
+
+/* Depth: every level's size in the bands; the touch itself in bold. */
+.ladderwin td.bid.touch, .ladderwin td.ask.touch { font-weight: 800; }
+.ladderwin td.bid.has-qty:not(.touch) { background: #5aa7e2; }
+.ladderwin td.ask.has-qty:not(.touch) { background: #c23d3d; }
+.ladderwin .ld-depth { padding: 1px 6px; font-size: calc(11px * var(--fs)); }
+.ladderwin .ld-depth.on { background: #1f7ac2; color: #fff; border-color: #155a90; }

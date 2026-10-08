@@ -392,9 +392,9 @@
         <table>
           <thead><tr>
             <th class="c-work" title="Work — our working orders at this level (blue a buy, red a sell), and where the Algo's levels sit: TP, SL, BE, the band and the mean">Work</th>
-            <th class="c-bid" title="Bids — the size TT shows bid at this price">Bids</th>
+            <th class="c-bid" title="Bids — the size TT shows bid at this price; with Depth: FULL, at every level of the book">Bids</th>
             <th class="c-price" title="The contract's price, one row per increment">Price</th>
-            <th class="c-ask" title="Asks — the size TT shows offered at this price">Asks</th>
+            <th class="c-ask" title="Asks — the size TT shows offered at this price; with Depth: FULL, at every level of the book">Asks</th>
             <th class="c-ltq" title="LTQ — TT's last trade is marked here (a print, not an order); our own fills show their size">LTQ</th>
           </tr></thead>
           <tbody></tbody>
@@ -404,7 +404,7 @@
     </div>
     <div class="ld-footer">
       <span class="ld-feed" title="The staleness and jump guards — a guard may withhold an order; it never prevents a close">&mdash;</span>
-      <button class="btn ld-refresh" title="Ask TT for this contract's prices again (Market Data Request). Use it when the age here keeps climbing.">&#8635; Feed</button>
+      <button class="btn ld-refresh" title="Ask TT for this contract's prices again (Market Data Request). Use it when the age here keeps climbing.">&#8635; Feed</button><button class="btn ld-depth" title="The order book: TOP shows the best bid and offer only; FULL asks TT for every level (MarketDepth 264=0) and shows each one's size at its price">Depth: TOP</button>
       <table class="ld-book"><thead><tr><th class="l">contract</th><th>Bid</th><th>Ask</th><th>Spread</th><th>Age</th></tr></thead><tbody><tr>
         <td class="l ld-bk-sym">&mdash;</td><td class="b ld-bk-bid">&mdash;</td><td class="a ld-bk-ask">&mdash;</td><td class="ld-bk-spr">&mdash;</td><td class="ld-bk-age">&mdash;</td>
       </tr></tbody></table>

@@ -1413,3 +1413,51 @@ def test_the_taskbar_buttons_hold_still_while_the_figures_change(server):
         assert moved == 0
         browser.close()
     assert errors == []
+
+
+def test_the_ladder_draws_the_full_book(server):
+    """Depth: FULL — every level TT sends, each size at its own price, the
+    touch in bold; the button reads FULL and asks TT for the top only when
+    pressed. Without depth (the control) only the touch carries a size."""
+    url, tmp = server
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['contracts'][0]['depth'] = {
+        'full': True,
+        'bids': [{'price': 0.48, 'size': 25}, {'price': 0.47, 'size': 12},
+                 {'price': 0.45, 'size': 40}],
+        'asks': [{'price': 0.49, 'size': 25}, {'price': 0.50, 'size': 8},
+                 {'price': 0.52, 'size': 30}]}
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin .ld-grid tbody tr')
+        page.wait_for_timeout(600)
+        sizes = page.evaluate("""() => {
+          const out = {};
+          document.querySelectorAll('.ladderwin .ld-grid tbody tr').forEach((tr) => {
+            const px = tr.querySelector('td.price').textContent;
+            const b = tr.querySelector('td.bid').textContent;
+            const a = tr.querySelector('td.ask').textContent;
+            if (b || a) out[px] = [b, a];
+          });
+          return out;
+        }""")
+        assert sizes == {'0.4800': ['25', ''], '0.4700': ['12', ''],
+                         '0.4500': ['40', ''], '0.4900': ['', '25'],
+                         '0.5000': ['', '8'], '0.5200': ['', '30']}
+        btn = page.locator('.ladderwin .ld-depth')
+        assert btn.inner_text() == 'Depth: FULL'
+        btn.click()
+        page.wait_for_timeout(400)
+        sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
+        assert sent['action'] == 'depth' and sent['args'] == {'on': False}
+        # the control: no depth from the engine — the touch alone
+        snap['contracts'][0]['depth'] = None
+        (tmp / 'status.json').write_text(json.dumps(snap))
+        page.wait_for_timeout(900)
+        filled = page.locator('.ladderwin td.bid.has-qty, .ladderwin td.ask.has-qty').count()
+        assert filled == 2
+        assert page.locator('.ladderwin .ld-depth').is_disabled()
+        browser.close()
+    assert errors == []

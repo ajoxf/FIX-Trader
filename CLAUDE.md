@@ -89,6 +89,11 @@ the drawing wins.
   (ManualTerminal refuses regardless). CLOSE ALL and Close @ LMT always close — a manual position by
   `preview_close` (77=C, capped at the ticket's open fills; a price makes it
   a LIMIT).
+- **The ladder shows the order book TT sends**: Depth TOP (264=1, the
+  touch) or FULL (264=0, every level, `FixGateway.depth`, best first) —
+  switched per contract from the ladder (`Engine.set_depth`), each size at
+  its own price, the touch in bold. No book to read (the simulator, Market
+  Data down) is None, never an empty book.
 - **Close @ LMT rests ONE closing limit at the trader's price**, by the
   position's tickets (77=C), PINNED: never re-pegged, never timed out. It
   stands the Algo down (its exits would be a second close). On PAPER it
