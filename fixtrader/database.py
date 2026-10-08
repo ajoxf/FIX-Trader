@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS samples (
     contract_key TEXT NOT NULL, ts TEXT NOT NULL, price REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_samples_key ON samples(contract_key, ts);
+
+CREATE TABLE IF NOT EXISTS algo_warmup (
+    contract_key TEXT PRIMARY KEY, live_sec REAL NOT NULL, at REAL NOT NULL
+);
 """
 
 
@@ -330,6 +334,32 @@ class Database:
         args.append(limit)
         with self._connect() as conn:
             return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+    # -- the Algo's warm-up ------------------------------------------------
+
+    def warmup(self, key: str):
+        """(seconds of live prices watched, when the last one counted, as
+        UTC seconds), or None — so a quick restart carries the warm-up."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT live_sec, at FROM algo_warmup WHERE contract_key = ?",
+                (key,)).fetchone()
+        return None if row is None else (row['live_sec'], row['at'])
+
+    def save_warmup(self, key: str, live_sec: float, at: float) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO algo_warmup (contract_key, live_sec, at)"
+                " VALUES (?,?,?) ON CONFLICT(contract_key) DO UPDATE SET"
+                " live_sec = excluded.live_sec, at = excluded.at",
+                (key, float(live_sec), float(at)))
+            conn.commit()
+
+    def clear_warmup(self, key: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM algo_warmup WHERE contract_key = ?",
+                         (key,))
+            conn.commit()
 
     def save_samples(self, key: str, rows: List[tuple]) -> None:
         if not rows:

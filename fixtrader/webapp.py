@@ -211,11 +211,13 @@ def create_app(config_path: str = "config.json",
         if contract is None:
             return jsonify({'ok': False, 'error': f"no contract {key}"}), 404
         settings = config.effective(key)
+        # Twice the band's own span by default: N candles of the timeframe.
+        span = (float(settings.get('timeframe_min') or 15)
+                * float(settings.get('length') or 20) * 2)
         try:
-            minutes = float(request.args.get('minutes')
-                            or settings.get('window_minutes') or 150)
+            minutes = float(request.args.get('minutes') or span)
         except ValueError:
-            minutes = 150.0
+            minutes = span
         points = max(50, min(2000, int(request.args.get('points', 600))))
         since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
         db = _db(config)
@@ -251,6 +253,67 @@ def create_app(config_path: str = "config.json",
                         'decimals': contract.decimals,
                         'entry_threshold': settings.get('entry_threshold'),
                         'stop_loss_z': settings.get('stop_loss_z')})
+
+    @app.get('/api/backtest/<path:key>')
+    def api_backtest(key):
+        """What THIS contract's Algo, with its settings as they are now, would
+        have done over the last `days` — and, beside it, without re-entry and
+        the trend filter. Replayed from the mids this system recorded (a FIX
+        session has no history to ask for), through the same decision code
+        the live Algo runs. Nothing is sent."""
+        from datetime import datetime, timedelta, timezone
+        from . import algo as algo_mod, backtest, bands, costs as costs_mod
+        config = load_config()
+        contract = config.contracts.get(key)
+        if contract is None:
+            return jsonify({'ok': False, 'error': f"no contract {key}"}), 404
+        try:
+            days = max(1.0, min(30.0, float(request.args.get('days', 5))))
+        except ValueError:
+            days = 5.0
+        settings = config.effective(key)
+        params = algo_mod.params_from_settings(settings)
+        tf = params['timeframe_min'] * 60.0
+        # The band needs its N candles BEFORE the first day replayed.
+        since = (datetime.now(timezone.utc) - timedelta(days=days)
+                 - timedelta(seconds=tf * params['length'] * 2))
+        rows = bands.candles_from_samples(
+            _db(config).samples_between(key, since=since), tf)
+        if len(rows) <= params['length']:
+            return jsonify({'ok': False, 'reason': (
+                f"{len(rows)} candle(s) of {params['timeframe_min']} min "
+                f"recorded over this period — the band needs "
+                f"{params['length']} before it can say anything. The engine "
+                f"records the mid while it runs.")})
+        qty = params['algo_qty']
+        k = (contract.tick_value / contract.tick_size
+             if contract.tick_value and contract.tick_size else None)
+        breakdown = costs_mod.cost_breakdown(qty, contract.tick_size,
+                                             contract.tick_value, settings)
+        fees = sum(breakdown[x] or 0.0
+                   for x in ('commission', 'exchange', 'clearing'))
+        # The bid-ask: today's, from the engine's last snapshot; one tick if
+        # it has none.
+        width = contract.tick_size or 0.0
+        for c in read_status().get('contracts') or []:
+            market = c.get('market') or {}
+            if c.get('key') == key and market.get('bid') is not None \
+                    and market.get('ask') is not None:
+                width = market['ask'] - market['bid']
+        margin = (costs_mod.configured_margin(settings, 1.0)
+                  or _db(config).margin_per_contract(key))
+
+        def replay(p):
+            return backtest.run(rows, p, width, k,
+                                breakdown['round_trip_points'],
+                                fees, margin,
+                                breakdown['slippage_budget'] or 0.0)
+        out = replay(params)
+        plain = replay(dict(params, reentry_on=False, trend_on=False))
+        out['trades'] = out['trades'][-50:]
+        return jsonify({'ok': True, 'key': key, 'days': days,
+                        'width': width, 'margin': margin,
+                        'without_protections': plain['summary'], **out})
 
     @app.get('/api/replay/<path:key>')
     def api_replay(key):

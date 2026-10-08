@@ -694,3 +694,175 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 .chartwin .mark.BUY { fill: var(--bid); }
 .chartwin .mark.SELL { fill: var(--ask); }
 .chartwin .mark.close { stroke: #2c3036; stroke-width: 1; }
+
+/* -- the desk's Algo window and ladder (ported from the MT5 desk) --------- */
+.win.algowin { min-width: 280px; }
+.win.algowin .aw-body { padding: 0; background: #fff; }
+.win.algowin .aw-mode {
+  font: 700 calc(10px * var(--fs)) var(--ui);
+  padding: 0 5px;
+  border-radius: 2px;
+  margin-left: 6px;
+}
+.win.algowin .aw-mode.live { background: #c0392b; color: #fff; }
+.win.algowin .aw-mode.dry { background: #e8a33d; color: #fff; }
+.win.algowin .aw-section {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: calc(11px * var(--fs));
+}
+.win.algowin .aw-head {
+  font: 700 calc(10px * var(--fs)) var(--ui);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--ink-mute);
+  margin-bottom: 3px;
+}
+.win.algowin .aw-head2 { font-weight: 700; margin-bottom: 1px; }
+.win.algowin .aw-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 4px;
+  align-items: stretch;
+}
+.win.algowin .aw-tile {
+  border: 2px solid transparent;
+  border-radius: 3px;
+  padding: 2px 4px;
+  text-align: center;
+  background: #f6f6f6;
+}
+.win.algowin .aw-tile.hit { border-color: currentColor; background: #fff; }
+.win.algowin .aw-tile.off { opacity: .45; }
+.win.algowin .aw-tile-head small { font-weight: 400; }
+.win.algowin .aw-tile.sell { color: var(--bid, #1f6fd1); }
+.win.algowin .aw-tile.buy { color: var(--ask, #c0392b); }
+.win.algowin .aw-tile-head { font: 700 calc(9px * var(--fs)) var(--ui); color: var(--ink); }
+.win.algowin .aw-tile-price { font: 700 calc(16px * var(--fs)) var(--mono); }
+.win.algowin .aw-tile-z { font: 700 calc(20px * var(--fs)) var(--mono); line-height: 1.15; }
+.win.algowin .aw-tile-entry { font-size: calc(9px * var(--fs)); color: var(--ink-mute); }
+.win.algowin .aw-pos {
+  align-self: center;
+  font: 700 calc(12px * var(--fs)) var(--ui);
+  padding: 4px 6px;
+  border-radius: 3px;
+  color: #fff;
+  background: #888;
+  white-space: nowrap;
+}
+.win.algowin .aw-pos.long { background: #2e9e4f; }
+.win.algowin .aw-pos.short { background: #c0392b; }
+.win.algowin .aw-line { margin: 3px 0; font-weight: 700; }
+.win.algowin .aw-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px 10px;
+}
+.win.algowin .aw-kv { display: flex; justify-content: space-between; gap: 6px; }
+.win.algowin .aw-kv.wide { grid-column: 1 / -1; }
+.win.algowin .aw-kv > span { color: var(--ink-mute); white-space: nowrap; }
+.win.algowin .aw-kv > b { font: 700 calc(11px * var(--fs)) var(--mono); text-align: right; }
+.win.algowin .aw-kv > b.up { color: #2e9e4f; }
+.win.algowin .aw-kv > b.down { color: #c0392b; }
+.win.algowin .aw-data {
+  display: flex; align-items: center; gap: 6px; margin-top: 3px;
+  color: var(--ink-mute);
+}
+.win.algowin .aw-bar {
+  flex: 1; height: 6px; background: #e3e3e3; border-radius: 3px; overflow: hidden;
+}
+.win.algowin .aw-bar > div { height: 100%; }
+.win.algowin .aw-bar > .ok { background: #2e9e4f; }
+.win.algowin .aw-bar > .wait { background: #e8a33d; }
+.win.algowin .aw-badges {
+  display: flex; gap: 8px; margin-bottom: 4px; text-align: center;
+}
+.win.algowin .aw-badges small { display: block; font-size: calc(9px * var(--fs)); color: var(--ink-mute); }
+.win.algowin .aw-badge {
+  display: inline-block; min-width: 26px; padding: 0 4px;
+  border-radius: 2px; font: 700 calc(10px * var(--fs)) var(--ui); color: #fff;
+}
+.win.algowin .aw-badge.ok { background: #2e9e4f; }
+.win.algowin .aw-badge.bad { background: #c0392b; }
+.win.algowin .aw-badge.wait { background: #e8a33d; }
+.win.algowin .aw-badge.off { background: #999; }
+.win.algowin .aw-blocked {
+  margin-top: 4px; padding: 3px 4px; background: #f3f3f3; border-radius: 3px;
+}
+.win.algowin .aw-armed { color: #c0392b; }
+.win.algowin .aw-bt-controls { display: flex; gap: 4px; margin: 2px 0; }
+.win.algowin .aw-bt-out { font-size: calc(11px * var(--fs)); }
+.win.algowin .aw-bt-out .up { color: #2e9e4f; }
+.win.algowin .aw-bt-out .down, .win.algowin .aw-bt-out.down { color: #c0392b; }
+.win.algowin .aw-bt-trades { width: 100%; border-collapse: collapse; margin: 3px 0; }
+.win.algowin .aw-bt-trades th, .win.algowin .aw-bt-trades td {
+  text-align: left; padding: 1px 3px; border-bottom: 1px solid #eee;
+}
+.win.algowin .aw-last-order .up { color: #2e9e4f; font-weight: 600; }
+.win.algowin .aw-last-order .down { color: #c0392b; font-weight: 600; }
+
+/* SL <- entry -> TP: the stop on the left, the target on the right, the
+ * entry marked and the closing price a tick on it. */
+.win.algowin .algo-progress { margin: 3px 0 1px; }
+.win.algowin .ap-pct { font-size: calc(9px * var(--fs)); text-align: center; }
+.win.algowin .ap-track {
+  position: relative; height: 8px; background: #e3e3e3;
+  border-radius: 2px; overflow: hidden;
+}
+.win.algowin .ap-fill { position: absolute; top: 0; bottom: 0; }
+.win.algowin .ap-fill.up { background: #2e9e4f; }
+.win.algowin .ap-fill.down { background: #c0392b; }
+.win.algowin .ap-entry, .win.algowin .ap-mark {
+  position: absolute; top: -1px; bottom: -1px; width: 2px;
+}
+.win.algowin .ap-entry { background: #555; }
+.win.algowin .ap-mark { background: #000; }
+.win.algowin .ap-ends {
+  display: flex; justify-content: space-between; font-size: calc(9px * var(--fs));
+  color: var(--ink-mute);
+}
+
+
+.win.algowin .aw-mode.paper { background: #3f7cb0; color: #fff; }
+.win.algowin .aw-tile-entry b, .win.algowin .aw-armed { font-weight: 700; }
+.win.algowin .aw-closebar { padding: 4px 6px; border-bottom: 1px solid var(--line-soft); }
+.win.algowin .aw-bt-controls select, .win.algowin .aw-bt-controls .btn { font-size: calc(11px * var(--fs)); }
+
+/* Minimised: off the desk, its taskbar button still there and greyed. */
+.win.minimised { display: none !important; }
+#tabs .tk.minimised { opacity: .6; font-style: italic; }
+
+/* The ladder: the touch, and the Algo's own levels against it. */
+.win.ladderwin { min-width: 200px; display: flex; flex-direction: column; }
+.ladderwin .ld-route { font: 400 calc(9.5px * var(--fs))/1 var(--mono); color: var(--ink-faint); }
+.ladderwin .ld-mode { font: 700 calc(9.5px * var(--fs))/1 var(--ui); padding: 2px 5px; border-radius: 2px; color: #fff; background: #888; white-space: nowrap; }
+.ladderwin .ld-mode.live { background: #c0392b; }
+.ladderwin .ld-mode.paper { background: #3f7cb0; }
+.ladderwin .ld-mode.dry { background: #e8a33d; }
+.ladderwin .ld-mode.manual { background: var(--good); }
+.ladderwin .ld-head { display: flex; align-items: baseline; gap: 8px; padding: 3px 6px; background: var(--panel); border-bottom: 1px solid var(--line-soft); }
+.ladderwin .ld-net { font: 700 calc(17px * var(--fs))/1.2 var(--mono); color: var(--ink-mute); }
+.ladderwin .ld-net.up { color: var(--good); }
+.ladderwin .ld-net.dn { color: var(--ask); }
+.ladderwin .ld-hl { font: 400 calc(10px * var(--fs))/1 var(--mono); color: var(--ink-mute); }
+.ladderwin .ld-banner { padding: 3px 6px; font: 600 calc(10.5px * var(--fs))/1.3 var(--ui); text-align: center; }
+.ladderwin .ld-banner.algo { background: #c0392b; color: #fff; }
+.ladderwin .ld-banner.manual { background: var(--good-soft); color: #245c33; }
+.ladderwin .ld-scroll { flex: 1; overflow: auto; background: #fff; max-height: calc(430px * var(--fs)); }
+.ladderwin .ld-table { width: 100%; border-collapse: collapse; font: 500 calc(11px * var(--fs))/1.35 var(--mono); font-variant-numeric: tabular-nums; }
+.ladderwin .ld-table th { position: sticky; top: 0; z-index: 1; background: var(--frame-2); font: 600 calc(9.5px * var(--fs))/1.6 var(--ui); color: var(--ink-mute); }
+.ladderwin .ld-table td { border-bottom: 1px solid #eee; padding: 0 4px; white-space: nowrap; }
+.ladderwin .ld-bid { background: #c8d3df; text-align: right; width: 22%; color: var(--bid); font-weight: 700; }
+.ladderwin .ld-ask { background: #ddc8c8; text-align: left; width: 22%; color: var(--ask); font-weight: 700; }
+.ladderwin .ld-px { text-align: center; }
+.ladderwin tr.ld-bidrow .ld-px { background: var(--bid-soft); color: var(--bid); font-weight: 700; }
+.ladderwin tr.ld-askrow .ld-px { background: var(--ask-soft); color: var(--ask); font-weight: 700; }
+.ladderwin .ld-marks span { font: 700 calc(9px * var(--fs))/1 var(--ui); padding: 0 3px; border-radius: 2px; color: #fff; }
+.ladderwin .lm-mean { background: #6b7280; }
+.ladderwin .lm-band { background: #a8730a; }
+.ladderwin .lm-entry { background: #3f7cb0; }
+.ladderwin .lm-be { background: #555; }
+.ladderwin .lm-tp { background: var(--good); }
+.ladderwin .lm-sl { background: var(--ask); }
+.ladderwin .ld-actions { display: flex; gap: 4px; padding: 4px 6px; background: var(--panel); border-top: 1px solid var(--line-soft); }
+.ladderwin .ld-actions .btn { flex: 1; }

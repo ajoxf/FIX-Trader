@@ -82,37 +82,104 @@
   <section class="card wide">
     <h5>Defaults for a new contract <span class="note">a blank box on a contract falls back here</span></h5>
     <div class="cb cb-grid">
-      <label class="f"><span>Window <small>minutes of mids</small></span>
-        <input type="number" step="10" min="1" data-key="DEFAULT_WINDOW_MINUTES"></label>
-      <label class="f"><span>Warm-up <small>minutes of continuous history</small></span>
-        <input type="number" step="10" min="0" data-key="DEFAULT_MIN_HISTORY_MINUTES"></label>
-      <label class="f"><span>Sample every <small>seconds</small></span>
-        <input type="number" step="0.5" min="0.1" data-key="DEFAULT_SAMPLE_INTERVAL_SEC"></label>
-      <label class="f"><span>Recompute mean &amp; sigma <small>seconds; 0 = every sample</small></span>
-        <input type="number" step="30" min="0" data-key="DEFAULT_STATS_UPDATE_INTERVAL_SEC"></label>
-      <label class="f"><span>Entry threshold <small>|z| of the bid / offer</small></span>
+      <label class="f"><span>Candles of <small>minutes; built from the recorded mids</small></span>
+        <select data-key="DEFAULT_TIMEFRAME_MIN">
+          <option value="1">1 min</option>
+          <option value="5">5 min</option>
+          <option value="15">15 min</option>
+          <option value="30">30 min</option>
+          <option value="60">1 hour</option>
+          <option value="240">4 hours</option>
+        </select></label>
+      <label class="f"><span>Band length N <small>EMA(N) middle, σ of the last N</small></span>
+        <input type="number" step="1" min="2" data-key="DEFAULT_LENGTH"></label>
+      <label class="f"><span>Entry z <small>|z| of the bid / offer</small></span>
         <input type="number" step="0.1" data-key="DEFAULT_ENTRY_THRESHOLD"></label>
-      <label class="f"><span>No entry beyond <small>|z|</small></span>
+      <label class="f"><span>No entry beyond <small>|z|; 0 = no cap</small></span>
         <input type="number" step="0.1" data-key="DEFAULT_MAX_ENTRY_Z"></label>
-      <label class="f"><span>Confirm for <small>consecutive samples</small></span>
+      <label class="f"><span>Confirm for <small>fresh quotes in a row</small></span>
         <input type="number" step="1" min="1" data-key="DEFAULT_CONFIRM_SAMPLES"></label>
       <label class="f"><span>Enter <small>entries only, never exits</small></span>
         <select data-key="DEFAULT_TRADE_DIRECTION">
           <option value="BOTH">Both ways</option>
-          <option value="SELL_ONLY">Sell only</option>
-          <option value="BUY_ONLY">Buy only</option>
+          <option value="SELL_ONLY">H to L only (sell)</option>
+          <option value="BUY_ONLY">L to H only (buy)</option>
         </select></label>
+      <label class="f"><span>Re-entry <small>armed at the band, entered on the way back</small></span>
+        <input type="checkbox" class="chk" data-key="DEFAULT_REENTRY_ON"></label>
+      <label class="f"><span>Enter back by <small>z inside the band</small></span>
+        <input type="number" step="0.1" min="0.05" data-key="DEFAULT_REENTRY_BACK"></label>
+      <label class="f"><span>Re-entry window <small>% of the way to the mean</small></span>
+        <input type="number" step="5" min="5" data-key="DEFAULT_REENTRY_WINDOW_PCT"></label>
+      <label class="f"><span>Warm-up <small>minutes of live prices since armed; 0 = off</small></span>
+        <input type="number" step="10" min="0" data-key="DEFAULT_WARMUP_MIN"></label>
+      <label class="f"><span>No entry before the close <small>minutes; 0 = off</small></span>
+        <input type="number" step="5" min="0" data-key="DEFAULT_CUTOFF_BUFFER_MIN"></label>
+      <label class="f"><span>Edge filter</span>
+        <input type="checkbox" class="chk" data-key="DEFAULT_EDGE_ON"></label>
+      <label class="f"><span>Edge required <small>× the round trip</small></span>
+        <input type="number" step="0.1" min="0" data-key="DEFAULT_EDGE_MULTIPLE"></label>
+      <label class="f"><span>Capture expected <small>of the move back, 0–1</small></span>
+        <input type="number" step="0.05" min="0" data-key="DEFAULT_EDGE_CAPTURE_FRAC"></label>
+      <label class="f"><span>Regime filter <small>no entry while TRENDING</small></span>
+        <input type="checkbox" class="chk" data-key="DEFAULT_REGIME_ON"></label>
+      <label class="f"><span>Trending above efficiency <small>0–1</small></span>
+        <input type="number" step="0.05" min="0" data-key="DEFAULT_REGIME_ER_MAX"></label>
+      <label class="f"><span>… and crossings at most <small>over 2N candles</small></span>
+        <input type="number" step="1" min="0" data-key="DEFAULT_REGIME_MIN_CROSSINGS"></label>
+      <label class="f"><span>Trend filter <small>no entry against the drift</small></span>
+        <input type="checkbox" class="chk" data-key="DEFAULT_TREND_ON"></label>
+      <label class="f"><span>Trend limit <small>σ of EMA drift</small></span>
+        <input type="number" step="0.1" min="0" data-key="DEFAULT_TREND_SIGMA"></label>
+      <label class="f"><span>Trend lookback <small>minutes</small></span>
+        <input type="number" step="15" min="1" data-key="DEFAULT_TREND_LOOKBACK_MIN"></label>
+      <label class="f"><span>Half-life at least <small>minutes; 0 = off</small></span>
+        <input type="number" step="5" min="0" data-key="DEFAULT_HALF_LIFE_MIN_MIN"></label>
+      <label class="f"><span>Half-life at most <small>minutes; 0 = off</small></span>
+        <input type="number" step="30" min="0" data-key="DEFAULT_HALF_LIFE_MAX_MIN"></label>
       <label class="f"><span>Margin per contract <small>TT does not report it; no margin, no entries</small></span>
         <input type="number" step="50" min="0" data-key="DEFAULT_MARGIN_PER_CONTRACT"></label>
-      <label class="f"><span>Stop-loss <small>|z| on the closing side</small></span>
+      <label class="f"><span>Target sized by <small></small></span>
+        <select data-key="DEFAULT_TARGET_MODE">
+          <option value="MARGIN">% of margin</option>
+          <option value="ATR">ATR multiple</option>
+        </select></label>
+      <label class="f"><span>Stop loss <small>from break-even</small></span>
+        <input type="checkbox" class="chk" data-key="DEFAULT_STOP_LOSS_ON"></label>
+      <label class="f"><span>Stop sized by <small></small></span>
+        <select data-key="DEFAULT_STOP_MODE">
+          <option value="MARGIN">% of margin</option>
+          <option value="ATR">ATR multiple</option>
+        </select></label>
+      <label class="f"><span>Stop loss at <small>% of the margin</small></span>
+        <input type="number" step="0.5" min="0" data-key="DEFAULT_STOP_LOSS_PCT"></label>
+      <label class="f"><span>ATR period <small>candles</small></span>
+        <input type="number" step="1" min="2" data-key="DEFAULT_ATR_PERIOD"></label>
+      <label class="f"><span>ATR target <small>× ATR</small></span>
+        <input type="number" step="0.1" min="0" data-key="DEFAULT_ATR_TARGET_MULT"></label>
+      <label class="f"><span>ATR stop <small>× ATR</small></span>
+        <input type="number" step="0.1" min="0" data-key="DEFAULT_ATR_STOP_MULT"></label>
+      <label class="f"><span>Z stop <small>on the closing side</small></span>
+        <input type="checkbox" class="chk" data-key="DEFAULT_STOP_Z_ON"></label>
+      <label class="f"><span>Z stop at <small>|z|</small></span>
         <input type="number" step="0.1" data-key="DEFAULT_STOP_LOSS_Z"></label>
-      <label class="f"><span>Money stop <small>per contract; 0 = off</small></span>
-        <input type="number" step="10" min="0" data-key="DEFAULT_STOP_LOSS_MONEY"></label>
-      <label class="f"><span>Time stop <small>minutes; 0 = none</small></span>
-        <input type="number" step="15" min="0" data-key="DEFAULT_MAX_HOLD_MINUTES"></label>
       <label class="f"><span>Exit at the mean when paid</span>
         <input type="checkbox" class="chk" data-key="DEFAULT_EXIT_AT_MEAN"></label>
-      <label class="f"><span>Quantity per entry <small>contracts</small></span>
+      <label class="f"><span>Time stop <small>minutes; 0 = none</small></span>
+        <input type="number" step="15" min="0" data-key="DEFAULT_MAX_HOLD_MINUTES"></label>
+      <label class="f"><span>Losing trades in a row <small>pauses entries for the day; 0 = off</small></span>
+        <input type="number" step="1" min="0" data-key="DEFAULT_MAX_LOSSES_ROW"></label>
+      <label class="f"><span>SL ← entry → TP bar</span>
+        <input type="checkbox" class="chk" data-key="DEFAULT_PROGRESS_BAR"></label>
+      <label class="f"><span>Touch study window <small>minutes of mids (Analysis)</small></span>
+        <input type="number" step="10" min="1" data-key="DEFAULT_WINDOW_MINUTES"></label>
+      <label class="f"><span>Touch study warm-up <small>minutes of continuous history</small></span>
+        <input type="number" step="10" min="0" data-key="DEFAULT_MIN_HISTORY_MINUTES"></label>
+      <label class="f"><span>Record the mid every <small>seconds</small></span>
+        <input type="number" step="0.5" min="0.1" data-key="DEFAULT_SAMPLE_INTERVAL_SEC"></label>
+      <label class="f"><span>Touch study recompute <small>seconds; 0 = every sample</small></span>
+        <input type="number" step="30" min="0" data-key="DEFAULT_STATS_UPDATE_INTERVAL_SEC"></label>
+      <label class="f"><span>Algo quantity <small>contracts per entry</small></span>
         <input type="number" step="1" min="0" data-key="DEFAULT_QUANTITY"></label>
       <label class="f"><span>Maximum position <small>0 = none</small></span>
         <input type="number" step="1" min="0" data-key="DEFAULT_MAX_POSITION"></label>

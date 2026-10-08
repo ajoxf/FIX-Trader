@@ -6,6 +6,7 @@ from fixtrader.database import Database
 from fixtrader.engine import Engine
 from fixtrader.fake_gateway import FakeGateway, SimContract
 from fixtrader.models import ContractState, ExitReason, OrderType, Side
+from tests.conftest import ALGO_TEST_SETTINGS, book_at_z, fill_candles
 
 
 def build(tmp_path, **overrides):
@@ -18,7 +19,7 @@ def build(tmp_path, **overrides):
         # its 30th sample. Entry at 2.0 so a book whose MID is placed at 2.5
         # has its bid comfortably through; one confirming sample, and a
         # margin so the target has a base.
-        **dict({'window_minutes': 1e6, 'min_history_minutes': 29 / 60.0,
+        **{**ALGO_TEST_SETTINGS, **{'window_minutes': 1e6, 'min_history_minutes': 29 / 60.0,
                 'sample_interval_sec': 1.0, 'stats_update_interval_sec': 1e9,
                 'entry_threshold': 2.0, 'max_entry_z': 3.5,
                 'confirm_samples': 1, 'margin_per_contract': 260.0,
@@ -30,8 +31,10 @@ def build(tmp_path, **overrides):
                 'exchange_fee_per_contract': 0.0,
                 'clearing_fee_per_contract': 0.0,
                 'slippage_budget_ticks': 0.0,
-                'profit_target_pct': 2.0}, **overrides))
+                'profit_target_pct': 2.0}, **overrides})
     cfg = TraderConfig(path=str(tmp_path / 'config.json'))
+    # One-minute candles: a quote held for a candle is not a stale one.
+    cfg.settings['MAX_QUOTE_AGE_SEC'] = 90.0
     cfg.contracts['fef'] = contract
     gw = FakeGateway([SimContract('fef', mid=0.50, tick_size=0.01,
                                   tick_value=1.0, size=50.0)])
@@ -42,22 +45,12 @@ def build(tmp_path, **overrides):
 
 
 def warm_the_window(engine, gw, n=40):
-    """Alternate the book so the window fills with a known sigma."""
-    for i in range(n):
-        px = 0.50 + (0.10 if i % 2 else -0.10)
-        gw.set_book('fef', round(px - 0.005, 4), round(px + 0.005, 4), 50, 50)
-        gw.now = gw.now.replace(microsecond=0)
-        gw.advance(seconds=1, steps=0) if False else None
-        engine.poll(now=gw.now)
-        gw.now = gw.now + __import__('datetime').timedelta(seconds=1)
-    return engine.runtimes['fef']
+    """Fill the band with a known sigma, one one-minute candle at a time."""
+    return fill_candles(engine, gw, n=n)
 
 
 def put_book_at_z(engine, gw, z):
-    rt = engine.runtimes['fef']
-    px = rt.window.price_at_z(z)
-    gw.set_book('fef', round(px - 0.005, 4), round(px + 0.005, 4), 50, 50)
-    return px
+    return book_at_z(engine, gw, z)
 
 
 def test_auto_trade_off_still_produces_signal_proposal(tmp_path):
@@ -89,7 +82,7 @@ def test_it_warms_before_it_trades(tmp_path):
     rt = engine.runtimes['fef']
     assert engine.state_of(rt, gw.now) is ContractState.WARMING
     warm_the_window(engine, gw)
-    assert rt.window.is_warm
+    assert rt.algo.body['ready']
     assert engine.state_of(rt, gw.now) is not ContractState.WARMING
 
 
@@ -129,20 +122,20 @@ def test_the_short_target_is_below_the_entry_and_it_closes_there(tmp_path):
 
 
 def test_the_stop_closes_even_with_every_filter_blocking_entries(tmp_path):
-    engine, gw, db, cfg = build(tmp_path, hurst_enabled=True,
-                                hurst_threshold=0.01, stop_loss_z=3.0)
+    engine, gw, db, cfg = build(tmp_path, stop_z_on=True, stop_loss_z=3.0)
     rt = warm_the_window(engine, gw)
-    # open by hand-ish: turn the filter off for the entry, then back on
-    cfg.contracts['fef'].overrides['hurst_enabled'] = False
     put_book_at_z(engine, gw, 2.5)
     engine.poll(now=gw.now); engine.poll(now=gw.now)
     assert rt.position is not None
-    cfg.contracts['fef'].overrides['hurst_enabled'] = True
+    # Every entry filter now refusing: the edge needs a thousand times the
+    # cost, and the direction says buy only. The exit must not care.
+    cfg.contracts['fef'].overrides.update(edge_on=True, edge_multiple=1000.0,
+                                          trade_direction='BUY_ONLY')
 
     put_book_at_z(engine, gw, 3.6)                   # through the stop
     engine.poll(now=gw.now); engine.poll(now=gw.now)
     assert rt.position is None
-    assert db.closed_positions('fef')[0].exit_reason is ExitReason.STOP_LOSS
+    assert db.closed_positions('fef')[0].exit_reason is ExitReason.ZSCORE
 
 
 def test_a_stale_quote_halts_entries_but_not_the_close(tmp_path):
@@ -268,17 +261,17 @@ def test_the_entry_z_recorded_is_the_one_the_decision_fired_at(tmp_path):
     engine.poll(now=gw.now)                       # the order goes here
     # The z the rule fired on is the BID's — a short is sold into the bid —
     # not the mid's.
-    decided_z = rt.window.z_of(rt.book.bid)
-    assert decided_z == pytest.approx(2.45, abs=0.05)
-    assert decided_z < rt.window.z
+    decided_z = rt.algo.body['z_sell']
+    decided_std = rt.algo.body['sigma']
+    assert 2.0 <= decided_z < rt.algo.body['z_mid']
 
     put_book_at_z(engine, gw, 0.4)                # the market moves away...
     engine.poll(now=gw.now)                       # ...before the fill lands
-    assert rt.window.z == pytest.approx(0.4, abs=0.1)
+    assert rt.algo.body['z_mid'] == pytest.approx(0.4, abs=0.05)
 
     assert rt.position is not None
     assert rt.position.entry_z == pytest.approx(decided_z)
-    assert rt.position.entry_std == pytest.approx(rt.window.std)
+    assert rt.position.entry_std == pytest.approx(decided_std)
 
 
 def test_every_close_carries_an_explicit_close_flag_and_its_tickets(tmp_path):
@@ -459,21 +452,21 @@ def test_a_reload_never_touches_the_book_or_an_open_position(tmp_path):
     assert len(engine.runtimes['fef'].window.prices) == samples
 
 
-def test_a_longer_warm_up_keeps_its_samples_and_says_it_resized(tmp_path):
+def test_a_new_band_length_is_rebuilt_from_the_recording(tmp_path):
+    """A new length is a different series: rebuilt from the recorded mids,
+    not thrown away and collected again for hours."""
     engine, gw, db, cfg = build(tmp_path)
     warm_the_window(engine, gw)
-    kept = len(engine.runtimes['fef'].window.prices)
-    assert engine.runtimes['fef'].window.is_warm
+    rt = engine.runtimes['fef']
+    assert rt.algo.body['ready']
 
     new = edited(cfg)
-    new.contracts['fef'].overrides['min_history_minutes'] = 2.0
-    report = engine.apply_config(new)
-
-    window = engine.runtimes['fef'].window
-    assert 'fef window resized' in report['changed']
-    assert window.min_history_minutes == 2.0
-    assert len(window.prices) == kept           # not thrown away
-    assert window.is_warm is False              # and honest about being short
+    new.contracts['fef'].overrides['length'] = 30
+    engine.apply_config(new)
+    assert rt.algo.candles.length == 30
+    assert rt.algo.candles.stats()['count'] >= 30     # from the recording
+    engine.poll(now=gw.now)
+    assert rt.algo.body['ready']
 
 
 def test_a_structural_change_is_reported_and_not_half_applied(tmp_path):

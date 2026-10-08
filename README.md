@@ -72,27 +72,34 @@ the trades ended, and what the costs really were against what was budgeted for
 them. That is the loop that tells you whether a contract's entry threshold is
 right, or whether it should be switched off.
 
-## The signal
+## The Algo
 
-A Bollinger-style reversion on the spread's own mid:
+The MT5 desk's Algo, on one contract — the venue lists the spread itself,
+so there are no legs:
 
-- **Window**: 150 minutes of one-second mid samples, rolling in time; trading
-  starts after 120 minutes of continuous history; bands recomputed every 5
-  minutes. A restart within `RESUME_MAX_GAP_MINUTES` resumes the recorded
-  window instead of collecting for two hours again.
-- **Entry**: SHORT when the **bid's** z ≥ +2.5, LONG when the **offer's**
-  z ≤ −2.5, held for 3 consecutive samples; refused beyond |z| 3.5, within
-  5 minutes of the last entry, against the contract's direction setting
-  (Both / Sell only / Buy only), or when the target cannot be reached before
-  the mean.
-- **Target**: net P&L after every cost ≥ `profit_target_pct` (2%) of the
-  **margin you enter per contract**. With no margin entered there is no
-  target and no entry, and the window says so.
-- **Exits**: z stop 4.0 on the closing side, money stop (off by default), time
-  stop 4 h, and back at the mean when net positive.
+- **Band**: candles of 15 minutes, built from the mids this system records
+  (FIX has no history to backfill from), the forming one included; middle =
+  EMA(20), sigma = population sigma of the last 20. A restart rebuilds the
+  band from the recording.
+- **Entry**: H to L (sell the bid) when the BID's z reaches +2.5, L to H (buy
+  the offer) when the OFFER's z reaches −2.5 — ARMED at the band and entered
+  on the way back in (re-entry, 2.0 → 1.0 by default), confirmed over 3 fresh
+  quotes. Held back, with the reason on screen, by: collecting candles, a
+  90-minute live warm-up, the 5-minute cooldown, |z| past 3.5, the session
+  cutoff, the day's limits (10 trades, 3 losses in a row, a money limit), and
+  the filters — edge (capture ≥ 1.5× the round trip), regime (no entry while
+  TRENDING) and trend (no entry against a drifting EMA).
+- **Exit**, on the closing side, from break-even: the target (2% of the
+  margin you enter per contract, or an ATR multiple) and the stop loss (2%,
+  or an ATR multiple). Optional: z stop, back at the mean in profit, time
+  stop.
+- **Modes**: DRY RUN (Auto trade off: signals only), PAPER (no algo order
+  path, as on TT today: filled at the live bid/offer, nothing sent), LIVE.
 
-The chart button on each window draws the recorded mid with the mean, the
-entry bands and the stop bands, and marks every entry and exit.
+Each contract on the Algo desk has a **ladder** (the book and the Algo's
+levels on it) and an **Algo window** — Signal & Position, Statistics,
+Filters, the last signal held back, the last order, and a **Backtest** of
+its settings over the recording. Both minimise to the taskbar.
 
 ## Why it is simpler than a two-leg spread system
 
@@ -170,8 +177,13 @@ is installed.
 | `fixtrader/config.py` | Venues, contracts, settings; atomic saves; `.env` keys; blank-versus-zero |
 | `fixtrader/sizing.py` | `money = points × tick_value / tick_size × qty` — the one conversion |
 | `fixtrader/costs.py` | The round trip, break-even, and the target as a percentage of margin |
-| `fixtrader/stats.py` | Rolling time window (150 min, 1 s samples): mean, sigma, z; half-life; the SD touches |
-| `fixtrader/signals.py` | The algo: 2.5σ entry on the bid/offer z, net-of-costs exits |
+| `fixtrader/stats.py` | The touch study's rolling time window (Analysis): mean, sigma, z; the SD touches |
+| `fixtrader/signals.py` | Readings off the touch-study window (the Algo's rule is `algo.py`) |
+| `fixtrader/algo.py` | The Algo: re-entry signal, gates, exits, levels, filters |
+| `fixtrader/bands.py` | Candles from the recorded mids; EMA middle and population sigma |
+| `fixtrader/algofilters.py` | Round trip, edge, regime, half-life, ATR |
+| `fixtrader/algodesk.py` | One contract's Algo run: candles, warm-up, the day, last blocked / last order |
+| `fixtrader/backtest.py` | The Algo over recorded candles — the window's Backtest and the Analysis replay |
 | `fixtrader/gateway.py` | The venue seam — **the only module that may import FIX** |
 | `fixtrader/fake_gateway.py` | A real book, a real fill model, a real reject |
 | `fixtrader/marketdata.py` | The staleness and jump guards, and the session clock |

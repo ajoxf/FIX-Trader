@@ -19,6 +19,8 @@ const state = {
   timer: null,
   sound: true,
   closed: new Set(JSON.parse(localStorage.getItem('ft.closed') || '[]')),
+  //: Windows minimised to the taskbar. Kept in this browser.
+  minimised: new Set(JSON.parse(localStorage.getItem('ft.min') || '[]')),
   places: JSON.parse(localStorage.getItem('ft.places') || '{}'),
   lastEvent: {},
   focused: null,
@@ -199,36 +201,59 @@ async function restartEngine() {
 
 /* -- one window ----------------------------------------------------------- */
 
-function windowFor(key) {
-  let el = document.querySelector('.win[data-key="' + key + '"]');
-  if (el) return el;
-  const tpl = document.getElementById('contract-template');
-  el = tpl.content.firstElementChild.cloneNode(true);
-  el.dataset.key = key;
-
+/* What every desk window does with its own chrome: close, minimise,
+ * click-to-raise, drag and resize. */
+function wireWindow(el, key) {
   el.querySelector('.close').onclick = () => {
     state.closed.add(key);
     localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));
     el.remove();
     renderTabs();
   };
+  const min = el.querySelector('.min');
+  if (min) min.onclick = () => setMinimised(el, true);
+  if (state.minimised.has(key)) el.classList.add('minimised');
+  el.onmousedown = () => { state.focused = key; raise(el); };
+  makeDraggable(el, key);
+}
+
+/* Minimised: off the desk, its button still on the taskbar. */
+function setMinimised(el, on) {
+  const key = el.dataset.key;
+  el.classList.toggle('minimised', on);
+  if (on) state.minimised.add(key); else state.minimised.delete(key);
+  try { localStorage.setItem('ft.min', JSON.stringify([...state.minimised])); }
+  catch (e) { /* a private window forgets; the desk still works */ }
+  if (!on) { state.focused = key; raise(el); }
+  renderTabs();
+}
+
+function closeNowAsk(key, name) {
+  return ask('Close ' + name + '?',
+    'The position is closed at market, now — this crosses the spread. ' +
+    'The algo on this contract is stood down with it, so it does not ' +
+    're-enter on the next pass; switch it back on when you want it.',
+    'CLOSE NOW').then(async (ok) => {
+    if (ok) { await command('close_now', key); toast('ORDER', 'CLOSING', key); }
+  });
+}
+
+function windowFor(key) {
+  let el = document.querySelector('.win[data-key="' + key + '"]');
+  if (el) return el;
+  const tpl = document.getElementById('contract-template');
+  el = tpl.content.firstElementChild.cloneNode(true);
+  el.dataset.key = key;
+  wireWindow(el, key);
   el.querySelector('.sw').onclick = async () => {
     const on = el.querySelector('.sw').classList.contains('on');
     await command(on ? 'algo_off' : 'algo_on', key);
   };
-  el.querySelector('.close-now').onclick = async () => {
-    const name = el.querySelector('.title').textContent;
-    const ok = await ask('Close ' + name + '?',
-      'The position is closed at market, now — this crosses the spread. ' +
-      'The algo on this contract is stood down with it, so it does not ' +
-      're-enter on the next pass; switch it back on when you want it.',
-      'CLOSE NOW');
-    if (ok) { await command('close_now', key); toast('ORDER', 'CLOSING', key); }
-  };
+  el.querySelector('.close-now').onclick = () => closeNowAsk(key,
+    el.querySelector('.title').textContent);
   el.querySelector('.cog').onclick = () => configWindow(key);
   el.querySelector('.chart').onclick = () => chartWindow(key);
-  el.onmousedown = () => { state.focused = key; raise(el); };
-  makeDraggable(el, key);
+  el.querySelector('.aw-bt-run').onclick = () => runBacktest(el, key);
   document.getElementById('desktop').appendChild(el);
 
   const place = state.places[key];
@@ -331,143 +356,28 @@ function minutes(v) {
 function renderContract(c) {
   if (state.closed.has(c.key)) return;
   const el = windowFor(c.key);
-  const d = c.decimals === undefined ? 4 : c.decimals;
   const q = (sel) => el.querySelector(sel);
 
-  q('.title').textContent = c.name;
-  q('.venue').textContent = c.symbol || '';
+  q('.title').textContent = c.name + ' · Algo';
   q('.state').textContent = c.state;
   q('.state').className = 'state s-' + c.state;
-  q('.state').title = c.halted_by ? 'Halted: ' + c.halted_by : '';
+  q('.state').title = c.halted_by ? 'Halted: ' + c.halted_by
+    : c.market_note ? 'Market: ' + c.market_note : '';
   el.classList.toggle('stale', !!(c.feed && c.feed.stale));
 
   const sw = q('.sw');
   sw.classList.toggle('on', !!c.algo_on);
   sw.querySelector('span').textContent = c.algo_on ? 'ON' : 'OFF';
 
-  const m = c.market || {};
-  q('.bidc .v').textContent = num(m.bid, d);
-  q('.askc .v').textContent = num(m.ask, d);
-  q('.bidc .sz').textContent = m.bid_size === null || m.bid_size === undefined
-    ? DASH : String(m.bid_size);
-  q('.askc .sz').textContent = m.ask_size === null || m.ask_size === undefined
-    ? DASH : String(m.ask_size);
-  q('.mid').textContent = num(m.mid, d);
-
-  const s = c.stats || {};
-  q('.f-mean').textContent = num(s.mean, d);
-  q('.f-std').textContent = num(s.std, d);
-  q('.f-z').textContent = signed(s.z, 2);
-  q('.f-n').textContent = minutes(s.history_min) + '/' + minutes(s.need_min) + 'm';
-  q('.f-zbid').textContent = signed(s.z_bid, 2);
-  q('.f-zask').textContent = signed(s.z_ask, 2);
-  q('.f-buyat').textContent = num(s.buy_at, d);
-  q('.f-sellat').textContent = num(s.sell_at, d);
-  q('.f-hurst').textContent = num(s.hurst, 2);
-  // An em dash always carries its reason.
-  q('.f-hurst').title = (s.hurst !== null && s.hurst !== undefined)
-    ? 'Hurst on the increments — a reading, not a filter; below 0.5 leans mean-reverting'
-    : 'not enough of a window to estimate it yet';
-  q('.f-hl').textContent = s.half_life_sec === null || s.half_life_sec === undefined
-    ? DASH : minutes(s.half_life_sec / 60) + 'm';
-
   // The one-way badge: a contract that is armed and passes over half its
   // signals otherwise looks broken.
   const dir = (c.filters || {}).trade_direction || 'BOTH';
   const badge = q('.dirbadge');
   badge.classList.toggle('hidden', dir === 'BOTH');
-  badge.textContent = dir === 'SELL_ONLY' ? 'SELL ONLY' : dir === 'BUY_ONLY' ? 'BUY ONLY' : '';
+  badge.textContent = dir === 'SELL_ONLY' ? 'H to L ONLY'
+    : dir === 'BUY_ONLY' ? 'L to H ONLY' : '';
 
-  // the z strip, drawn between the two entry thresholds
-  const threshold = (c.settings && c.settings.entry_threshold) || 2;
-  const span = threshold * 1.25;
-  const strip = q('.zstrip');
-  strip.querySelector('.lbl-lo').textContent = '-' + span.toFixed(1);
-  strip.querySelector('.lbl-hi').textContent = '+' + span.toFixed(1);
-  const mk = strip.querySelector('.mk');
-  if (s.z === null || s.z === undefined) {
-    mk.style.display = 'none';
-  } else {
-    mk.style.display = '';
-    const pct = Math.max(0, Math.min(100, 50 + (s.z / span) * 50));
-    mk.style.left = pct + '%';
-    mk.className = 'mk' + (s.z >= threshold ? ' s' : s.z <= -threshold ? ' b' : '');
-  }
-
-  const warmed = s.is_warm;
-  q('.warmbar').classList.toggle('full', !!warmed);
-  q('.warmbar').classList.toggle('hidden', !!warmed);
-  q('.warmrow').classList.toggle('hidden', !!warmed);
-  q('.warmbar i').style.width = (s.warm_pct || 0) + '%';
-  q('.f-warm').textContent = (s.warm_pct || 0).toFixed(0) + '% · ' +
-    minutes(s.history_min) + ' of ' + minutes(s.need_min) + ' min';
-
-  const f = c.filters || {};
-  q('.f-edge').textContent = f.edge_ratio === null || f.edge_ratio === undefined
-    ? DASH : num(f.edge_ratio, 1) + '×';
-  // The target, in money: costs first, then the % of the margin entered.
-  // No margin is not a target of zero — it is no target, and no entries.
-  const st = c.settings || {};
-  const tgt = q('.f-target');
-  if (f.margin) {
-    tgt.textContent = (st.profit_target_pct || 0) + '% of $' +
-      Math.round(f.margin).toLocaleString() + ' = ' +
-      money((st.profit_target_pct || 0) / 100 * f.margin) + ' + costs';
-    tgt.classList.remove('warn-text');
-  } else {
-    tgt.textContent = 'no margin entered';
-    tgt.classList.add('warn-text');
-  }
-  const blocked = q('.f-blocked');
-  const why = c.halted_by ? 'Halted: ' + c.halted_by
-    : c.market_note ? 'Market: ' + c.market_note
-    : f.blocked_by ? 'Withheld: ' + f.blocked_by : '';
-  blocked.classList.toggle('hidden', !why);
-  if (why) blocked.textContent = why;
-  const proposal = q('.f-proposal');
-  proposal.classList.toggle('hidden', !c.proposal);
-  if (c.proposal) proposal.textContent = 'Proposal: ' + c.proposal.side +
-    ' ' + c.proposal.qty + ' · ' + c.proposal.reason;
-
-  // position
-  const pos = c.position;
-  q('.posline').classList.toggle('hidden', !pos);
-  q('.posgrid').classList.toggle('hidden', !pos);
-  q('.flatline').classList.toggle('hidden', !!pos);
-  q('.close-now').disabled = !pos;
-  if (pos) {
-    q('.posline .side').textContent = pos.side;
-    q('.posline .side').className = 'side ' + pos.side;
-    q('.posline .q').textContent = pos.qty;
-    q('.posline .at').textContent = '@ ' + num(pos.avg_price, d);
-    const pnl = q('.posline .pnl');
-    pnl.textContent = money(pos.open_pnl);
-    pnl.className = 'pnl ' + (pos.open_pnl > 0 ? 'up' : pos.open_pnl < 0 ? 'dn' : '');
-    q('.p-zin').textContent = signed(pos.entry_z, 2);
-    q('.p-be').textContent = num(pos.break_even, d);
-    q('.p-tgt').textContent = num(pos.target, d);
-    q('.p-stop').textContent = num(pos.stop, d);
-    q('.p-mstop').textContent = pos.money_stop === null || pos.money_stop === undefined
-      ? 'off' : money(pos.money_stop);
-    q('.p-held').textContent = held(pos.opened_at);
-    q('.p-left').textContent = pos.time_left_min === null || pos.time_left_min === undefined
-      ? DASH : minutes(pos.time_left_min) + 'm';
-    const net = q('.p-net');
-    net.textContent = money(pos.net);
-    net.className = 'v em p-net ' + (pos.net > 0 ? 'up' : pos.net < 0 ? 'dn' : '');
-    q('.p-margin').textContent = pos.margin_locked === null ? DASH
-      : '$' + Math.round(pos.margin_locked).toLocaleString();
-    // Where the target cannot be priced, say WHICH figure is missing.
-    const missing = q('.p-missing');
-    missing.classList.toggle('hidden', !c.target_missing);
-    if (c.target_missing) missing.textContent = 'No target — ' + c.target_missing;
-  } else {
-    const lo = num(s.buy_at, d), hi = num(s.sell_at, d);
-    q('.flatline').textContent = warmed
-      ? 'flat · buy ' + lo + ' / sell ' + hi
-      : 'flat · collecting';
-    q('.p-missing').classList.add('hidden');
-  }
+  renderAlgoBody(el, c);
 
   // footer
   const foot = q('.wfoot');
@@ -497,6 +407,557 @@ function renderContract(c) {
     }
     state.lastEvent[c.key] = c.last_event;
   }
+}
+
+/* -- the Algo window --------------------------------------------------------
+ *
+ * SIGNAL & POSITION, STATISTICS, FILTERS — the MT5 desk's Algo window, on
+ * ONE contract. The venue lists the spread itself, so "H to L" is selling
+ * the contract into its BID and "L to H" is buying its OFFER; there are no
+ * legs. Every figure comes from the engine's Algo block.
+ */
+
+function esc(text) {
+  return String(text === null || text === undefined ? '' : text)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/* Money with cents: a round trip of $4.15 is not "$4". */
+function cash(value) {
+  if (value === null || value === undefined || isNaN(value)) return DASH;
+  const sign = value < 0 ? '-' : '';
+  return sign + '$' + Math.abs(value).toLocaleString(undefined,
+    { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function zText(value) {
+  if (value === null || value === undefined || isNaN(value)) return DASH;
+  return (value > 0 ? '+' : '') + Number(value).toFixed(2);
+}
+
+function kv(label, value, cls, title, wide) {
+  return '<div class="aw-kv' + (wide ? ' wide' : '') + '"' +
+    (title ? ' title="' + esc(title) + '"' : '') + '><span>' + label +
+    '</span><b' + (cls ? ' class="' + cls + '"' : '') + '>' + value +
+    '</b></div>';
+}
+
+function awBadge(text, tone, title) {
+  return '<span class="aw-badge ' + tone + '"' +
+    (title ? ' title="' + esc(title) + '"' : '') + '>' + text + '</span>';
+}
+
+function sideWords(side) {
+  return side === 'SELL' ? 'H to L' : side === 'BUY' ? 'L to H' : (side || DASH);
+}
+
+const ALGO_EXIT_WORDS = {
+  STOP_LOSS: 'stop loss', PROFIT_TARGET: 'profit target',
+  Z_STOP: 'z-stop', MEAN_REVERSION: 'back to the mean', TIME_STOP: 'time stop',
+};
+
+function levelWords(level, worth, d) {
+  /* "13.7000 (+$4.00)": the price to compare with the closing side, and
+   * what closing there is worth to the whole position, net. */
+  return num(level, d) + (worth === null || worth === undefined ? ''
+    : ' (' + (worth > 0 ? '+' : '') + cash(worth) + ')');
+}
+
+function positionWords(p, d) {
+  return (p.side || '?') + ' @ ' + num(p.entry, d);
+}
+
+function algoLine(block, d) {
+  /* One short line: what the Algo says right now. */
+  const st = block.state;
+  if (st === 'SIGNAL') {
+    const z = block.signal === 'SELL' ? block.z_sell : block.z_buy;
+    return sideWords(block.signal) + ' signal  z ' + zText(z);
+  }
+  if (st === 'EXIT') {
+    return (block.positions || []).filter((p) => p.exit).map((p) =>
+      'EXIT ' + positionWords(p, d) + ': ' + (ALGO_EXIT_WORDS[p.exit] || p.exit))
+      .join('; ');
+  }
+  if (st === 'IN_POSITION') {
+    const first = (block.positions || [])[0] || {};
+    return 'in ' + positionWords(first, d) + ' — TP ' +
+      levelWords(first.tp, first.tp_money, d) + ' · SL ' +
+      (first.sl === null || first.sl === undefined
+        ? ((block.params || {}).stop_loss_on ? DASH : 'off')
+        : levelWords(first.sl, first.sl_money, d));
+  }
+  if (st === 'BLOCKED') return 'held: ' + (block.blocked || '');
+  if (st === 'CONFIRMING') {
+    const streak = block.streak || {};
+    return 'confirming ' + Math.max(streak.BUY || 0, streak.SELL || 0) + '/' +
+      ((block.params || {}).confirm_ticks || '?');
+  }
+  if (st === 'STARTING') return 'starting…';
+  return 'watching';
+}
+
+function progressHtml(first, d) {
+  /* SL <- entry -> TP, with the closing price on it; each half on its own
+   * scale, as the engine measures them. */
+  const entry = first.entry;
+  const toTp = first.tp === null || first.tp === undefined ? null
+    : Math.abs(first.tp - entry);
+  const toSl = first.sl === null || first.sl === undefined ? null
+    : Math.abs(entry - first.sl);
+  const split = (toTp && toSl) ? toSl / (toSl + toTp) : (toSl ? 0.5 : 0);
+  const p = first.progress;
+  const at = p === null || p === undefined ? null
+    : (p >= 0 ? split + p * (1 - split) : split + p * split);
+  const fill = at === null ? '' :
+    '<div class="ap-fill ' + (p >= 0 ? 'up' : 'down') + '" style="left:' +
+    (Math.min(at, split) * 100) + '%;width:' + (Math.abs(at - split) * 100) +
+    '%"></div><div class="ap-mark" style="left:calc(' + (at * 100) +
+    '% - 1px)"></div>';
+  return '<div class="algo-progress" title="' + esc(positionWords(first, d) +
+    ', closing at ' + num(first.closing, d)) + '"><div class="ap-pct">' +
+    (p === null || p === undefined ? DASH : (p >= 0
+      ? Math.round(p * 100) + '% to TP' : Math.round(-p * 100) + '% to SL')) +
+    '</div><div class="ap-track">' + fill + '<div class="ap-entry" style="left:' +
+    (split * 100) + '%"></div></div><div class="ap-ends"><span>' +
+    (toSl === null ? 'no SL' : 'SL ' + levelWords(first.sl, first.sl_money, d)) +
+    '</span><span>' + (toTp === null ? 'no TP'
+      : 'TP ' + levelWords(first.tp, first.tp_money, d)) + '</span></div></div>';
+}
+
+function warmupHtml(warmup) {
+  /* Live time watched since the Algo was armed, against what it needs. A
+   * band rebuilt from the recording in a second is not a feed watched. */
+  if (!warmup || !warmup.need_sec) return '';
+  const done = !!warmup.done;
+  const pct = done ? 100 : Math.floor(100 * warmup.sec / warmup.need_sec);
+  return '<div class="aw-data aw-warmup" title="No entry until the Algo has ' +
+    'watched this long of live prices since it was armed. Time with no price ' +
+    'does not count."><span>Live</span><div class="aw-bar"><div class="' +
+    (done ? 'ok' : 'wait') + '" style="width:' + pct + '%"></div></div><span>' +
+    (done ? 'warmed up' : 'warming up ' + Math.floor(warmup.sec / 60) + '/' +
+      Math.round(warmup.need_sec / 60) + ' min') + '</span></div>';
+}
+
+function trendBadge(trend) {
+  /* Which way the band's middle moved over the lookback: up holds H to L,
+   * down holds L to H, flat holds neither. */
+  if (!trend.on) return awBadge('OFF', 'off');
+  const drift = trend.drift_sigma;
+  const why = drift === null || drift === undefined
+    ? 'not enough candles to measure the trend yet'
+    : 'the middle moved ' + (drift >= 0 ? '+' : '') + drift.toFixed(2) +
+      'σ in ' + trend.lookback_min + ' min (limit ' + trend.limit + 'σ)';
+  if (trend.state === 'UP') return awBadge('↑', 'bad', why + ' — no H to L');
+  if (trend.state === 'DOWN') return awBadge('↓', 'bad', why + ' — no L to H');
+  if (trend.state === 'FLAT') return awBadge('–', 'ok', why);
+  return awBadge('WAIT', 'wait', why);
+}
+
+function lastOrderHtml(block) {
+  /* What the Algo last DID, and what became of it — a refusal in its own
+   * words, never a blank. */
+  const last = (block.recent || [])[0];
+  let html = '<div class="aw-blocked aw-last-order"><div class="aw-head2">' +
+    'Last order</div>';
+  if (!last) return html + '<div class="hint">none yet</div></div>';
+  const what = esc(last.action || '') + ' ' + esc(sideWords(last.side)) +
+    (last.z === null || last.z === undefined ? '' : ' z ' + zText(last.z)) +
+    ' · ' + new Date(last.at * 1000).toLocaleTimeString();
+  let outcome;
+  if (last.mode === 'DRY RUN') {
+    outcome = '<div class="hint">dry run — nothing sent</div>';
+  } else if (last.done) {
+    outcome = '<div class="up">' + (last.mode === 'PAPER'
+      ? 'filled on paper — nothing sent' : 'sent — done') + '</div>';
+  } else {
+    outcome = '<div class="down">REFUSED — ' +
+      esc(last.result || 'no reason given') + '</div>';
+  }
+  return html + '<div><b>' + what + '</b></div>' + outcome + '</div>';
+}
+
+function renderAlgoBody(el, c) {
+  const d = c.decimals === undefined ? 4 : c.decimals;
+  const block = c.algo || {};
+  const params = block.params || {};
+  const filters = block.filters || {};
+  const market = c.market || {};
+  const entryZ = params.entry_z;
+  const direction = params.direction || 'BOTH';
+
+  const mode = el.querySelector('.aw-mode');
+  mode.textContent = block.mode || DASH;
+  mode.className = 'aw-mode ' + (block.mode === 'LIVE' ? 'live'
+    : block.mode === 'PAPER' ? 'paper' : 'dry');
+  mode.title = block.mode === 'LIVE'
+    ? 'the Algo SENDS its orders to the venue'
+    : block.mode === 'PAPER'
+      ? 'the Algo fills on paper at the live bid/offer — nothing is sent'
+      : 'signals only — nothing is sent or filled (Auto trade is off)';
+
+  // -- SIGNAL & POSITION ----------------------------------------------------
+  function entryLine(sell) {
+    if (!params.reentry_on) {
+      return '<div class="aw-tile-entry">' + (sell ? 'short' : 'long') +
+        ' at ' + (sell ? '≥ +' : '≤ −') + (entryZ || '?') + ' (' +
+        num(sell ? block.upper : block.lower, d) + ')</div>';
+    }
+    const inZ = Math.max(0, (entryZ || 0) - (params.reentry_back || 0));
+    const windowPct = params.reentry_window_pct === undefined ||
+      params.reentry_window_pct === null ? 50 : params.reentry_window_pct;
+    const outZ = inZ * (1 - windowPct / 100);
+    const priced = !(block.mean === null || block.mean === undefined ||
+                     !block.sigma);
+    const level = priced ? block.mean + (sell ? 1 : -1) * inZ * block.sigma : null;
+    const outLevel = priced ? block.mean + (sell ? 1 : -1) * outZ * block.sigma : null;
+    const armed = (block.armed || {})[sell ? 'SELL' : 'BUY'];
+    return '<div class="aw-tile-entry" title="Armed when the stretch reaches ' +
+      (sell ? '+' : '−') + entryZ + '; entered on the way back in, between ' +
+      (sell ? '+' : '−') + inZ.toFixed(2) + ' and ' + (sell ? '+' : '−') +
+      outZ.toFixed(2) + '. Past ' + outZ.toFixed(2) + ' it disarms — too close ' +
+      'to the mean to trade.">' +
+      (armed ? '<b class="aw-armed">ARMED</b> ' : 'arm ' +
+        (sell ? '≥ +' : '≤ −') + entryZ + ' · ') +
+      (sell ? 'short' : 'long') + ' back at ' + (sell ? '+' : '−') +
+      inZ.toFixed(2) + ' (' + num(level, d) + ') to ' + (sell ? '+' : '−') +
+      outZ.toFixed(2) + ' (' + num(outLevel, d) + ')</div>';
+  }
+  function tile(sell) {
+    const z = sell ? block.z_sell : block.z_buy;
+    const hit = z !== null && z !== undefined && entryZ &&
+      (sell ? z >= entryZ : z <= -entryZ);
+    const off = (sell && direction === 'L_TO_H') || (!sell && direction === 'H_TO_L');
+    return '<div class="aw-tile ' + (sell ? 'sell' : 'buy') + (hit ? ' hit' : '') +
+      (off ? ' off' : '') + '" title="' + (sell
+        ? 'What SELLING the contract gets now (its bid). The Algo sells when '
+          + 'this z reaches +' + entryZ + ', and closes a long here.'
+        : 'What BUYING the contract costs now (its offer). The Algo buys when '
+          + 'this z reaches −' + entryZ + ', and closes a short here.') +
+      '"><div class="aw-tile-head">' + (sell ? 'H to L' : 'L to H') +
+      (off ? ' <small>(entries off)</small>' : '') +
+      '</div><div class="aw-tile-price">' + num(sell ? market.bid : market.ask, d) +
+      '</div><div class="aw-tile-z">' + zText(z) + '</div>' + entryLine(sell) +
+      '</div>';
+  }
+  const first = (block.positions || [])[0] || null;
+  const position = first ? (first.side === 'BUY' ? 'LONG' : 'SHORT') + ' ' +
+    num(first.quantity, 0) : 'FLAT';
+  let html = '<div class="aw-head">Signal &amp; Position</div>' +
+    '<div class="aw-tiles">' + tile(true) + tile(false) +
+    '<div class="aw-pos ' + (first ? (first.side === 'BUY' ? 'long' : 'short')
+      : 'flat') + '">' + position + '</div></div>' +
+    '<div class="aw-line" title="' + esc(block.blocked || '') + '">' +
+    esc(algoLine(block, d)) + '</div>';
+  if (first) {
+    const delta = first.closing === null || first.closing === undefined ||
+      first.entry === null ? null : first.closing - first.entry;
+    const good = delta === null ? ''
+      : ((first.side === 'BUY' ? delta >= 0 : delta <= 0) ? 'up' : 'down');
+    html += '<div class="aw-grid">' +
+      kv('Entry', num(first.entry, d)) +
+      kv('Δ price', delta === null ? DASH : (delta > 0 ? '+' : '') + num(delta, d),
+        good, 'closing price now − entry: a LONG makes money when this is ' +
+        'positive, a SHORT when it is negative') +
+      kv('Entry z', zText(first.entry_z)) +
+      kv('Net P&amp;L', cash(first.net_pnl), first.net_pnl === null ||
+        first.net_pnl === undefined ? '' : (first.net_pnl >= 0 ? 'up' : 'down'),
+        'after the whole round trip, at the side it would close on') +
+      kv('Age', first.age_sec === null || first.age_sec === undefined ? DASH
+        : Math.floor(first.age_sec / 60) + 'm ' + Math.floor(first.age_sec % 60) + 's') +
+      kv('Size', num(first.quantity, 0) + ' contract(s)' +
+        (first.paper ? ' <small>paper</small>' : '')) +
+      '</div>' +
+      kv('Levels', 'BE ' + num(first.break_even, d) + ' · TP ' +
+        (first.tp === null || first.tp === undefined ? DASH
+          : levelWords(first.tp, first.tp_money, d)) + ' · SL ' +
+        (first.sl === null || first.sl === undefined
+          ? (params.stop_loss_on ? DASH : 'off')
+          : levelWords(first.sl, first.sl_money, d)) +
+        ((params.stop_mode === 'ATR' || params.target_mode === 'ATR')
+          ? ' <small>(ATR ' + num(first.entry_atr, d) + ' at entry)</small>' : ''),
+        '', 'compare with the CLOSING price: the bid for a LONG, the offer ' +
+        'for a SHORT. In brackets: the net P&L of closing there', true) +
+      (params.progress_bar === false ? '' : progressHtml(first, d));
+  }
+  el.querySelector('.aw-signal').innerHTML = html;
+  el.querySelector('.aw-closebar').classList.toggle('hidden', !c.position);
+  el.querySelector('.close-now').disabled = !c.position;
+
+  // -- STATISTICS -------------------------------------------------------------
+  const history = block.history || {};
+  const regime = filters.regime || {};
+  const count = block.count || 0;
+  const needed = block.needed || params.length || 0;
+  const pctDone = needed ? Math.min(100, Math.round(count * 100 / needed)) : 0;
+  const regimeText = regime.state === 'TRENDING'
+    ? 'Trend ' + ((regime.slope || 0) > 0 ? '↑' : '↓')
+    : regime.state === 'RANGE' ? 'Mean-rev'
+      : regime.state === 'COLLECTING' ? 'Collect' : DASH;
+  el.querySelector('.aw-stats').innerHTML =
+    '<div class="aw-head">Statistics</div><div class="aw-grid">' +
+    kv('Mean (EMA)', num(block.mean, d)) +
+    kv('Std dev', num(block.sigma, d)) +
+    kv('ATR(' + (block.atr_period || params.atr_period || 14) + ')',
+      num(block.atr, d), '', 'the average size of one candle’s move, close ' +
+      'to close (Wilder). In ATR mode the stop and target are multiples of ' +
+      'it, frozen when the trade opens') +
+    kv('Half-life', filters.half_life_minutes === null ||
+      filters.half_life_minutes === undefined ? DASH
+      : Math.round(filters.half_life_minutes) + ' min', '',
+      'how long a stretch takes to halve, from the candles (AR(1))') +
+    kv('Regime', regimeText, regime.state === 'TRENDING' ? 'down'
+      : (regime.state === 'RANGE' ? 'up' : ''),
+      regime.efficiency_ratio === null || regime.efficiency_ratio === undefined
+        ? '' : 'efficiency ' + regime.efficiency_ratio.toFixed(2) + ', ' +
+          regime.crossings + ' mean crossings') +
+    kv('Candles', (block.timeframe_min || params.timeframe_min) + 'm × ' + needed) +
+    kv('Band', num(block.lower, d) + ' … ' + num(block.upper, d), '', '', true) +
+    '</div><div class="aw-data" title="' + esc(history.note || '') + '">' +
+    '<span>Data</span><div class="aw-bar"><div class="' +
+    (block.ready ? 'ok' : 'wait') + '" style="width:' +
+    (block.ready ? 100 : pctDone) + '%"></div></div><span>' +
+    (block.ready ? 'candles ready' : count + '/' + needed + ' candles') +
+    '</span></div>' + warmupHtml(block.warmup);
+
+  // -- FILTERS ---------------------------------------------------------------
+  const edge = filters.edge || {};
+  const cost = filters.cost || {};
+  const band = filters.half_life_band || [0, 0];
+  function onOff(on, ok, yes, no, why) {
+    if (!on) return awBadge('OFF', 'off', why);
+    if (ok === null || ok === undefined) return awBadge('—', 'wait', why);
+    return awBadge(ok ? yes : no, ok ? 'ok' : 'bad', why);
+  }
+  const trending = regime.state === 'TRENDING';
+  const day = block.day || {};
+  const last = block.last_blocked;
+  el.querySelector('.aw-filters').innerHTML =
+    '<div class="aw-head">Filters</div><div class="aw-badges">' +
+    '<div>' + onOff(edge.on, edge.ok, '✓', '✗',
+      'expected capture against the round-trip cost, at the entry z') +
+    '<small>Edge</small></div>' +
+    '<div>' + (regime.on ? awBadge(trending ? 'TR' : (regime.state === 'RANGE'
+      ? 'MR' : 'WAIT'), trending ? 'bad' : (regime.state === 'RANGE' ? 'ok'
+      : 'wait')) : awBadge('OFF', 'off')) + '<small>Regime</small></div>' +
+    '<div>' + trendBadge(filters.trend || {}) + '<small>Trend</small></div>' +
+    '<div>' + awBadge(filters.ready ? 'YES' : 'NO', filters.ready ? 'ok' : 'wait')
+    + '<small>Ready</small></div>' +
+    ((band[0] || band[1]) ? '<div>' + awBadge(Math.round(band[0] || 0) + '–' +
+      (band[1] ? Math.round(band[1]) : '∞'), 'off') + '<small>HL min</small></div>'
+      : '') +
+    '</div><div class="aw-grid">' +
+    kv('Capture / cost', (edge.ratio === null || edge.ratio === undefined
+      ? DASH : edge.ratio.toFixed(2) + '×') + ' / req ' +
+      (edge.required === undefined ? DASH : edge.required + '×'),
+      edge.ok === true ? 'up' : (edge.ok === false ? 'down' : ''),
+      'expected capture ' + cash(edge.capture) + ' (' +
+      (params.edge_capture_frac || 0.5) + ' × entry z × σ) against the round ' +
+      'trip, at the entry z', true) +
+    kv('Round trip', cash(cost.total), '', 'crossing ' + cash(cost.crossing) +
+      ' + fees ' + cash(cost.commission) + ' + slippage ' + cash(cost.slippage)) +
+    kv('Today', (day.trades || 0) + (params.max_trades_day
+      ? '/' + params.max_trades_day : '') + ' trades · ' + (day.losses_row || 0) +
+      ' in a row · ' + cash(day.pnl), '', 'the day’s limits stop entries, ' +
+      'never exits', true) +
+    kv('Size', num(filters.qty || params.algo_qty || 1, 0) + ' contract(s)') +
+    '</div><div class="aw-blocked"><div class="aw-head2">Last signal blocked</div>' +
+    (last ? '<div><b>' + esc(sideWords(last.side)) + '</b> z ' + zText(last.z) +
+      ' · ' + new Date(last.at * 1000).toLocaleTimeString() + '</div><div>' +
+      esc(last.reason || '') + '</div>'
+      : '<div class="hint">none yet</div>') + '</div>' + lastOrderHtml(block);
+}
+
+/* -- the backtest ------------------------------------------------------------ */
+
+async function runBacktest(el, key) {
+  const out = el.querySelector('.aw-bt-out');
+  const button = el.querySelector('.aw-bt-run');
+  const days = parseInt(el.querySelector('.aw-bt-days').value, 10) || 5;
+  out.className = 'aw-bt-out hint';
+  out.textContent = 'running on the last ' + days + ' days…';
+  button.disabled = true;
+  try {
+    const res = await fetch('/api/backtest/' + encodeURIComponent(key) +
+      '?days=' + days, { cache: 'no-store' });
+    const data = await res.json();
+    if (!data.ok) {
+      out.className = 'aw-bt-out down';
+      out.textContent = 'could not run: ' + (data.reason || data.error || 'unknown');
+    } else {
+      out.className = 'aw-bt-out';
+      out.innerHTML = backtestHtml(data, (window.__lastSnapshot || {}).contracts
+        ? ((window.__lastSnapshot.contracts.find((c) => c.key === key) || {})
+          .decimals) : 4);
+    }
+  } catch (e) {
+    out.className = 'aw-bt-out down';
+    out.textContent = 'could not run: ' + e.message;
+  }
+  button.disabled = false;
+}
+
+function backtestHtml(data, d) {
+  const s = data.summary || {};
+  const plain = data.without_protections || {};
+  function line(sum) {
+    return (sum.trades || 0) + ' trade(s) · ' + (sum.wins || 0) + ' won, ' +
+      (sum.losses || 0) + ' lost · net ' + cash(sum.net) + ' · worst run ' +
+      cash(sum.max_drawdown);
+  }
+  function when(at) {
+    return at ? new Date(at * 1000).toLocaleString([], { month: 'short',
+      day: 'numeric', hour: '2-digit', minute: '2-digit' }) : DASH;
+  }
+  const heldBy = Object.keys(data.held || {}).map((r) => [r, data.held[r]])
+    .sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const rows = (data.trades || []).slice(-8).reverse().map((t) =>
+    '<tr><td>' + when(t.opened_at) + '</td><td>' + sideWords(t.side) +
+    '</td><td>' + zText(t.entry_z) + '</td><td>' +
+    esc(ALGO_EXIT_WORDS[t.reason] || t.reason || '') + '</td><td class="' +
+    (t.pnl > 0 ? 'up' : (t.pnl < 0 ? 'down' : '')) + '">' + cash(t.pnl) +
+    '</td></tr>').join('');
+  return '<div><b>These settings:</b> ' + line(s) + '</div>' +
+    '<div class="hint">Without re-entry and the trend filter: ' + line(plain) +
+    '</div>' + (heldBy.length ? '<div class="hint">Held back most by: ' +
+      heldBy.map((h) => esc(h[0]) + ' (' + h[1] + ')').join('; ') + '</div>' : '') +
+    (rows ? '<table class="aw-bt-trades"><tr><th>Entered</th><th>Side</th>' +
+      '<th>z</th><th>Exit</th><th>P&amp;L</th></tr>' + rows + '</table>' : '') +
+    '<div class="hint aw-bt-caveats" title="' + esc((data.caveats || []).join('; ')) +
+    '">' + (s.candles || 0) + ' candles of recorded mids, ' + when(s.from) +
+    ' – ' + when(s.to) + ' · hover for what a backtest cannot see</div>';
+}
+
+/* -- the ladder ----------------------------------------------------------------
+ *
+ * The contract's price ladder, beside its Algo: the touch, and where the
+ * Algo's own levels sit — the band, the entry, break-even, the target and
+ * the stop. In ALGO mode a person does not trade it (the banner says so);
+ * CLOSE always closes.
+ */
+
+const LADDER_ROWS = 24;          // each side of the centre
+const ladderCentre = {};         // key -> centre price, held until Centre
+
+function ladderFor(key) {
+  const wkey = '__ladder__' + key;
+  let el = document.querySelector('.win[data-key="' + wkey + '"]');
+  if (el) return el;
+  el = document.getElementById('ladder-template').content.firstElementChild
+    .cloneNode(true);
+  el.dataset.key = wkey;
+  el.dataset.contract = key;
+  wireWindow(el, wkey);
+  el.querySelector('.ld-centre').onclick = () => { delete ladderCentre[key]; };
+  el.querySelector('.ld-close').onclick = () => closeNowAsk(key,
+    el.querySelector('.title').textContent);
+  document.getElementById('desktop').appendChild(el);
+  const place = state.places[wkey];
+  if (place) placeWindow(el, place.x, place.y);
+  return el;
+}
+
+function renderLadder(c, engine) {
+  const wkey = '__ladder__' + c.key;
+  if (state.closed.has(wkey)) return;
+  const el = ladderFor(c.key);
+  const d = c.decimals === undefined ? 4 : c.decimals;
+  const tick = c.tick_size || Math.pow(10, -d);
+  const m = c.market || {};
+  const block = c.algo || {};
+  const pos = c.position;
+  el.querySelector('.title').textContent = c.name;
+  el.querySelector('.ld-route').textContent = c.symbol || '';
+  const mode = el.querySelector('.ld-mode');
+  const tradingMode = (engine || {}).trading_mode || 'ALGO';
+  mode.textContent = tradingMode === 'ALGO' ? 'ALGO ' + (block.mode || '') : 'MANUAL';
+  mode.className = 'ld-mode ' + (tradingMode === 'ALGO'
+    ? (block.mode === 'LIVE' ? 'live' : block.mode === 'PAPER' ? 'paper' : 'dry')
+    : 'manual');
+
+  const net = el.querySelector('.ld-net');
+  const value = pos ? pos.net : null;
+  net.textContent = pos ? (value === null || value === undefined ? DASH
+    : (value > 0 ? '+' : '') + cash(value)) : 'flat';
+  net.className = 'ld-net ' + (value > 0 ? 'up' : value < 0 ? 'dn' : '');
+  el.querySelector('.ld-hl').textContent = pos
+    ? pos.side + ' ' + pos.qty + ' @ ' + num(pos.avg_price, d) : '';
+
+  const banner = el.querySelector('.ld-banner');
+  if (tradingMode === 'ALGO') {
+    banner.className = 'ld-banner algo';
+    banner.textContent = 'ALGO ' + (block.mode || '') + ' — manual orders ' +
+      'are off on this desk. CLOSE still closes. Switch the desk to MANUAL ' +
+      'to trade by hand.';
+  } else {
+    banner.className = 'ld-banner manual';
+    banner.textContent = 'MANUAL — the Algo neither enters nor proposes. ' +
+      'Trade by hand on Instruments & orders.';
+  }
+  el.querySelector('.ld-close').disabled = !pos;
+
+  // The ladder, centred on the market until Centre is pressed again.
+  const mid = m.mid;
+  if (mid === null || mid === undefined) {
+    el.querySelector('.ld-quote').textContent = c.market_note || 'no price yet';
+    return;
+  }
+  // Re-centred when the market leaves the middle half of the ladder — and
+  // scrolled so the touch is in view, or a ladder can sit showing prices
+  // nobody is quoting while the market trades below the fold.
+  let recentred = false;
+  if (ladderCentre[c.key] === undefined ||
+      Math.abs(mid - ladderCentre[c.key]) > tick * (LADDER_ROWS / 2)) {
+    ladderCentre[c.key] = mid;
+    recentred = true;
+  }
+  const centre = ladderCentre[c.key];
+  const round = (p) => Math.round(p / tick) * tick;
+  const top = round(centre) + LADDER_ROWS * tick;
+  const marks = {};
+  function mark(price, label, cls) {
+    if (price === null || price === undefined) return;
+    const k = round(price).toFixed(d);
+    (marks[k] = marks[k] || []).push('<span class="' + cls + '">' + label + '</span>');
+  }
+  if (block.ready) {
+    mark(block.mean, 'MEAN', 'lm-mean');
+    mark(block.upper, '+' + (block.params || {}).entry_z + 'σ', 'lm-band');
+    mark(block.lower, '−' + (block.params || {}).entry_z + 'σ', 'lm-band');
+  }
+  if (pos) {
+    mark(pos.avg_price, 'ENTRY', 'lm-entry');
+    mark(pos.break_even, 'BE', 'lm-be');
+    mark(pos.target, 'TP', 'lm-tp');
+    mark(pos.stop, 'SL', 'lm-sl');
+  }
+  const bidK = m.bid === null || m.bid === undefined ? null : round(m.bid).toFixed(d);
+  const askK = m.ask === null || m.ask === undefined ? null : round(m.ask).toFixed(d);
+  const body = el.querySelector('.ld-table tbody');
+  let html = '';
+  for (let i = 0; i <= LADDER_ROWS * 2; i += 1) {
+    const price = top - i * tick;
+    const k = price.toFixed(d);
+    const isBid = k === bidK, isAsk = k === askK;
+    html += '<tr class="' + (isBid ? 'ld-bidrow' : '') + (isAsk ? ' ld-askrow' : '') +
+      '"><td class="ld-bid">' + (isBid ? (m.bid_size === null || m.bid_size ===
+        undefined ? '' : m.bid_size) : '') + '</td><td class="ld-px">' + k +
+      '</td><td class="ld-ask">' + (isAsk ? (m.ask_size === null || m.ask_size ===
+        undefined ? '' : m.ask_size) : '') + '</td><td class="ld-marks">' +
+      (marks[k] || []).join(' ') + '</td></tr>';
+  }
+  body.innerHTML = html;
+  if (recentred) {
+    const scroll = el.querySelector('.ld-scroll');
+    const row = body.rows[LADDER_ROWS];
+    if (row) scroll.scrollTop = row.offsetTop - scroll.clientHeight / 2;
+  }
+  el.querySelector('.ld-quote').textContent = 'B ' + num(m.bid, d) + ' × ' +
+    (m.bid_size === null || m.bid_size === undefined ? DASH : m.bid_size) +
+    '   A ' + num(m.ask, d) + ' × ' +
+    (m.ask_size === null || m.ask_size === undefined ? DASH : m.ask_size) +
+    '   spread ' + num(m.ask - m.bid, d);
 }
 
 /* -- marking the window ---------------------------------------------------
@@ -1238,7 +1699,20 @@ function renderTabs() {
     b.className = 'tk' + (state.focused === el.dataset.key ? ' act' : '');
     b.textContent = el.querySelector('.title').textContent;
     if (el.dataset.key === '__positions__') b.classList.add('wide-tab');
-    b.onclick = () => { el.scrollIntoView({ block: 'nearest' }); state.focused = el.dataset.key; };
+    if (el.classList.contains('minimised')) b.classList.add('minimised');
+    // Like any taskbar: a minimised window comes back; the window in front
+    // goes down; any other comes to the front.
+    b.onclick = () => {
+      if (el.classList.contains('minimised')) { setMinimised(el, false); return; }
+      if (state.focused === el.dataset.key && el.classList.contains('raised')) {
+        setMinimised(el, true);
+        return;
+      }
+      state.focused = el.dataset.key;
+      raise(el);
+      el.scrollIntoView({ block: 'nearest' });
+      renderTabs();
+    };
     host.appendChild(b);
   });
 }
@@ -1375,33 +1849,58 @@ function renderChrome(snap) {
 
 const CFG_GROUPS = [
   { name: 'Signal', fields: [
-    ['window_minutes', 'Window', 'minutes of mid prices the mean and σ are taken over', 'number', { step: 10, min: 1 }],
-    ['min_history_minutes', 'Warm-up', 'minutes of CONTINUOUS history before the first entry; a gap is not history', 'number', { step: 10, min: 0 }],
-    ['sample_interval_sec', 'Sample every', 'seconds &mdash; the window holds samples, not polls', 'number', { step: 0.5, min: 0.1 }],
-    ['stats_update_interval_sec', 'Recompute mean and σ every', 'seconds; the z runs live against bands that stand still between', 'number', { step: 30, min: 0 }],
-    ['entry_threshold', 'Enter at |z|', 'SHORT when the BID z reaches +this, LONG when the OFFER z reaches &minus;this', 'number', { step: 0.1, min: 0 }],
-    ['max_entry_z', 'No entry beyond |z|', 'a blow-out, not an entry', 'number', { step: 0.1, min: 0 }],
-    ['confirm_samples', 'Confirm for', 'consecutive samples through the level', 'number', { step: 1, min: 1 }],
-    ['trade_direction', 'Enter', 'entries only &mdash; an exit is never restricted', 'select', { options: [['BOTH', 'Both ways'], ['SELL_ONLY', 'Sell only'], ['BUY_ONLY', 'Buy only']] }],
+    ['timeframe_min', 'Candles of', 'minutes; each closes on the last MID in it, the one forming now counts', 'select', { options: [['1', '1 min'], ['5', '5 min'], ['15', '15 min'], ['30', '30 min'], ['60', '1 hour'], ['240', '4 hours']] }],
+    ['length', 'Band length N', 'the middle is EMA(N) of the closes, σ the population σ of the last N', 'number', { step: 1, min: 2 }],
+    ['entry_threshold', 'Entry z', 'H to L when the BID z reaches +this; L to H when the OFFER z reaches &minus;this', 'number', { step: 0.1, min: 0 }],
+    ['max_entry_z', 'No entry beyond |z|', 'a blow-out, not a stretch; 0 = no cap', 'number', { step: 0.1, min: 0 }],
+    ['confirm_samples', 'Confirm for', 'fresh quotes in a row', 'number', { step: 1, min: 1 }],
+    ['trade_direction', 'Enter', 'entries only &mdash; an exit is never restricted', 'select', { options: [['BOTH', 'Both ways'], ['SELL_ONLY', 'H to L only (sell)'], ['BUY_ONLY', 'L to H only (buy)']] }],
+    ['reentry_on', 'Re-entry', 'ARMED at the band, entered on the way back in &mdash; a trend rides the band and never gives one', 'check'],
+    ['reentry_back', 'Enter back by', 'z back inside the band', 'number', { step: 0.1, min: 0.05 }],
+    ['reentry_window_pct', 'Re-entry window', '% of the way back to the mean that still counts; past it the side disarms', 'number', { step: 5, min: 5 }],
+    ['entry_cooldown_seconds', 'Cooldown after an exit', 'seconds before the next entry', 'number', { step: 30, min: 0 }],
+    ['warmup_min', 'Warm-up', 'minutes of LIVE prices watched since the Algo was armed; 0 = off', 'number', { step: 10, min: 0 }],
+    ['cutoff_buffer_min', 'No entry before the close', 'minutes before the session close; 0 = off', 'number', { step: 5, min: 0 }],
+  ] },
+  { name: 'Filters', fields: [
+    ['edge_on', 'Edge', 'expected capture must be a multiple of the round trip', 'check'],
+    ['edge_multiple', 'Edge required', '&times; the round-trip cost', 'number', { step: 0.1, min: 0 }],
+    ['edge_capture_frac', 'Capture expected', 'of the full move back to the mean, 0&ndash;1', 'number', { step: 0.05, min: 0 }],
+    ['regime_on', 'Regime', 'no entry while the contract is TRENDING', 'check'],
+    ['regime_er_max', 'Trending above efficiency', 'net move over path, 0&ndash;1', 'number', { step: 0.05, min: 0 }],
+    ['regime_min_crossings', '&hellip; and mean crossings at most', 'over the last 2N candles', 'number', { step: 1, min: 0 }],
+    ['trend_on', 'Trend', 'no entry AGAINST a middle that moved this far', 'check'],
+    ['trend_sigma', 'Trend limit', 'σ of drift in the EMA', 'number', { step: 0.1, min: 0 }],
+    ['trend_lookback_min', 'over the last', 'minutes', 'number', { step: 15, min: 1 }],
+    ['half_life_min_min', 'Half-life at least', 'minutes; 0 = off', 'number', { step: 5, min: 0 }],
+    ['half_life_max_min', 'Half-life at most', 'minutes; 0 = off', 'number', { step: 30, min: 0 }],
   ] },
   { name: 'Exit', fields: [
-    ['margin_per_contract', 'Margin per contract', 'money; TT does not report it. The target is a % of this &mdash; no margin, no entries', 'number', { step: 50, min: 0 }],
-    ['profit_target_pct', 'Profit target', '% of the margin, taken AFTER the whole round trip', 'number', { step: 0.5, min: 0 }],
-    ['stop_loss_z', 'Stop at |z|', 'on the side it would close on', 'number', { step: 0.5, min: 0 }],
-    ['stop_loss_money', 'Money stop', 'net loss per contract; 0 = off, the z stop stands alone', 'number', { step: 10, min: 0 }],
+    ['margin_per_contract', 'Margin per contract', 'money; TT does not report it. Target and stop are % of this &mdash; no margin, no entries', 'number', { step: 50, min: 0 }],
+    ['target_mode', 'Target sized by', '', 'select', { options: [['MARGIN', '% of margin'], ['ATR', 'ATR multiple']] }],
+    ['profit_target_pct', 'Profit target', '% of the margin, from break-even (after the whole round trip)', 'number', { step: 0.5, min: 0 }],
+    ['stop_loss_on', 'Stop loss', 'from break-even, the mirror of the target', 'check'],
+    ['stop_mode', 'Stop sized by', '', 'select', { options: [['MARGIN', '% of margin'], ['ATR', 'ATR multiple']] }],
+    ['stop_loss_pct', 'Stop loss at', '% of the margin, below break-even', 'number', { step: 0.5, min: 0 }],
+    ['atr_period', 'ATR period', 'candles, Wilder, close to close', 'number', { step: 1, min: 2 }],
+    ['atr_target_mult', 'Target', '&times; ATR (in ATR mode), frozen at entry', 'number', { step: 0.1, min: 0 }],
+    ['atr_stop_mult', 'Stop', '&times; ATR (in ATR mode), frozen at entry', 'number', { step: 0.1, min: 0 }],
+    ['stop_z_on', 'Z stop', 'on the side it would close on', 'check'],
+    ['stop_loss_z', 'Z stop at |z|', '', 'number', { step: 0.5, min: 0 }],
+    ['exit_at_mean', 'Exit at the mean when paid', 'back at the mean and net positive, short of the target', 'check'],
     ['max_hold_minutes', 'Time stop', 'minutes, whatever the P&amp;L; 0 = none', 'number', { step: 15, min: 0 }],
-    ['exit_at_mean', 'Exit at the mean when paid', 'closes short of the target once back at the mean and net positive', 'check'],
+    ['progress_bar', 'SL &larr; entry &rarr; TP bar', 'in the Algo window while a position is on', 'check'],
   ] },
   { name: 'Book', fields: [
     ['min_book_size', 'Book size at least', 'contracts on the touch, both sides', 'number', { step: 1, min: 0 }],
     ['max_book_spread_ticks', 'Book no wider than', 'ticks', 'number', { step: 1, min: 0 }],
   ] },
   { name: 'Size & risk', fields: [
-    ['quantity', 'Quantity per entry', 'contracts', 'number', { step: 1, min: 0 }],
+    ['quantity', 'Algo quantity', 'contracts per entry', 'number', { step: 1, min: 0 }],
     ['max_position', 'Maximum position', 'contracts; the hard ceiling', 'number', { step: 1, min: 0 }],
-    ['max_trades_per_day', 'Trades per day', '0 = no limit', 'number', { step: 1, min: 0 }],
-    ['daily_max_loss', 'Daily loss limit', 'money; hitting it turns THIS contract off and says so', 'number', { step: 50, min: 0 }],
-    ['entry_cooldown_seconds', 'Cooldown after a trade', 'seconds before the next entry on this contract', 'number', { step: 30, min: 0 }],
+    ['max_trades_per_day', 'Trades per day', 'Algo entries; 0 = no limit', 'number', { step: 1, min: 0 }],
+    ['max_losses_row', 'Losing trades in a row', 'pauses entries for the day; 0 = off', 'number', { step: 1, min: 0 }],
+    ['daily_max_loss', 'Daily loss limit', 'money, closed plus open; stops entries for the day', 'number', { step: 50, min: 0 }],
   ] },
   { name: 'Execution', fields: [
     ['entry_order_type', 'Entry', '', 'select', { options: [['LIMIT', 'Limit'], ['MARKET', 'Market']] }],
@@ -1566,9 +2065,11 @@ function drawChart(el, data, c) {
       Math.round(data.minutes || 0) + ' minutes yet.';
     return;
   }
-  const s = c.stats || {};
+  // The Algo's band: the EMA middle and its sigma, as the window shows them.
+  const a = c.algo || {};
+  const s = { mean: a.mean, std: a.sigma };
   const d = c.decimals === undefined ? (data.decimals || 4) : c.decimals;
-  const k = Number(data.entry_threshold) || 2.5;
+  const k = Number((a.params || {}).entry_z) || Number(data.entry_threshold) || 2.5;
   const stop = Number(data.stop_loss_z) || 4;
   const levels = [];
   if (s.mean !== null && s.mean !== undefined && s.std) {
@@ -1622,8 +2123,8 @@ function drawChart(el, data, c) {
     svg.appendChild(lab);
   });
   note.textContent = 'The last ' + Math.round(data.minutes) + ' minutes of the ' +
-    'recorded mid. The mean and bands are the ones the signal is reading now ' +
-    '(recomputed every few minutes), drawn across the window — not a history ' +
+    'recorded mid. The EMA middle and its bands are the ones the Algo is ' +
+    'reading now, drawn across the window — not a history ' +
     'of where they were. ▲ buy · ▼ sell; hover a mark for its reason.';
 }
 
@@ -1657,8 +2158,14 @@ function cfgField(field, label, hint, kind, opts, row) {
   const id = 'cf-' + field;
   let control;
   if (kind === 'check') {
+    // The box shows what is IN FORCE: its own setting, or the desk's. A box
+    // that read unticked for a desk default of ON would, on Save, write OFF —
+    // a stop loss switched off by pressing Save on another field.
+    const on = (own === null || own === undefined) ? eff === true : own === true;
     control = '<input type="checkbox" class="chk" id="' + id +
-      '" data-field="' + field + '"' + (own === true ? ' checked' : '') + '>';
+      '" data-field="' + field + '" data-was="' + (on ? '1' : '0') + '"' +
+      (own === null || own === undefined ? ' data-default="1"' : '') +
+      (on ? ' checked' : '') + '>';
   } else if (kind === 'select') {
     control = '<select id="' + id + '" data-field="' + field + '">' +
       (plain ? '' : '<option value="">&mdash; desk default &mdash;</option>') +
@@ -1705,7 +2212,12 @@ async function saveConfig(key) {
   const body = {};
   el.querySelectorAll('[data-field]').forEach((input) => {
     const field = input.dataset.field;
-    if (input.type === 'checkbox') body[field] = input.checked;
+    if (input.type === 'checkbox') {
+      // Untouched and still on the desk default: leave it on the default.
+      if (input.dataset.default === '1' &&
+          input.checked === (input.dataset.was === '1')) return;
+      body[field] = input.checked;
+    }
     else if (input.type === 'number') {
       // '' clears the override back to the desk default. 0 is a number.
       body[field] = input.value === '' ? '' : Number(input.value);
@@ -1742,6 +2254,9 @@ async function tick() {
       // remove the panel of one that is still here.
       seen.add('__config__' + c.key);
       seen.add('__chart__' + c.key);
+      seen.add('__ladder__' + c.key);
+      // The ladder first: on a fresh desk it sits to the LEFT of its Algo.
+      renderLadder(c, snap.engine);
       renderContract(c);
     });
     renderPositions(snap);

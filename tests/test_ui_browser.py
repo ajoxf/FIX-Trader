@@ -70,6 +70,56 @@ SNAPSHOT = {
                      'open_pnl': -20.0},
         'orders': [], 'pnl_today': 0.0, 'trades_today': 0, 'last_close': None,
         'last_event': 'BUY 5 @ 0.48', 'target_missing': None,
+        # The Algo window's block, shaped as `AlgoRun.block` publishes it.
+        'algo': {
+            'mode': 'PAPER', 'state': 'IN_POSITION', 'ready': True,
+            'count': 100, 'needed': 20, 'mean': 0.50, 'sigma': 0.04,
+            'upper': 0.58, 'lower': 0.42, 'z_sell': -0.5, 'z_buy': -0.25,
+            'z_mid': -0.375, 'signal': None, 'blocked': None, 'health': None,
+            'cooldown_sec': None, 'armed': {'BUY': False, 'SELL': True},
+            'streak': {'BUY': 0, 'SELL': 0},
+            'warmup': {'sec': 5400, 'need_sec': 5400, 'done': True},
+            'atr': 0.012, 'atr_period': 14, 'timeframe_min': 15,
+            'length': 20,
+            'params': {'entry_z': 2.0, 'direction': 'BOTH',
+                       'timeframe_min': 15, 'length': 20,
+                       'confirm_ticks': 3, 'reentry_on': True,
+                       'reentry_back': 0.5, 'reentry_window_pct': 50.0,
+                       'stop_loss_on': True, 'stop_mode': 'MARGIN',
+                       'target_mode': 'MARGIN', 'atr_period': 14,
+                       'edge_capture_frac': 0.5, 'max_trades_day': 10,
+                       'algo_qty': 5, 'progress_bar': True},
+            'positions': [{
+                'position_id': 7, 'side': 'BUY', 'entry': 0.48,
+                'closing': 0.48, 'z_close': -0.5, 'tp': 0.57, 'sl': 0.18,
+                'break_even': 0.518, 'net_pnl': -20.0, 'exit': None,
+                'progress': -0.1, 'quantity': 5, 'age_sec': 125.0,
+                'entry_z': -2.14, 'tp_money': 260.0, 'sl_money': -1500.0,
+                'paper': True}],
+            'filters': {
+                'ready': True, 'qty': 5, 'k': 100.0,
+                'cost': {'crossing': 5.0, 'commission': 10.0,
+                         'slippage': 0.0, 'total': 15.0},
+                'edge': {'on': True, 'ok': True, 'ratio': 2.0,
+                         'required': 1.5, 'capture': 30.0, 'cost': 15.0},
+                'regime': {'on': True, 'state': 'RANGE',
+                           'efficiency_ratio': 0.2, 'crossings': 9,
+                           'slope': 0.01},
+                'trend': {'on': True, 'drift_sigma': 0.2, 'state': 'FLAT',
+                          'limit': 1.0, 'lookback_min': 120},
+                'half_life_minutes': 45.0, 'half_life_band': [0, 0],
+                'warmup': {'sec': 5400, 'need_sec': 5400, 'done': True}},
+            'day': {'date': '2026-10-08', 'trades': 1, 'losses_row': 0,
+                    'pnl': 10.8},
+            'history': {'note': '100 candles from the recorded mids',
+                        'candles': 100},
+            'last_blocked': {'side': 'SELL', 'z': 2.31, 'at': 1791460000,
+                             'reason': 'edge filter: capture 0.9x the cost, '
+                                       'under the 1.5x required'},
+            'recent': [{'action': 'ENTER', 'side': 'BUY', 'z': -2.14,
+                        'at': 1791460100, 'mode': 'PAPER', 'done': True,
+                        'result': None}],
+        },
     }],
     'portfolio': {
         'rows': [{
@@ -121,23 +171,41 @@ def open_page(p, url, errors):
 
 
 def test_the_window_renders_every_field_without_a_page_error(server):
+    """The Algo window, as the MT5 desk draws it, on one contract: H to L on
+    the BID, L to H on the OFFER, the statistics, the filters, the last
+    signal held back and the last order — and its ladder beside it."""
     url, _ = server
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
         assert page.locator('.contractwin').count() == 1
-        assert page.locator('.state').inner_text() == 'IN'
-        assert page.locator('.bidc .v').inner_text() == '0.4800'
-        assert page.locator('.askc .v').inner_text() == '0.4900'
-        assert page.locator('.f-z').inner_text() == '-0.19'
-        assert page.locator('.f-buyat').inner_text() == '0.3400'
-        assert page.locator('.f-sellat').inner_text() == '0.6600'
-        # the position carries its own numbers
-        assert page.locator('.p-zin').inner_text() == '-2.14'
-        assert page.locator('.p-be').inner_text() == '0.5180'
-        assert page.locator('.p-tgt').inner_text() == '0.5700'
-        assert page.locator('.p-stop').inner_text() == '0.1800'
-        assert '$1,300' in page.locator('.p-margin').inner_text()
+        win = page.locator('.contractwin')
+        assert win.locator('.state').inner_text() == 'IN'
+        assert win.locator('.title').inner_text() == 'Iron ore Oct/Nov · Algo'
+        assert win.locator('.aw-mode').inner_text() == 'PAPER'
+        assert win.locator('.aw-tile.sell .aw-tile-price').inner_text() == '0.4800'
+        assert win.locator('.aw-tile.buy .aw-tile-price').inner_text() == '0.4900'
+        assert win.locator('.aw-tile.sell .aw-tile-z').inner_text() == '-0.50'
+        assert win.locator('.aw-tile.buy .aw-tile-z').inner_text() == '-0.25'
+        assert 'ARMED' in win.locator('.aw-tile.sell .aw-tile-entry').inner_text()
+        assert win.locator('.aw-pos').inner_text() == 'LONG 5'
+        stats = win.locator('.aw-stats').inner_text()
+        assert 'Mean (EMA)' in stats and '0.5000' in stats
+        assert 'candles ready' in stats and 'warmed up' in stats
+        filters = win.locator('.aw-filters').inner_text()
+        assert '2.00×' in filters and 'req 1.5×' in filters
+        assert 'edge filter' in filters                 # last signal blocked
+        assert 'filled on paper' in filters             # last order
+        signal = win.locator('.aw-signal').inner_text()
+        assert 'TP 0.5700' in signal and 'SL 0.1800' in signal
+        assert '% to SL' in signal                       # the progress bar
+        # the ladder, with the Algo's levels against the book
+        ladder = page.locator('.ladderwin')
+        assert ladder.count() == 1
+        marks = ladder.locator('.ld-marks').all_inner_texts()
+        assert any('ENTRY' in m for m in marks)
+        assert any('TP' in m for m in marks)
+        assert 'manual orders are off' in ladder.locator('.ld-banner').inner_text()
         browser.close()
     assert errors == []
 
@@ -147,19 +215,28 @@ def test_a_missing_figure_renders_as_an_em_dash_never_as_zero(server):
     it: unmeasured is not zero."""
     url, tmp = server
     snap = json.loads((tmp / 'status.json').read_text())
-    snap['contracts'][0]['stats'].update({'z': None, 'hurst': None,
-                                          'half_life': None, 'mean': None})
-    snap['contracts'][0]['filters']['edge_ratio'] = None
+    algo = snap['contracts'][0]['algo']
+    algo.update({'mean': None, 'sigma': None, 'atr': None, 'z_sell': None,
+                 'z_buy': None, 'upper': None, 'lower': None})
+    algo['filters']['half_life_minutes'] = None
+    algo['filters']['edge']['ratio'] = None
+    algo['filters']['cost']['total'] = None
     (tmp / 'status.json').write_text(json.dumps(snap))
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
         page.wait_for_timeout(900)
-        assert page.locator('.f-z').inner_text() == '—'
-        assert page.locator('.f-hurst').inner_text() == '—'
-        assert page.locator('.f-hl').inner_text() == '—'
-        assert page.locator('.f-mean').inner_text() == '—'
-        assert '—' in page.locator('.f-edge').inner_text()
+
+        def value(label):
+            return page.locator('.aw-kv', has=page.locator(
+                'span', has_text=label)).first.locator('b').inner_text()
+        assert value('Mean (EMA)') == '—'
+        assert value('Std dev') == '—'
+        assert value('ATR(14)') == '—'
+        assert value('Half-life') == '—'
+        assert value('Round trip') == '—'
+        assert value('Capture / cost').startswith('—')
+        assert page.locator('.aw-tile.sell .aw-tile-z').inner_text() == '—'
         browser.close()
     assert errors == []
 
@@ -238,18 +315,43 @@ def test_a_stale_quote_greys_the_prices_and_says_so(server):
 def test_a_withheld_entry_says_why_on_the_window(server):
     url, tmp = server
     snap = json.loads((tmp / 'status.json').read_text())
-    snap['contracts'][0]['position'] = None
-    snap['contracts'][0]['state'] = 'BLOCKED'
-    snap['contracts'][0]['filters']['blocked_by'] = \
-        'edge 0.7x — sigma 0.42 against a round trip of 0.60'
+    c = snap['contracts'][0]
+    c['position'] = None
+    c['state'] = 'BLOCKED'
+    c['algo'].update({'state': 'BLOCKED', 'positions': [],
+                      'blocked': 'edge filter: capture 0.70x the cost, '
+                                 'under the 1.5x required — round trip'})
     (tmp / 'status.json').write_text(json.dumps(snap))
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
         page.wait_for_timeout(900)
-        text = page.locator('.f-blocked').inner_text()
-        assert 'round trip' in text                # it names the numbers
+        text = page.locator('.aw-line').inner_text()
+        assert text.startswith('held:') and 'round trip' in text
+        assert page.locator('.aw-pos').inner_text() == 'FLAT'
         assert page.locator('.close-now').is_disabled()
+        browser.close()
+    assert errors == []
+
+
+def test_the_taskbar_minimises_and_restores_a_window(server):
+    """The ladder can be put away: its taskbar button takes it off the desk
+    and brings it back, and a reload remembers."""
+    url, _ = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        ladder = page.locator('.ladderwin')
+        ladder.locator('.min').click()
+        assert not ladder.is_visible()
+        tab = page.locator('#tabs .tk', has_text='Iron ore Oct/Nov').first
+        assert 'minimised' in tab.get_attribute('class')
+        page.reload(wait_until='domcontentloaded')
+        page.wait_for_selector('.contractwin')
+        page.wait_for_timeout(600)
+        assert not page.locator('.ladderwin').is_visible()   # remembered
+        page.locator('#tabs .tk.minimised').first.click()
+        assert page.locator('.ladderwin').is_visible()
         browser.close()
     assert errors == []
 
@@ -365,6 +467,7 @@ def with_analysis(tmp_path, report=None, desk=None):
     from fixtrader.config import ContractConfig, TraderConfig
     from fixtrader.database import Database
     from fixtrader.models import ExitReason, Position, Side, TouchEvent, TouchState
+    from tests.conftest import ALGO_TEST_SETTINGS
     from datetime import timedelta
 
     cfg = TraderConfig(path=str(tmp_path / 'config.json'))
@@ -374,12 +477,10 @@ def with_analysis(tmp_path, report=None, desk=None):
         tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
         quantity=5, commission_per_contract=1.0, slippage_budget_ticks=0.5,
         entry_threshold=2.0,
-        # The replay runs the contract's OWN settings over ~66 minutes of
-        # recorded mids, so the window has to be warm well inside that, and
-        # the target needs a margin to be a percentage of.
-        window_minutes=30, min_history_minutes=10, sample_interval_sec=1,
-        confirm_samples=1, margin_per_contract=260.0,
-        stats_update_interval_sec=0)
+        # The replay runs the contract's OWN Algo over the recorded mids:
+        # one-minute candles, and a margin for the target to be a % of.
+        margin_per_contract=260.0, profit_target_pct=1.0, stop_loss_pct=4.0,
+        **ALGO_TEST_SETTINGS)
     cfg.save()
 
     db = Database(str(tmp_path / 'a.db'))
@@ -417,9 +518,10 @@ def with_analysis(tmp_path, report=None, desk=None):
     import random
     rng = random.Random(7)
     px, rows = 0.60, []
-    for i in range(4000):
-        px += (0.60 - px) * 0.04 + rng.gauss(0, 0.012)
-        rows.append((base + timedelta(seconds=i), round(px, 4)))
+    for i in range(900):
+        px += (0.60 - px) * 0.3 + rng.gauss(0, 0.03)
+        rows.append((base - timedelta(hours=12) + timedelta(minutes=i),
+                     round(px, 4)))
     db.save_samples('fef', rows)
 
     from fixtrader.models import Fill

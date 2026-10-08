@@ -5,10 +5,11 @@ would have done to the same market — which is the other half of the loop, and
 the half that stops "±1.0 reverts more often" from being acted on before
 anybody checks whether it pays.
 
-**What this is, exactly.** A SIGNAL replay. It re-runs `stats.StatsWindow`,
-`signals.entry_signal` and `signals.exit_signal` over the mids this engine
-recorded, and charges the contract's own configured round trip against every
-trade. It is not a fill simulator and it never pretends to be one:
+**What this is, exactly.** A SIGNAL replay. It builds the contract's candles
+from the mids this engine recorded and runs them through `backtest.run` —
+the live Algo's own `algo.AlgoSignal`, filters and levels — charging the
+contract's configured round trip against every trade. It is not a fill
+simulator and it never pretends to be one:
 
 - **The recorded series is mids.** The book either side of the mid was not
   stored, so it is ASSUMED — one tick wide by default — and every report says
@@ -26,19 +27,19 @@ trade. It is not a fill simulator and it never pretends to be one:
   counted separately — the same rule the Analysis window follows for a live
   position, and for the same reason.
 
-Nothing in this module re-implements a rule. It calls the engine's own
-functions, so a threshold changed in `signals.py` changes what the replay
-says on the same commit.
+Nothing in this module re-implements a rule. It calls the Algo's own
+functions, so a rule changed in `algo.py` changes what the replay says on
+the same commit.
 """
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from . import algo as algo_mod
+from . import backtest
+from . import bands
 from . import costs as costs_mod
-from . import signals as signals_mod
-from . import sizing
-from .models import BookTop, ExitReason, Position, Side
-from .stats import StatsWindow
+from .models import BookTop
 
 #: How wide the book is assumed to be, in ticks, when it was not recorded.
 #: One tick is the usual quote on a listed spread. It is a stated assumption
@@ -74,13 +75,24 @@ def assumptions(settings: Dict[str, Any], tick_size: float,
     }
 
 
-def _margin_note(margin_per_contract: Optional[float]) -> str:
-    """Which margin a MARGIN target was priced off, in words."""
+def _margin_note(margin_per_contract: Optional[float],
+                 entered: bool = False) -> str:
+    """Which margin the target and the stop were priced off, in words."""
     if margin_per_contract and margin_per_contract > 0:
-        return (f'{margin_per_contract:,.2f} per contract, as the venue '
-                f'charged it on positions this contract recorded')
-    return ('not recorded for this contract — a target that is a '
-            'percentage of margin cannot be priced')
+        return (f'{margin_per_contract:,.2f} per contract, ' +
+                ('as entered for the contract' if entered else
+                 'as the venue charged it on positions this contract '
+                 'recorded'))
+    return ('not entered for this contract and not recorded — a target '
+            'that is a percentage of margin cannot be priced')
+
+
+def _margin(settings, recorded):
+    """The entered margin wins; the recorded one stands in. (margin, entered)"""
+    entered = costs_mod.configured_margin(settings, 1.0)
+    if entered:
+        return entered, True
+    return (recorded if recorded and recorded > 0 else None), False
 
 
 def _book(mid: float, tick_size: float, spread_ticks: float,
@@ -99,173 +111,74 @@ def replay(samples: Sequence[Tuple[datetime, float]],
            assumed_spread_ticks: float = DEFAULT_ASSUMED_SPREAD_TICKS,
            margin_per_contract: Optional[float] = None
            ) -> Dict[str, Any]:
-    """Run one set of settings over one recorded series.
+    """Run one set of settings over one recorded series, through the Algo.
 
-    Returns the trades it would have taken and what they would have made
-    after the configured round trip — with the assumptions it ran under
-    attached, because a figure whose assumptions are not on the page is a
-    figure somebody will quote without them.
-
-    `margin_per_contract` is what the venue actually charged this contract,
-    read off positions it has recorded. The shipped target is a percentage
-    of MARGIN, so without it a replayed position has no target — and in the
-    `profit` exit mode it then never takes profit at all. None is not
-    guessed at: the result says the target was missing instead.
+    The recorded mids become the contract's candles and go through
+    `backtest.run` — the live Algo's own `AlgoSignal`, filters and levels.
+    The margin the target and stop are a percentage of: the one entered for
+    the contract, else what the venue charged on recorded positions.
     """
-    tick_size = float(tick_size or 0.0)
-    qty = float(settings.get('quantity', 1.0) or 1.0)
-    # The margin the operator entered for the contract is the target's base;
-    # a margin the venue charged on a recorded position stands in only where
-    # none was entered.
-    if not costs_mod.configured_margin(settings, qty) and \
-            margin_per_contract and margin_per_contract > 0:
-        settings = dict(settings, margin_per_contract=float(margin_per_contract))
-    margin_locked = costs_mod.configured_margin(settings, qty)
-    if margin_locked:
-        margin_per_contract = margin_locked / qty
-
-    result: Dict[str, Any] = {
-        'contract_key': contract_key,
-        'samples': len(samples),
-        'warm': False,
-        'trades': [],
-        'still_open': 0,
-        'summary': _empty_summary(),
-        'assumptions': assumptions(settings, tick_size, tick_value,
-                                   assumed_spread_ticks),
-        'blocked_by': None,
-        'target_missing': None,
-    }
-    if not tick_size or not samples:
-        result['blocked_by'] = ('nothing recorded for this contract over that '
-                                'period' if not samples else
-                                'this contract has no tick size')
+    params = algo_mod.params_from_settings(settings)
+    tf = params['timeframe_min'] * 60.0
+    candles = bands.candles_from_samples(samples, tf)
+    qty = params['algo_qty']
+    breakdown = costs_mod.cost_breakdown(qty, tick_size, tick_value, settings)
+    fees = sum(breakdown[x] or 0.0
+               for x in ('commission', 'exchange', 'clearing'))
+    k = (tick_value / tick_size) if tick_value and tick_size else None
+    margin, entered = _margin(settings, margin_per_contract)
+    result: Dict[str, Any] = {'trades': [], 'summary': _empty_summary(),
+                              'still_open': 0,
+                              'warm': len(candles) > params['length'],
+                              'blocked_by': None, 'withheld': {},
+                              'target_missing': None,
+                              'assumptions': assumptions(
+                                  settings, tick_size, tick_value,
+                                  assumed_spread_ticks)}
+    result['assumptions']['margin'] = _margin_note(margin, entered)
+    if margin is None:
+        result['target_missing'] = ('no margin entered for this contract, '
+                                    'and none recorded')
+    if not samples:
+        result['blocked_by'] = 'nothing recorded for this period'
         return result
-    window = StatsWindow(
-        contract_key or 'replay',
-        window_minutes=float(settings.get('window_minutes', 150) or 150),
-        min_history_minutes=float(settings.get('min_history_minutes', 120) or 0),
-        sample_interval_sec=float(settings.get('sample_interval_sec', 1) or 0),
-        stats_update_interval_sec=float(
-            settings.get('stats_update_interval_sec', 0) or 0),
-        entry_threshold=float(settings.get('entry_threshold', 2.5) or 2.5))
-    confirm_side = None
-    confirm_count = 0
-    position: Optional[Position] = None
-    #: Why entries were withheld while the window was warm, counted. A
-    #: cooldown between trades is not the same finding as a filter that
-    #: withheld every entry there was.
-    withheld: Dict[str, int] = {}
-    entry_z: Optional[float] = None
-    entry_std: Optional[float] = None
-    trades: List[Dict[str, Any]] = []
-    round_trip = costs_mod.round_trip_money(
-        qty, tick_value,
-        float(settings.get('commission_per_contract', 0.0) or 0.0),
-        float(settings.get('exchange_fee_per_contract', 0.0) or 0.0),
-        float(settings.get('clearing_fee_per_contract', 0.0) or 0.0),
-        float(settings.get('slippage_budget_ticks', 0.0) or 0.0))
-
-    for ts, mid in samples:
-        book = _book(float(mid), tick_size, assumed_spread_ticks, ts)
-        window.add(book.mid, ts, algo_armed=True)
-        # The confirmation, counted per recorded sample exactly as the engine
-        # counts it per live one.
-        through = signals_mod.side_through(window, book, settings)
-        if through is not None and through is confirm_side:
-            confirm_count += 1
-        else:
-            confirm_side, confirm_count = through, (1 if through else 0)
-        if not window.is_warm:
-            continue
-        result['warm'] = True
-
-        if position is not None and position.is_open:
-            sig = signals_mod.exit_signal(window, book, position, settings,
-                                          tick_size, tick_value, ts)
-            if sig.action == 'CLOSE':
-                exit_px = book.executable(position.side.opposite)
-                if exit_px is None:
-                    continue
-                money = costs_mod.net_pnl(position.side, qty,
-                                          position.avg_price, exit_px,
-                                          tick_size, tick_value,
-                                          fees_paid=round_trip)
-                trades.append({
-                    'opened_at': position.opened_at.isoformat(),
-                    'closed_at': ts.isoformat(),
-                    'side': position.side.value,
-                    'qty': qty,
-                    'entry_z': entry_z,
-                    'exit_z': window.z,
-                    'entry_price': position.avg_price,
-                    'exit_price': exit_px,
-                    'gross': money['gross'],
-                    'costs': money['fees'],
-                    'net': money['net'],
-                    'held_sec': (ts - position.opened_at).total_seconds(),
-                    'exit_reason': (sig.exit_reason or ExitReason.TARGET).value,
-                })
-                position = None
-            continue
-
-        sig = signals_mod.entry_signal(
-            window, book, settings, tick_size, tick_value, ts,
-            algo_on=True, master_on=True, open_qty=0.0,
-            last_trade_at=(datetime.fromisoformat(trades[-1]['closed_at'])
-                           if trades else None),
-            confirmed=confirm_count)
-        if sig.action != 'OPEN':
-            # Why NOT, in the signal's own words. Without this a replay
-            # blocked by a filter reports "nothing crossed the threshold",
-            # which is a different — and wrong — answer, and it sends the
-            # desk to change the number that was never the problem.
-            if sig.blocked_by:
-                withheld[sig.blocked_by] = withheld.get(sig.blocked_by, 0) + 1
-            continue
-        entry_px = book.executable(sig.side)
-        if entry_px is None:
-            continue
-        entry_z, entry_std = window.z, window.std
-        position = Position(contract_key=contract_key, side=sig.side,
-                            qty=qty, opened_qty=qty, avg_price=entry_px,
-                            opened_at=ts, entry_z=entry_z, entry_std=entry_std)
-        # The exits read this. Computed the same way the engine computes it,
-        # from the same function, so a replay and a live trade aim at the
-        # same price.
-        position.break_even = costs_mod.break_even(
-            entry_px, sig.side, qty, tick_size, tick_value, settings)
-        position.target_price = costs_mod.target_price(
-            entry_px, sig.side, qty, tick_size, tick_value, settings,
-            margin_locked=margin_locked,
-            contract_multiplier=contract_multiplier, entry_std=entry_std)
-        if position.target_price is None:
-            result['target_missing'] = costs_mod.missing_for_target(
-                settings, margin_locked, contract_multiplier, entry_std,
-                tick_value)
-
-    result['trades'] = trades
-    result['still_open'] = 1 if (position is not None and position.is_open) else 0
-    result['summary'] = summarise(trades, round_trip)
-    result['withheld'] = dict(sorted(withheld.items(), key=lambda kv: -kv[1]))
-    result['assumptions']['margin'] = _margin_note(margin_per_contract)
     if not result['warm']:
         result['blocked_by'] = (
-            f"{window.history_minutes:.0f} minutes of continuous history "
-            f"recorded, and the window needs {window.min_history_minutes:.0f} "
-            f"before its first entry. Record more, or replay a shorter "
-            f"warm-up.")
+            f"{len(candles)} candle(s) of {params['timeframe_min']} min "
+            f"recorded, and the band needs {params['length']} before its "
+            f"first entry. Record more.")
         return result
-    if result['warm'] and not trades:
-        # A cooldown is a consequence of trading, so it is never the headline
-        # reason for having taken no trades at all.
-        # Nor is a confirmation still counting: it is a step on the way in.
-        reasons = [(n, why) for why, n in withheld.items()
-                   if 'cooling down' not in why and 'confirming' not in why]
-        if reasons:
-            result['blocked_by'] = max(reasons)[1]
+    run = backtest.run(candles, params,
+                       (assumed_spread_ticks or 0.0) * (tick_size or 0.0), k,
+                       breakdown['round_trip_points'], fees, margin,
+                       breakdown['slippage_budget'] or 0.0)
+    round_trip = breakdown['round_trip_money']
+    trades = []
+    for t in run['trades']:
+        if t['closed_at'] is None:
+            result['still_open'] += 1      # excluded from every figure
+            continue
+        gross = (None if t['pnl'] is None or round_trip is None
+                 else t['pnl'] + round_trip)
+        trades.append({'side': t['side'], 'entry': t['entry'],
+                       'exit': t['exit'], 'entry_z': t['entry_z'],
+                       'reason': t['reason'], 'net': t['pnl'],
+                       'gross': gross, 'costs': round_trip,
+                       'exit_price': t['exit'],
+                       'opened_at': t['opened_at'],
+                       'closed_at': t['closed_at'],
+                       'held_sec': (t['closed_at'] - t['opened_at'])})
+    result['trades'] = trades
+    result['summary'] = summarise(trades, round_trip)
+    result['withheld'] = dict(run['held'])
+    if not trades:
+        # The signal's own words: "nothing crossed" when a filter was the
+        # blocker sends the desk to change the number that was never it.
+        if run['held']:
+            result['blocked_by'] = max(run['held'].items(),
+                                       key=lambda kv: kv[1])[0]
         else:
-            result['blocked_by'] = ('the window warmed but nothing crossed '
+            result['blocked_by'] = ('the band filled but nothing crossed '
                                     'the entry threshold over this period')
     return result
 
@@ -348,7 +261,7 @@ def sweep(samples: Sequence[Tuple[datetime, float]],
                if rows and len(reasons) == 1 and rows[0]['blocked_by']
                and not any(r['trades'] for r in rows) else None)
     stated = assumptions(settings, tick_size, tick_value, assumed_spread_ticks)
-    stated['margin'] = _margin_note(margin_per_contract)
+    stated['margin'] = _margin_note(*_margin(settings, margin_per_contract))
     return {'rows': rows, 'best': best_of(rows), 'blocked_by': blocked,
             'assumptions': stated}
 

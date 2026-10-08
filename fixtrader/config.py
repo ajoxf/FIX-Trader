@@ -78,45 +78,82 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     'MAX_OPEN_CONTRACTS': 0.0,
 
     # -- defaults a blank contract field falls back to --------------------
-    # -- the signal: a rolling window, entered at 2.5 sigma, left once the
-    # round trip AND a profit on the margin are covered ---------------------
-    #: The window is TIME, not a count of polls: the last N minutes of mids,
-    #: sampled at most once per `DEFAULT_SAMPLE_INTERVAL_SEC`.
+    # -- the Algo: Bollinger bands on the contract's own candles ------------
+    #: Candles of this many minutes, each closing on the last MID seen in
+    #: it, the one forming now included. Built from the recorded mids — a
+    #: FIX market-data session has no history to backfill from.
+    'DEFAULT_TIMEFRAME_MIN': 15,
+    #: N: the band's middle is EMA(N) of the closes, sigma the POPULATION
+    #: standard deviation of the last N — TradingView's Bollinger, EMA basis.
+    'DEFAULT_LENGTH': 20,
+    #: ARMED when the BID's z reaches +this (H to L) or the OFFER's z
+    #: reaches -this (L to H) — each side on the price it could trade.
+    'DEFAULT_ENTRY_THRESHOLD': 2.5,
+    #: No entry beyond this |z|: a blow-out, not a stretch. 0 = no cap.
+    'DEFAULT_MAX_ENTRY_Z': 3.5,
+    #: Fresh quotes in a row the entry condition must hold for.
+    'DEFAULT_CONFIRM_SAMPLES': 3,
+    #: BOTH, SELL_ONLY (H to L) or BUY_ONLY (L to H). Entries only.
+    'DEFAULT_TRADE_DIRECTION': 'BOTH',
+    #: RE-ENTRY: armed at the band, entered on the way back IN by
+    #: `reentry_back` z, inside a window `reentry_window_pct` of the way
+    #: back to the mean. A trend rides the band and never comes back.
+    'DEFAULT_REENTRY_ON': True,
+    'DEFAULT_REENTRY_BACK': 0.5,
+    'DEFAULT_REENTRY_WINDOW_PCT': 50.0,
+    #: TREND: no entry against a middle (EMA) that moved more than this many
+    #: sigma over the lookback.
+    'DEFAULT_TREND_ON': True,
+    'DEFAULT_TREND_SIGMA': 1.0,
+    'DEFAULT_TREND_LOOKBACK_MIN': 120.0,
+    #: No entry this close to the session close (or after it). 0 = off.
+    'DEFAULT_CUTOFF_BUFFER_MIN': 20.0,
+    #: Minutes of LIVE prices the Algo must have watched since it was
+    #: switched on before its first entry. 0 = off.
+    'DEFAULT_WARMUP_MIN': 90.0,
+    #: The filters. Edge: expected capture (capture x |z| x sigma, in money)
+    #: at least `edge_multiple` x the round trip. Regime: no entry while the
+    #: contract is TRENDING. Half-life band in minutes, 0 = that end off.
+    'DEFAULT_EDGE_ON': True,
+    'DEFAULT_EDGE_MULTIPLE': 1.5,
+    'DEFAULT_EDGE_CAPTURE_FRAC': 0.5,
+    'DEFAULT_REGIME_ON': True,
+    'DEFAULT_REGIME_ER_MAX': 0.6,
+    'DEFAULT_REGIME_MIN_CROSSINGS': 4,
+    'DEFAULT_HALF_LIFE_MIN_MIN': 0.0,
+    'DEFAULT_HALF_LIFE_MAX_MIN': 0.0,
+    #: The STOP LOSS, from break-even: % of the margin (MARGIN) or a
+    #: multiple of the ATR (ATR). On by default — a signal that says where
+    #: to get out in profit and never in a loss is half an exit.
+    'DEFAULT_STOP_LOSS_ON': True,
+    'DEFAULT_STOP_LOSS_PCT': 2.0,
+    'DEFAULT_STOP_MODE': 'MARGIN',
+    'DEFAULT_TARGET_MODE': 'MARGIN',
+    'DEFAULT_ATR_PERIOD': 14,
+    'DEFAULT_ATR_STOP_MULT': 2.0,
+    'DEFAULT_ATR_TARGET_MULT': 1.5,
+    #: The optional exits, each OFF until a contract asks: a z stop on the
+    #: closing side, back at the mean only in profit, and a time stop.
+    'DEFAULT_STOP_Z_ON': False,
+    'DEFAULT_STOP_LOSS_Z': 4.0,
+    'DEFAULT_EXIT_AT_MEAN': False,
+    'DEFAULT_MAX_HOLD_MINUTES': 0.0,
+    'DEFAULT_MAX_LOSSES_ROW': 3,
+    'DEFAULT_PROGRESS_BAR': True,
+    # -- the touch study (Analysis): a rolling time window of the mids ------
     'DEFAULT_WINDOW_MINUTES': 150.0,
-    #: Continuous history the window needs before its first entry. A gap —
-    #: a restart, a stalled feed — is not history.
     'DEFAULT_MIN_HISTORY_MINUTES': 120.0,
     'DEFAULT_SAMPLE_INTERVAL_SEC': 1.0,
-    #: The bands stand still between recomputes so there is a level to aim
-    #: at; the z runs live against them.
     'DEFAULT_STATS_UPDATE_INTERVAL_SEC': 300.0,
-    #: SHORT when the z of the BID reaches +this; LONG when the z of the
-    #: OFFER reaches -this — each side on the price it could actually trade.
-    'DEFAULT_ENTRY_THRESHOLD': 2.5,
-    #: No entry beyond this |z|: a blow-out that far is more often a move
-    #: that keeps going than one that comes back.
-    'DEFAULT_MAX_ENTRY_Z': 3.5,
-    #: Consecutive samples the side's z must hold beyond the threshold.
-    'DEFAULT_CONFIRM_SAMPLES': 3,
-    #: BOTH, SELL_ONLY or BUY_ONLY. Entries only — never an exit.
-    'DEFAULT_TRADE_DIRECTION': 'BOTH',
-    'DEFAULT_STOP_LOSS_Z': 4.0,
-    #: A money stop per contract on NET P&L. 0 = off (the z stop still
-    #: stands, so a position always has a stop).
-    'DEFAULT_STOP_LOSS_MONEY': 0.0,
-    'DEFAULT_MAX_HOLD_MINUTES': 240.0,
-    #: Close at the rolling mean when the trade is already net positive,
-    #: even if the profit target has not been reached.
-    'DEFAULT_EXIT_AT_MEAN': True,
     #: The margin one contract ties up, as the operator enters it: TT does
-    #: not report it. The profit target is a percentage OF this, so a
-    #: contract without one has no target — and does not enter.
+    #: not report it. The target and the stop are percentages OF this, so a
+    #: contract without one in MARGIN mode has no levels — and does not enter.
     'DEFAULT_MARGIN_PER_CONTRACT': 0.0,
     'DEFAULT_MIN_BOOK_SIZE': 0.0,
     'DEFAULT_MAX_BOOK_SPREAD_TICKS': 0.0,
     'DEFAULT_QUANTITY': 1.0,
     'DEFAULT_MAX_POSITION': 0.0,
-    'DEFAULT_MAX_TRADES_PER_DAY': 0.0,
+    'DEFAULT_MAX_TRADES_PER_DAY': 10.0,
     'DEFAULT_DAILY_MAX_LOSS': 0.0,
     'DEFAULT_ENTRY_COOLDOWN_SECONDS': 300.0,
     'DEFAULT_ENTRY_ORDER_TYPE': OrderType.LIMIT.value,
@@ -185,7 +222,6 @@ CONTRACT_DEFAULTS: Dict[str, str] = {
     'confirm_samples': 'DEFAULT_CONFIRM_SAMPLES',
     'trade_direction': 'DEFAULT_TRADE_DIRECTION',
     'stop_loss_z': 'DEFAULT_STOP_LOSS_Z',
-    'stop_loss_money': 'DEFAULT_STOP_LOSS_MONEY',
     'max_hold_minutes': 'DEFAULT_MAX_HOLD_MINUTES',
     'exit_at_mean': 'DEFAULT_EXIT_AT_MEAN',
     'margin_per_contract': 'DEFAULT_MARGIN_PER_CONTRACT',
@@ -212,6 +248,34 @@ CONTRACT_DEFAULTS: Dict[str, str] = {
     'clearing_fee_per_contract': 'DEFAULT_CLEARING_FEE_PER_CONTRACT',
     'slippage_budget_ticks': 'DEFAULT_SLIPPAGE_BUDGET_TICKS',
     'profit_target_pct': 'DEFAULT_PROFIT_TARGET_PCT',
+    'timeframe_min': 'DEFAULT_TIMEFRAME_MIN',
+    'length': 'DEFAULT_LENGTH',
+    'reentry_on': 'DEFAULT_REENTRY_ON',
+    'reentry_back': 'DEFAULT_REENTRY_BACK',
+    'reentry_window_pct': 'DEFAULT_REENTRY_WINDOW_PCT',
+    'trend_on': 'DEFAULT_TREND_ON',
+    'trend_sigma': 'DEFAULT_TREND_SIGMA',
+    'trend_lookback_min': 'DEFAULT_TREND_LOOKBACK_MIN',
+    'cutoff_buffer_min': 'DEFAULT_CUTOFF_BUFFER_MIN',
+    'warmup_min': 'DEFAULT_WARMUP_MIN',
+    'edge_on': 'DEFAULT_EDGE_ON',
+    'edge_multiple': 'DEFAULT_EDGE_MULTIPLE',
+    'edge_capture_frac': 'DEFAULT_EDGE_CAPTURE_FRAC',
+    'regime_on': 'DEFAULT_REGIME_ON',
+    'regime_er_max': 'DEFAULT_REGIME_ER_MAX',
+    'regime_min_crossings': 'DEFAULT_REGIME_MIN_CROSSINGS',
+    'half_life_min_min': 'DEFAULT_HALF_LIFE_MIN_MIN',
+    'half_life_max_min': 'DEFAULT_HALF_LIFE_MAX_MIN',
+    'stop_loss_on': 'DEFAULT_STOP_LOSS_ON',
+    'stop_loss_pct': 'DEFAULT_STOP_LOSS_PCT',
+    'stop_mode': 'DEFAULT_STOP_MODE',
+    'target_mode': 'DEFAULT_TARGET_MODE',
+    'atr_period': 'DEFAULT_ATR_PERIOD',
+    'atr_stop_mult': 'DEFAULT_ATR_STOP_MULT',
+    'atr_target_mult': 'DEFAULT_ATR_TARGET_MULT',
+    'stop_z_on': 'DEFAULT_STOP_Z_ON',
+    'max_losses_row': 'DEFAULT_MAX_LOSSES_ROW',
+    'progress_bar': 'DEFAULT_PROGRESS_BAR',
 }
 
 
@@ -425,7 +489,15 @@ class ContractConfig:
         for numeric in ('window_minutes', 'min_history_minutes',
                         'sample_interval_sec', 'stats_update_interval_sec',
                         'entry_threshold', 'max_entry_z', 'confirm_samples',
-                        'stop_loss_z', 'stop_loss_money', 'max_hold_minutes',
+                        'stop_loss_z', 'max_hold_minutes',
+                        'timeframe_min', 'length', 'reentry_back',
+                        'reentry_window_pct', 'trend_sigma',
+                        'trend_lookback_min', 'cutoff_buffer_min',
+                        'warmup_min', 'edge_multiple', 'edge_capture_frac',
+                        'regime_er_max', 'regime_min_crossings',
+                        'half_life_min_min', 'half_life_max_min',
+                        'stop_loss_pct', 'atr_period', 'atr_stop_mult',
+                        'atr_target_mult', 'max_losses_row',
                         'margin_per_contract', 'min_book_size',
                         'max_book_spread_ticks', 'quantity', 'max_position',
                         'max_trades_per_day', 'daily_max_loss',
@@ -445,7 +517,15 @@ class ContractConfig:
         direction = str(out.get('trade_direction') or 'BOTH').upper()
         out['trade_direction'] = (direction if direction in
                                   ('BOTH', 'SELL_ONLY', 'BUY_ONLY') else 'BOTH')
-        out['exit_at_mean'] = bool(out.get('exit_at_mean'))
+        for flag in ('exit_at_mean', 'reentry_on', 'trend_on', 'edge_on',
+                     'regime_on', 'stop_loss_on', 'stop_z_on',
+                     'progress_bar'):
+            value = out.get(flag)
+            out[flag] = (value if isinstance(value, bool) else
+                         str(value).strip().lower() in ('1', 'true', 'yes', 'on'))
+        for mode in ('stop_mode', 'target_mode'):
+            chosen = str(out.get(mode) or 'MARGIN').upper()
+            out[mode] = chosen if chosen in ('MARGIN', 'ATR') else 'MARGIN'
         return out
 
     def to_dict(self) -> Dict[str, Any]:

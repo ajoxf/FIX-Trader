@@ -423,6 +423,7 @@ def test_the_replay_prices_a_margin_target_off_the_margin_it_was_charged(tmp_pat
     from fixtrader.config import ContractConfig
     from fixtrader.database import Database
     from fixtrader.models import Position, Side
+    from tests.conftest import ALGO_TEST_SETTINGS
 
     cfg = TraderConfig(path=str(tmp_path / 'config.json'))
     cfg.settings['DATABASE_PATH'] = str(tmp_path / 'r.db')
@@ -430,16 +431,15 @@ def test_the_replay_prices_a_margin_target_off_the_margin_it_was_charged(tmp_pat
         key='fef', name='Iron ore Oct/Nov', symbol='FEFV6-FEFX6',
         tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
         quantity=5, commission_per_contract=1.0, entry_threshold=2.0,
-        window_minutes=2.0, min_history_minutes=2.0, sample_interval_sec=1.0,
-        confirm_samples=1, max_entry_z=9.0, profit_target_pct=2.0,
-        stop_loss_z=99.0, stats_update_interval_sec=0)
+        max_entry_z=9.0, profit_target_pct=1.0, stop_loss_pct=4.0,
+        **ALGO_TEST_SETTINGS)
     cfg.save()
     db = Database(str(tmp_path / 'r.db'))
     rng, px, rows = random.Random(7), 0.60, []
-    base = datetime.now(timezone.utc) - timedelta(hours=2)
-    for i in range(3000):
-        px += (0.60 - px) * 0.04 + rng.gauss(0, 0.012)
-        rows.append((base + timedelta(seconds=i), round(px, 4)))
+    base = datetime.now(timezone.utc) - timedelta(hours=20)
+    for i in range(900):
+        px += (0.60 - px) * 0.3 + rng.gauss(0, 0.03)
+        rows.append((base + timedelta(minutes=i), round(px, 4)))
     db.save_samples('fef', rows)
     app = create_app(str(tmp_path / 'config.json'), str(tmp_path / 's.json'),
                      str(tmp_path / 'c.jsonl'), str(tmp_path / 'r.json'))
@@ -456,3 +456,44 @@ def test_the_replay_prices_a_margin_target_off_the_margin_it_was_charged(tmp_pat
     assert priced['rows'][0]['trades'] > 0
     assert priced['blocked_by'] is None
     assert '260.00 per contract' in priced['assumptions']['margin']
+
+
+def test_the_backtest_replays_the_recording_through_the_algo(tmp_path):
+    """The Algo window's BACKTEST: these settings, and beside them the same
+    without re-entry and the trend filter, over the recorded mids — and an
+    honest 'not enough recorded' rather than a table of zeros."""
+    import random
+    from datetime import datetime, timedelta, timezone
+    from fixtrader.config import ContractConfig
+    from fixtrader.database import Database
+    from tests.conftest import ALGO_TEST_SETTINGS
+
+    cfg = TraderConfig(path=str(tmp_path / 'config.json'))
+    cfg.settings['DATABASE_PATH'] = str(tmp_path / 'b.db')
+    cfg.contracts['fef'] = ContractConfig(
+        key='fef', name='Iron ore Oct/Nov', symbol='FEFV6-FEFX6',
+        tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
+        quantity=5, commission_per_contract=1.0, entry_threshold=2.0,
+        margin_per_contract=260.0, profit_target_pct=1.0,
+        **ALGO_TEST_SETTINGS)
+    cfg.save()
+    app = create_app(str(tmp_path / 'config.json'), str(tmp_path / 's.json'),
+                     str(tmp_path / 'c.jsonl'), str(tmp_path / 'r.json'))
+    c = app.test_client()
+
+    short = c.get('/api/backtest/fef?days=3').get_json()
+    assert short['ok'] is False and 'the band needs 20' in short['reason']
+
+    db = Database(str(tmp_path / 'b.db'))
+    rng, px, rows = random.Random(7), 0.60, []
+    base = datetime.now(timezone.utc) - timedelta(hours=20)
+    for i in range(900):
+        px += (0.60 - px) * 0.3 + rng.gauss(0, 0.03)
+        rows.append((base + timedelta(minutes=i), round(px, 4)))
+    db.save_samples('fef', rows)
+    out = c.get('/api/backtest/fef?days=3').get_json()
+    assert out['ok'] is True
+    assert out['summary']['trades'] > 0
+    assert 'trades' in out['without_protections']
+    assert any('inside a candle' in x for x in out['caveats'])
+    assert c.get('/api/backtest/nope').status_code == 404

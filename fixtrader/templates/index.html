@@ -287,88 +287,75 @@
   </section>
 </template>
 
+<!-- One contract's Algo: SIGNAL & POSITION, STATISTICS, FILTERS, and a
+     backtest of its settings over the recorded mids. The venue lists the
+     spread itself, so there is one price — no legs. -->
 <template id="contract-template">
-  <section class="win contractwin">
+  <section class="win contractwin algowin">
     <div class="titlebar">
       <span class="swatch"></span>
       <span class="title"></span>
-      <span class="venue"></span>
-      <span class="winbtns"><button class="winbtn chart" title="Chart: price, mean and bands over the window"><svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><polyline points="1,10 4,6 7,8 11,2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button><button class="winbtn cog" title="This contract's settings">&#9881;</button><button class="winbtn close" title="Close this window">&times;</button></span>
+      <span class="aw-mode" title="What the Algo does with a signal"></span>
+      <span class="winbtns"><button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button><button class="winbtn chart" title="Chart: the recorded mid, the band, entries and exits"><svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><polyline points="1,10 4,6 7,8 11,2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></button><button class="winbtn cog" title="This contract's Algo settings">&#9881;</button><button class="winbtn close" title="Close this window">&times;</button></span>
     </div>
     <div class="badgebar">
       <span class="state">&mdash;</span>
       <span class="dirbadge hidden" title="This contract enters in one direction only; exits are never restricted"></span>
-      <span class="algo"><span class="lb">ALGO</span><button class="sw" title="Arm or stand down this contract's algo"><i></i><span>OFF</span></button></span>
+      <span class="algo"><span class="lb">ALGO</span><button class="sw" title="Arm or stand down this contract's Algo"><i></i><span>OFF</span></button></span>
     </div>
-    <div class="wbody">
-      <div class="touch">
-        <div class="bidc"><div class="k">BID</div><div class="v">&mdash;</div><div class="sz">&mdash;</div></div>
-        <div class="askc"><div class="k">ASK</div><div class="v">&mdash;</div><div class="sz">&mdash;</div></div>
+    <div class="wbody aw-body">
+      <div class="aw-section aw-signal"></div>
+      <div class="aw-closebar hidden"><button class="btn wide danger close-now" disabled>CLOSE NOW</button></div>
+      <div class="aw-section aw-stats"></div>
+      <div class="aw-section aw-filters"></div>
+      <!-- What THESE settings would have done over the recorded mids — and
+           without re-entry and the trend filter, beside it. Sends nothing. -->
+      <div class="aw-section aw-backtest">
+        <div class="aw-head">Backtest</div>
+        <div class="aw-bt-controls">
+          <select class="aw-bt-days" title="How much of the recording to replay">
+            <option value="3">last 3 days</option>
+            <option value="5" selected>last 5 days</option>
+            <option value="10">last 10 days</option>
+          </select>
+          <button type="button" class="btn aw-bt-run" title="Replay the recorded mids through this contract's Algo, with its settings as they are now. Nothing is sent.">Run backtest</button>
+        </div>
+        <div class="aw-bt-out hint">What these settings would have done — nothing is sent.</div>
       </div>
-      <div class="midrow"><span class="k">MID</span><span class="v mid">&mdash;</span></div>
-
-      <div class="sect">
-        <div class="grid2">
-          <div class="kv"><span class="k">MEAN</span><span class="v f-mean">&mdash;</span></div>
-          <div class="kv"><span class="k">SIGMA</span><span class="v f-std">&mdash;</span></div>
-          <div class="kv"><span class="k">Z</span><span class="v em f-z">&mdash;</span></div>
-          <div class="kv"><span class="k">HIST</span><span class="v f-n" title="minutes of continuous history in the window">&mdash;</span></div>
-          <div class="kv"><span class="k">BID z</span><span class="v f-zbid" title="the z a SHORT is decided on">&mdash;</span></div>
-          <div class="kv"><span class="k">ASK z</span><span class="v f-zask" title="the z a LONG is decided on">&mdash;</span></div>
-        </div>
-        <div class="zstrip" title="Where z sits between the two entry thresholds">
-          <div class="zone entry left"></div><div class="zone entry right"></div>
-          <div class="tick thr t-lo"></div><div class="tick mid"></div><div class="tick thr t-hi"></div>
-          <div class="mk"></div>
-          <span class="lbl lbl-lo"></span><span class="lbl lbl-hi"></span>
-        </div>
-        <div class="grid2 bands">
-          <!-- The thresholds as PRICES, and named by the side each fires:
-               a trader checks a level against the book, not against a z. -->
-          <div class="kv"><span class="k">BUY @</span><span class="v f-buyat">&mdash;</span></div>
-          <div class="kv"><span class="k">SELL @</span><span class="v f-sellat">&mdash;</span></div>
-        </div>
-        <div class="bar warmbar"><i></i></div>
-        <div class="kv warmrow"><span class="k">WARM</span><span class="v f-warm">&mdash;</span></div>
-      </div>
-
-      <div class="sect">
-        <div class="kv"><span class="k">TARGET</span><span class="v f-target" title="exit once NET P&amp;L, after the whole round trip, reaches this">&mdash;</span></div>
-        <div class="kv"><span class="k">EDGE</span><span class="v f-edge" title="sigma against the round trip, a reading">&mdash;</span></div>
-        <div class="grid2">
-          <div class="kv"><span class="k">H</span><span class="v f-hurst">&mdash;</span></div>
-          <div class="kv"><span class="k">HL</span><span class="v f-hl">&mdash;</span></div>
-        </div>
-        <div class="hint f-blocked hidden"></div>
-        <div class="hint f-proposal hidden"></div>
-      </div>
-
-      <div class="sect">
-        <div class="posline hidden">
-          <span class="side"></span><span class="q"></span><span class="at"></span>
-          <span class="pnl">&mdash;</span>
-        </div>
-        <div class="flatline">&mdash;</div>
-        <div class="grid2 posgrid hidden">
-          <div class="kv"><span class="k">Z IN</span><span class="v p-zin">&mdash;</span></div>
-          <div class="kv"><span class="k">B/E</span><span class="v p-be">&mdash;</span></div>
-          <div class="kv"><span class="k">TGT</span><span class="v p-tgt">&mdash;</span></div>
-          <div class="kv"><span class="k">Z STOP</span><span class="v p-stop" title="the price where the closing side's z reaches the stop">&mdash;</span></div>
-          <div class="kv"><span class="k">$ STOP</span><span class="v p-mstop" title="net loss that closes it; off = the z stop stands alone">&mdash;</span></div>
-          <div class="kv"><span class="k">HELD</span><span class="v p-held">&mdash;</span></div>
-          <div class="kv"><span class="k">LEFT</span><span class="v p-left" title="until the time stop">&mdash;</span></div>
-          <div class="kv"><span class="k">NET</span><span class="v em p-net" title="after the whole round trip, at the side it would close on">&mdash;</span></div>
-          <div class="kv"><span class="k">MARGIN</span><span class="v p-margin">&mdash;</span></div>
-        </div>
-        <div class="hint p-missing hidden"></div>
-      </div>
-
-      <button class="btn wide danger close-now" disabled>CLOSE NOW</button>
     </div>
     <div class="wfoot">
       <span class="age">&mdash;</span>
       <span class="grow last-event"></span>
     </div>
+  </section>
+</template>
+
+<!-- The contract's price ladder, beside its Algo. On this desk it shows
+     where the Algo's levels sit against the book; trading by hand is on
+     Instruments &amp; orders, and only in MANUAL mode. CLOSE always closes. -->
+<template id="ladder-template">
+  <section class="win ladderwin">
+    <div class="titlebar">
+      <span class="swatch"></span>
+      <span class="title"></span>
+      <span class="ld-route"></span>
+      <span class="ld-mode"></span>
+      <span class="winbtns"><button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button><button class="winbtn close" title="Close this window">&times;</button></span>
+    </div>
+    <div class="ld-head">
+      <span class="ld-net" title="The open position's net P&amp;L at the side it would close on, after the round trip">&mdash;</span>
+      <span class="ld-hl"></span>
+    </div>
+    <div class="ld-banner"></div>
+    <div class="ld-scroll"><table class="ld-table">
+      <thead><tr><th>Bids</th><th>Price</th><th>Asks</th><th>Algo</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <div class="ld-actions">
+      <button class="btn danger ld-close" disabled title="Close the open position at market, now, and stand this contract's Algo down">CLOSE</button>
+      <button class="btn ld-centre" title="Put the market back in the middle of the ladder">Centre</button>
+    </div>
+    <div class="wfoot"><span class="grow ld-quote">&mdash;</span></div>
   </section>
 </template>
 

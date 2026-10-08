@@ -52,6 +52,11 @@ the drawing wins.
   - Closes and cancels are never refused, in either mode: the guard is on
     new exposure only. A manual order recovered as UNKNOWN after a restart
     is named, not counted as open (it would block the switch for ever).
+- **The Algo desk is a ladder and an Algo window per contract**, each with
+  a taskbar button that minimises and restores it. The desk ladder shows the
+  book and the Algo's levels against it; it does not take manual orders
+  (those are on Instruments & orders, in MANUAL mode). Its CLOSE always
+  closes.
 - **CLOSE NOW stands that contract's algo down.** The z that put the position
   on has not moved, so an algo left armed re-enters on the next pass — a
   tenth of a second after the trader pressed the button to get out.
@@ -95,34 +100,48 @@ the drawing wins.
   Aliasing made a queued ACK report the order's current state, the reader
   marked it done, and the fill that followed was applied as an open — doubling
   the position instead of closing it.
-- **The signal is a Bollinger-style 2.5-sigma reversion on the spread's own
-  mid, over a rolling TIME window** — 150 minutes of one-second samples,
-  trading only after 120 minutes of CONTINUOUS history (a gap longer than
-  `max(5 s, 10 × interval)` is not history), bands recomputed every 5 minutes.
-  An entry reads the EXECUTABLE side's z — SHORT when the bid's z ≥ +2.5,
-  LONG when the offer's z ≤ −2.5 — never the mid's, and it needs
-  `confirm_samples` consecutive SAMPLES through the level, not polls: ten
-  polls inside one second are one sample. Its filters are the ceiling
-  (`min(max_entry_z, stop_loss_z)`), the per-contract direction, the cooldown
-  and can-it-pay: the target must lie between the entry and the mean, or the
-  trade is refused before it is taken.
-- **The profit target is NET, and a % of the margin the trader ENTERS.** TT
-  reports no margin, so `margin_per_contract` wins over the venue's figure,
-  and with neither there is no target and therefore no entry — the window
-  says so. It is never read as zero. Exits, on the side that closes: z stop,
-  money stop (0 = off), target, time stop, and back at the mean only if the
-  net is positive.
+- **The Algo is the MT5 desk's Algo, on ONE contract** (`algo.py`,
+  `bands.py`, `algofilters.py`, `algodesk.py`, `backtest.py`). Bollinger
+  bands, TradingView's convention: candles of `timeframe_min` closing on the
+  last MID in them (the forming candle counts), middle = EMA(N), sigma = the
+  POPULATION sigma of the last N. "H to L" sells the contract into its BID,
+  "L to H" buys its OFFER — there are no legs and no beta. A side is ARMED
+  when its own z reaches the entry z and, with re-entry on, ENTERS on the way
+  back in, inside the re-entry window; it must hold for `confirm_samples`
+  FRESH QUOTES (a quote read again is not a new one). The gates — health,
+  mode, the day's limits, collecting candles, the live warm-up, cooldown,
+  session cutoff, the |z| cap, levels, and the filters (edge, regime, trend,
+  half-life) — hold ENTRIES only and each says why; a filter it cannot price
+  BLOCKS. Those modules DECIDE; the engine acts — `tests/test_algo.py` fails
+  the build if one of them imports an order path.
+- **History is the recording.** A FIX market-data session has no bars to
+  backfill from: the band is rebuilt from the mids this system recorded, on
+  the Algo's FIRST pass and on the clock the passes run on (seeding on a
+  clock of its own left a band empty over hours of recordings). The live
+  warm-up is time WATCHED since the Algo was armed; a quick restart carries
+  it, standing the Algo down resets it.
+- **Levels are from BREAK-EVEN and frozen at entry**: the target is
+  `profit_target_pct` % of the margin the trader ENTERS (or `atr_target_mult`
+  x the ATR at entry), the stop loss `stop_loss_pct` % (or `atr_stop_mult` x
+  ATR), ON by default. TT reports no margin: `margin_per_contract` wins over
+  the venue's, and with neither the levels cannot be priced and nothing
+  enters — the window says so. It is never read as zero. The z stop, the
+  mean exit (in profit only) and the time stop are OFF until a contract asks.
+- **A checkbox shows what is IN FORCE, and Save writes it only if it was
+  changed.** A box drawn unticked for a desk default of ON wrote OFF on the
+  next Save — a stop loss switched off by saving a different field.
 - **With no algo order path the algo trades on PAPER** (`Engine.paper`,
   from `gateway.connection_only`): fills simulated at the live bid/offer the
   trade would cross, `PAPER-n` tickets, `is_simulated` on the position, and
   nothing reaches the venue. The screen says PAPER; the same signal drives
   real orders once the path exists.
-- **The window resumes across a restart only if the gap is short**
-  (`RESUME_MAX_GAP_MINUTES`); older samples belong to a market that has moved
-  on, and the window starts afresh and says so.
+- **The touch study (Analysis) keeps its own rolling time window**
+  (`stats.StatsWindow`), resumed across a restart only if the gap is short
+  (`RESUME_MAX_GAP_MINUTES`). It is a reading for the Analysis window, not
+  the Algo's band.
 - **Hurst is computed on the INCREMENTS, not the levels**, and is a reading
-  only — it no longer gates an entry. R/S over a price series reads ~1.0 for
-  everything, a random walk included.
+  only. R/S over a price series reads ~1.0 for everything, a random walk
+  included.
 - **Statistics stay live until the window is warm.** The update interval holds
   the bands still for a trader to aim at; applied during warm-up it froze a
   sigma computed from two samples.
@@ -132,9 +151,10 @@ the drawing wins.
   cover the round trip. Any "best level" must clear its costs, or the Analysis
   window invites lowering the threshold onto something that reverts
   beautifully and loses money every time.
-- **The replay is a SIGNAL replay and says so on its own face.** It calls
-  `stats` and `signals` — never a second implementation of a rule — over
-  recorded mids. The book either side of the mid was never stored, so the
+- **The replay and the backtest are SIGNAL replays and say so on their own
+  face.** They build candles from the recorded mids and run them through
+  `backtest.run` — the live `AlgoSignal`, `judge_filters` and `levels`, never
+  a second implementation of a rule. The book either side of the mid was never stored, so the
   spread is a stated assumption printed under the table; costs are the
   configured BUDGET and `slippage_measured` is None for ever; there is no
   queue. Where every entry was withheld it reports the signal's own words,
