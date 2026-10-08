@@ -22,7 +22,7 @@ The rules that make the limit path safe, and the reasons they exist:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from . import sizing
@@ -158,6 +158,8 @@ class Executor:
         #: trade the algo took at -2.24, and the whole touch study and trade
         #: journal are built on the z each decision was actually made at.
         self.decisions: Dict[str, Dict[str, Any]] = {}
+        #: Orders taken back from a previous run at startup.
+        self.adopted: set = set()
         #: The position each closing order is closing. Kept so an escalation
         #: sends the same close against the same position rather than a fresh
         #: opposite order with no effect flag on it.
@@ -363,6 +365,39 @@ class Executor:
                    # measured from THAT price, the wait included
                    decision=self._escalated(self.decisions.get(wo.clordid)),
                    position=self.positions.get(wo.clordid))
+
+    def adopt(self, row: Dict[str, Any]) -> bool:
+        """An order of ours a previous run left recorded as working, taken
+        back under management: so it can be cancelled, and so a fill for it
+        is applied as what it was — an OPEN or a CLOSE — not guessed."""
+        clordid = str(row.get('clordid') or '')
+        if not clordid or clordid in self.working:
+            return False
+        try:
+            wo = WorkingOrder(
+                clordid, row.get('contract_key') or '',
+                Side(row.get('side') or 'BUY'), float(row.get('qty') or 0),
+                OrderType(row.get('order_type') or 'MARKET'),
+                Intent(row.get('intent') or 'OPEN'), row.get('price'),
+                datetime.now(timezone.utc), row.get('sent_at_touch'),
+                row.get('reason') or 'adopted at startup',
+                row.get('position_id'))
+        except ValueError:
+            return False
+        wo.filled_qty = float(row.get('filled_qty') or 0)
+        wo.state = OrderState.WORKING
+        self.working[clordid] = wo
+        self.intents[clordid] = wo.intent
+        self.adopted.add(clordid)
+        return True
+
+    def is_adopted(self, clordid: str) -> bool:
+        return clordid in self.adopted
+
+    def release(self, clordid: str) -> None:
+        """Stop managing an adopted order the venue no longer knows."""
+        self.working.pop(clordid, None)
+        self.adopted.discard(clordid)
 
     @staticmethod
     def _escalated(decision: Optional[Dict[str, Any]]):

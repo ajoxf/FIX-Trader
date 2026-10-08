@@ -159,7 +159,8 @@ async function command(action, contract, args) {
       contract || '');
     return { ok: false, error: 'no answer from the engine' };
   }
-  if (answer.ok === false) {
+  if (answer.ok === false && !answer.confirm) {
+    // A request for confirmation is a question, not a refusal.
     toast('REJECT', 'REFUSED', answer.error || 'the engine refused it',
       contract || '');
   }
@@ -1869,6 +1870,13 @@ function renderChrome(snap) {
   } else if (engine.connection_only) {
     banner.classList.remove('hidden', 'critical');
     banner.textContent = 'Live FIX market data and algo proposals are available. Automatic orders require account recovery and FIX execution integration. Reviewed manual UAT orders remain under Instruments & orders.';
+  } else if (engine.execution && engine.execution.mode === 'LIVE' &&
+             engine.execution.positions_waived) {
+    banner.classList.remove('hidden', 'critical');
+    banner.textContent = 'LIVE — the Algo sends real orders. TT positions ' +
+      'could not be read on this session: this book\'s own fills are the ' +
+      'record, on your confirmation. A position opened in TT by other ' +
+      'means on this account is invisible to the Algo.';
   } else if (engine.book_complete === false) {
     banner.classList.remove('hidden');
     banner.classList.add('critical');
@@ -1932,6 +1940,20 @@ function renderChrome(snap) {
   // PAPER: filled at the live bid/offer inside the engine, nothing sent.
   auto.textContent = 'Auto trade: ' + (engine.auto_trade_enabled
     ? (engine.paper ? 'PAPER' : 'ON') : 'OFF');
+  // PAPER or LIVE: where the Algo's orders go. LIVE is armed by a person,
+  // confirmed every time, and is off after every restart.
+  const ex = engine.execution || {};
+  const exBtn = document.getElementById('execution-toggle');
+  exBtn.classList.toggle('hidden', !ex.can_live);
+  exBtn.textContent = 'Execution: ' + (ex.mode || DASH);
+  exBtn.classList.toggle('live', ex.mode === 'LIVE');
+  const pos = ex.positions || {};
+  exBtn.title = ex.mode === 'LIVE'
+    ? 'The Algo SENDS its orders to the venue. Click for PAPER.' +
+      (ex.positions_waived ? ' TT positions were NOT read — this book\'s own ' +
+        'fills are the record, on your confirmation.' : '')
+    : 'PAPER: the Algo fills here at the live price; nothing is sent. Click ' +
+      'to arm LIVE. TT positions: ' + (pos.why || pos.status || 'unknown') + '.';
   auto.classList.toggle('act', !!engine.auto_trade_enabled);
   auto.title = engine.auto_trade_available
     ? 'Turn automatic order placement on or off'
@@ -2435,6 +2457,25 @@ document.getElementById('mode-toggle').onclick = async (e) => {
   if (!ok) return;
   const answer = await command('trading_mode', '', { mode: next });
   if (answer && answer.ok) toast('OK', 'MODE', 'the desk is in ' + next + ' mode');
+};
+
+document.getElementById('execution-toggle').onclick = async () => {
+  const live = document.getElementById('execution-toggle').classList.contains('live');
+  if (live) {
+    await command('execution', '', { mode: 'PAPER' });
+    return;
+  }
+  // The engine writes the confirmation — the venue, the account, and
+  // whether TT's positions could be read — so the screen cannot soften it.
+  const asked = await command('execution', '', { mode: 'LIVE' });
+  if (!asked || !asked.confirm) return;
+  const ok = await ask('Arm LIVE?', asked.text, 'Arm LIVE');
+  if (!ok) return;
+  const done = await command('execution', '', { mode: 'LIVE', confirm: true });
+  if (done && done.ok) {
+    toast('ORDER', 'LIVE', 'the Algo now sends its orders to the venue' +
+      (done.positions_waived ? ' — TT positions unread, on your word' : ''));
+  }
 };
 
 document.getElementById('auto-trade-toggle').onclick = async () => {

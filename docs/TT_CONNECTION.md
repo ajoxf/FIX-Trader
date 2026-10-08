@@ -29,7 +29,8 @@ Open http://127.0.0.1:8000/ for the FIX connection dashboard (also available at
 sequence numbers, and recent activity. Connect FIX, Disconnect and Reconnect
 act on the engine's sessions; reconnection includes a ten-second cooldown.
 Stale engine status disables the controls and invalidates connected badges.
-The trading desk remains at `/desk`; account recovery is still unavailable.
+The trading desk remains at `/desk`. The Algo's orders use the same Order
+Routing session (PAPER until LIVE is armed and confirmed).
 
 Use `/exchanges` to edit configuration or Test for current session status.
 Connect asks the engine to start its persistent sessions; web requests never
@@ -46,9 +47,10 @@ The default `start.py` mode remains simulated. Stop the launcher with Ctrl+C.
 Changing session settings or credentials requires restarting the launcher.
 
 The adapter supports [instrument lookup, quotes and reviewed manual
-orders](INSTRUMENTS_AND_ORDERS.md). Algorithmic execution and full-account
-recovery remain unavailable. The strategy gateway reports unknown account
-positions/orders as `None`; it never claims the account is flat.
+orders](INSTRUMENTS_AND_ORDERS.md), and the Algo's own orders (`FT-` ids,
+77=O/C, 1028=N, cancel-on-disconnect). Account positions are requested at
+each logon (Request For Positions); until TT answers they are `None` — the
+gateway never claims the account is flat.
 The adapter accepts TT UAT FIX.4.2 with sequence reset enabled, matching the
 backup. It does not implement replay recovery: a recovery request closes the
 session with a visible error. Production is refused.

@@ -118,7 +118,16 @@ class Engine:
         #: PAPER: the gateway can see the market but cannot trade it — TT
         #: today. The signal still runs end to end, filled at the live bid
         #: or offer inside this process; no order is built for any venue.
-        self.paper: bool = bool(getattr(gateway, 'connection_only', False))
+        #: LIVE: the Algo's orders go to the venue. OFF after every restart
+        #: and armed only by a person, confirmed (`set_execution`); until
+        #: then a live venue's Algo trades on PAPER.
+        self.live_armed: bool = False
+        #: Armed LIVE with the venue's positions UNREAD, on the trader's
+        #: explicit word that this book's own fills are the record.
+        self.positions_waived: bool = False
+        #: Our orders recorded as working when the engine last ran: cancelled
+        #: once the session is up (the startup sweep, scoped to our ids).
+        self._swept_previous: bool = False
         self._paper_seq: int = 0
         #: WHO is trading this desk: the algo or a person, never both. Two
         #: hands on one book fight — the algo closes a hand-placed position at
@@ -153,6 +162,15 @@ class Engine:
         #: sure it is not ours.
         self.book_complete: bool = False
         self.unclaimed: List[Dict[str, Any]] = []
+
+    @property
+    def paper(self) -> bool:
+        """Fill the Algo's orders here, at the live price, and send nothing:
+        always on a venue that cannot take an order, and on a live venue
+        until LIVE has been armed and confirmed."""
+        if getattr(self.gateway, 'connection_only', False):
+            return True
+        return hasattr(self.gateway, 'venue') and not self.live_armed
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -258,7 +276,11 @@ class Engine:
         if self.db is not None:
             for pos in self.db.open_positions():
                 rt = self.runtimes.get(pos.contract_key)
-                if rt is not None:
+                # Only where the book has none in memory: recovery runs again
+                # when the venue's positions arrive mid-session, and swapping
+                # the live position for a copy would strand every reference
+                # the executor holds to it.
+                if rt is not None and rt.position is None:
                     rt.position = pos
 
         venue_positions = self.gateway.positions()
@@ -292,6 +314,7 @@ class Engine:
         events = self.gateway.drain_events()
         for event in events:
             self._handle_event(event, now)
+        self._venue_housekeeping()
 
         # The FIX receiver publishes normalized, coalesced updates. Consume
         # them on the engine thread so parsing and strategy work stay apart.
@@ -519,8 +542,12 @@ class Engine:
                             rt.position.qty, reason, words, book, now)
                 done = (rt.position is None if self.paper else
                         self._has_working_close(contract.key))
+                closing = [w.clordid for w in
+                           self.executor.working_for(contract.key)
+                           if w.is_close]
                 algo.record(intent, now.timestamp(), mode, done=done,
-                            result=None if done else rt.last_event)
+                            result=None if done else rt.last_event,
+                            clordid=closing[0] if closing else None)
                 continue
             # ENTER
             side = Side(intent['side'])
@@ -543,6 +570,7 @@ class Engine:
                         'half_life': (body['filters'].get('half_life_minutes')
                                       or 0) * 60.0 or None}
             rt.entry_atr = atr
+            sent_id = None
             if self.paper:
                 done = self._paper_fill(rt, side, qty, Intent.OPEN, book,
                                         now, decision=decision)
@@ -552,11 +580,13 @@ class Engine:
                                          reason=rt.proposal['reason'],
                                          decision=decision)
                 done = wo is not None
+                sent_id = wo.clordid if wo is not None else None
                 if done:
                     self._say(rt, "ORDER",
                               f"{side.value} {qty:g} — {rt.proposal['reason']}")
             algo.record(intent, now.timestamp(), mode, done=done,
-                        result=None if done else rt.last_event)
+                        result=None if done else rt.last_event,
+                        clordid=sent_id)
             if not done:
                 algo.signal.entry_failed(now.timestamp())
             else:
@@ -710,11 +740,21 @@ class Engine:
             # The venue's own words, verbatim. Never "check the log".
             self._say(rt, "REJECT", event.text or "rejected")
             self.notify("REJECT", rt.contract.key, event.text or "rejected")
+            if rt.algo is not None:
+                rt.algo.refused(event.clordid, event.text or "rejected",
+                                now.timestamp(), intent is Intent.OPEN)
             return
         if event.kind in ("FILL", "PARTIAL") and event.fill is not None:
             self._apply_fill(rt, event, intent, now)
-        elif event.kind == "CANCELLED":
-            self._say(rt, "ORDER", "cancelled")
+        elif event.kind in ("CANCELLED", "EXPIRED"):
+            self._say(rt, "ORDER", event.kind.lower())
+        elif event.kind == "CANCEL_REJECTED":
+            # The venue's own words. An order adopted from a previous run
+            # that the venue no longer knows is let go — it cannot be
+            # managed, and holding it would block the contract for ever.
+            self._say(rt, "REJECT", f"cancel/replace refused: {event.text}")
+            if self.executor.is_adopted(event.clordid):
+                self.executor.release(event.clordid)
 
     def _apply_fill(self, rt: ContractRuntime, event, intent: Intent,
                     now: datetime, simulated: Optional[bool] = None) -> None:
@@ -1027,6 +1067,125 @@ class Engine:
         logger.info("trading mode is now %s", mode)
         return {'ok': True, 'trading_mode': mode}
 
+    # -- the venue: sweep, reconcile, arm LIVE ------------------------------
+
+    def _venue_housekeeping(self) -> None:
+        """Once the venue session is up: cancel the orders of ours a
+        previous run left recorded as working (scoped to our ids — nothing
+        else at the venue is touched), and reconcile the book the moment the
+        venue's positions can be read."""
+        if not hasattr(self.gateway, 'venue'):
+            return
+        try:
+            up = self.gateway.state().value == 'LOGGED_ON'
+        except Exception:                                # noqa: BLE001
+            up = False
+        if up and not self._swept_previous:
+            self._swept_previous = True
+            self._sweep_previous_orders()
+        if not self.book_complete and self.gateway.positions() is not None:
+            self.recover()
+            if self.book_complete:
+                logger.info("venue positions read: the book is complete%s",
+                            f" — {len(self.unclaimed)} UNCLAIMED"
+                            if self.unclaimed else "")
+
+    def _sweep_previous_orders(self) -> None:
+        if self.db is None or not hasattr(self.gateway, 'adopt'):
+            return
+        from .gateway import CLORDID_PREFIX
+        done = {'FILLED', 'CANCELLED', 'REJECTED', 'EXPIRED'}
+        swept = 0
+        for row in self.db.orders(limit=2000):
+            clordid = str(row.get('clordid') or '')
+            if (not clordid.startswith(CLORDID_PREFIX + '-')
+                    or row.get('is_simulated')
+                    or str(row.get('state') or '').split('.')[-1] in done):
+                continue
+            if self.gateway.adopt(row) and self.executor.adopt(row):
+                self.gateway.cancel(clordid)
+                swept += 1
+        if swept:
+            logger.info("startup sweep: cancel requested for %d order(s) of "
+                        "ours a previous run left working", swept)
+
+    def _open_algo_business(self) -> List[str]:
+        out = []
+        for key, rt in self.runtimes.items():
+            if rt.position is not None and rt.position.is_open:
+                kind = 'PAPER' if self._is_paper(rt.position) else 'venue'
+                out.append(f"{rt.contract.name}: an open {kind} position")
+            if self.executor.working_for(key):
+                out.append(f"{rt.contract.name}: a working Algo order")
+        return out
+
+    def set_execution(self, mode: str, confirm: bool = False) -> Dict[str, Any]:
+        """PAPER or LIVE for the Algo's orders.
+
+        LIVE sends real orders to the venue, so it is never a default and
+        never implied: it is OFF after every restart, and arming it needs
+        `confirm` every time. When the venue's positions cannot be read, the
+        confirmation says so and arming it is the trader's word that this
+        book's own fills are the record. A switch either way is refused while
+        anything is open or working — a position at the venue does not
+        become a paper one by changing a setting."""
+        mode = str(mode or '').upper()
+        if mode not in ('PAPER', 'LIVE'):
+            return {'ok': False, 'error': f'{mode!r} is not PAPER or LIVE'}
+        if mode == ('LIVE' if self.live_armed else 'PAPER'):
+            return {'ok': True, 'execution': mode}
+        open_now = self._open_algo_business()
+        if open_now:
+            return {'ok': False, 'error': 'Close or cancel first: ' +
+                    '; '.join(open_now)}
+        if mode == 'PAPER':
+            self.live_armed = False
+            self.positions_waived = False
+            logger.info('Algo execution: PAPER')
+            return {'ok': True, 'execution': 'PAPER'}
+        if not hasattr(self.gateway, 'venue') or getattr(
+                self.gateway, 'connection_only', False):
+            return {'ok': False, 'error': 'this engine has no venue to send '
+                    'Algo orders to'}
+        if self.trading_mode != 'ALGO':
+            return {'ok': False, 'error': 'The desk is in MANUAL mode — switch '
+                    'it to ALGO first'}
+        if self.killed:
+            return {'ok': False, 'error': 'KILL ALL is on'}
+        if self.gateway.state().value != 'LOGGED_ON':
+            return {'ok': False, 'error': 'The venue is not logged on'}
+        venue = self.gateway.venue
+        status = (self.gateway.positions_status()
+                  if hasattr(self.gateway, 'positions_status') else
+                  {'status': 'unknown', 'why': None})
+        readable = self.gateway.positions() is not None
+        if readable:
+            self.recover()
+        lines = [f"LIVE sends REAL orders to {venue.name} "
+                 f"({venue.environment}), account {venue.account or '—'}."]
+        if readable:
+            lines.append('TT positions were read: the book is reconciled.' +
+                         (f" {len(self.unclaimed)} position(s) at TT this book "
+                          f"cannot explain are listed as UNCLAIMED and will "
+                          f"never be touched." if self.unclaimed else ''))
+        else:
+            lines.append('TT positions could NOT be read (' +
+                         (status.get('why') or status.get('status') or
+                          'unknown') + '). Arming LIVE is your word that this '
+                         "book's own fills are the record: a position opened "
+                         'in TT by other means on this account is invisible '
+                         'to the Algo.')
+        if not confirm:
+            return {'ok': False, 'confirm': True, 'text': ' '.join(lines)}
+        self.live_armed = True
+        self.positions_waived = not readable
+        logger.info('Algo execution: LIVE on %s (%s)%s', venue.name,
+                    venue.environment,
+                    ' — positions unread, confirmed by the trader'
+                    if self.positions_waived else '')
+        return {'ok': True, 'execution': 'LIVE',
+                'positions_waived': self.positions_waived}
+
     def set_auto_trade(self, on: bool) -> Dict[str, Any]:
         if on and self.trading_mode == 'MANUAL':
             return {'ok': False, 'error': 'The desk is in MANUAL mode. Switch '
@@ -1037,12 +1196,10 @@ class Engine:
             self.auto_trade_enabled = True
             return {'ok': True, 'auto_trade_enabled': True, 'paper': True}
         if on:
-            if getattr(self.gateway, 'connection_only', False):
+            if not self.book_complete and not self.positions_waived:
                 return {'ok': False, 'error':
-                    'Automatic FIX orders are unavailable: account recovery and execution are not wired.'}
-            if not self.book_complete:
-                return {'ok': False, 'error':
-                    'Automatic trading requires a complete recovered account book.'}
+                    'Automatic trading requires a complete recovered account '
+                    'book — or LIVE armed with the positions confirmed by you.'}
             if self.gateway.state().value != 'LOGGED_ON':
                 return {'ok': False, 'error': 'The venue is not logged on.'}
         was_enabled = self.auto_trade_enabled
@@ -1386,6 +1543,18 @@ class Engine:
                 'trading_mode': self.trading_mode,
                 'auto_trade_available': True,
                 'paper': self.paper,
+                'execution': {
+                    'mode': ('LIVE' if (hasattr(self.gateway, 'venue')
+                                        and not self.paper) else
+                             'PAPER' if self.paper else 'SIMULATOR'),
+                    'can_live': bool(hasattr(self.gateway, 'venue') and not
+                                     getattr(self.gateway, 'connection_only',
+                                             False)),
+                    'positions': (self.gateway.positions_status()
+                                  if hasattr(self.gateway, 'positions_status')
+                                  else None),
+                    'positions_waived': self.positions_waived,
+                },
                 'killed': self.killed,
                 'environment': self.config.environment_label,
                 'simulated': self.simulated,

@@ -35,6 +35,9 @@ import math
 from . import algofilters
 from . import bands
 
+#: The least time a refused entry waits before it is tried again.
+ENTRY_RETRY_SEC = 30.0
+
 #: The candle sizes a contract can use, in minutes.
 TIMEFRAMES = (1, 5, 15, 30, 60, 240)
 
@@ -385,9 +388,13 @@ class AlgoSignal:
 
     def entry_failed(self, now):
         """An entry that was SENT and did not go on: the cooldown starts,
-        so the same refused order is not sent ten times a second."""
+        so the same refused order is not sent ten times a second — at least
+        `ENTRY_RETRY_SEC`, even on a contract whose cooldown is 0."""
         self._entry_live = None
         self._start_cooldown(now)
+        floor = now + ENTRY_RETRY_SEC
+        if self._cooldown_until is None or self._cooldown_until < floor:
+            self._cooldown_until = floor
 
     def exit_failed(self, position_id):
         """An exit that was sent and did not close: report it again."""

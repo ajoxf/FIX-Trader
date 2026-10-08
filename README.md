@@ -18,18 +18,18 @@ books and pending events. The feed reports its coalesced count as `dropped`.
 Use `run_fix.ps1` or `run_fix.bat` with your existing UAT configuration and
 credentials in `.env`. The FIX audit records incoming messages, while DEBUG
 logging for `fixtrader.gateway` and `fixtrader.engine` records normalized
-events and strategy consumption. Algorithmic order execution and venue position
-reconciliation are still unavailable in `FixGateway`; the existing reviewed
-manual UAT ticket remains the only live execution path.
+events and strategy consumption. The Algo's orders go to TT over the Order
+Routing session (TT UAT, FIX 4.2) — but only once a person arms **LIVE**.
 
 The Algo desk has separate **Master** and **Auto trade** controls. Master runs
 the strategy on live quotes and displays signal proposals. Auto trade controls
 automatic order placement and starts OFF on a live venue after every restart.
-On the current TT gateway, which has no algo order path yet, Auto trade ON
-means **PAPER**: the signal runs end to end on live TT prices and fills are
-simulated at the live bid/offer, never sent. The screen says PAPER. The
-Positions banner remains explicit about unknown account positions. TT Order
-Routing and Market Data credentials alone do not provide that snapshot.
+**Execution** is PAPER or LIVE, on the taskbar. Every restart comes back on
+PAPER: fills simulated at the live bid/offer, nothing sent. LIVE sends the
+Algo's orders to TT and is armed by hand, confirmed every time. TT is asked
+for the account's positions at each logon; if it does not answer, arming
+LIVE is your confirmation that this book's own fills are the record, and a
+banner says so for as long as it holds.
 
 For this UAT setup, TT's security-definition search returned a current ES Dec
 2026 instrument; `config.tt-uat.json` maps it as `esz6` with automatic trading
@@ -93,8 +93,9 @@ so there are no legs:
   margin you enter per contract, or an ATR multiple) and the stop loss (2%,
   or an ATR multiple). Optional: z stop, back at the mean in profit, time
   stop.
-- **Modes**: DRY RUN (Auto trade off: signals only), PAPER (no algo order
-  path, as on TT today: filled at the live bid/offer, nothing sent), LIVE.
+- **Modes**: DRY RUN (Auto trade off: signals only), PAPER (filled at the
+  live bid/offer, nothing sent — every restart comes back here), LIVE (sent
+  to TT; armed by hand and confirmed).
 
 Each contract on the Algo desk has a **ladder** (the book and the Algo's
 levels on it) and an **Algo window** — Signal & Position, Statistics,
@@ -125,9 +126,9 @@ per-contract and desk-wide settings, the Exchanges page and its FIX session
 fields, the algo, the guards, the hard rules, the tests and the build order.
 Read it before writing any code.
 
-FIX connectivity is **provisioned but not wired** in this phase: `gateway.py`
-is the only module that may import the FIX library, `FakeGateway` drives every
-test and the pre-credentials desk, and `FixGateway` is stubbed behind the same
+`gateway.py` is the only module that speaks FIX: market data, manual
+tickets and the Algo's orders (`AlgoOrderRouter`) all go through it.
+`FakeGateway` drives the tests and the pre-credentials desk behind the same
 interface. See `docs/FIX_NOTES.md` for the message set and the open questions
 for Orient.
 
@@ -244,5 +245,5 @@ levels most, because those are the ones still open.
 
 The main terminal runs end to end against the simulator: contracts warm,
 arm, enter, manage their positions and close on their targets, with the
-notifications, the guards and restart recovery working. FIX is provisioned and
-not wired — see `docs/FIX_NOTES.md`.
+notifications, the guards and restart recovery working. On TT UAT the Algo
+trades PAPER until LIVE is armed — see `docs/FIX_NOTES.md`.

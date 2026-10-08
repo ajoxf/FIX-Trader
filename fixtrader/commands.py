@@ -155,6 +155,9 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
             return engine.set_trading_mode(args.get('mode', ''))
         if action == 'auto_trade':
             return engine.set_auto_trade(bool(args.get('on', False)))
+        if action == 'execution':
+            return engine.set_execution(args.get('mode', ''),
+                                        confirm=args.get('confirm') is True)
         if action == 'close_now':
             return engine.close_now(key)
         if action == 'cancel_all':

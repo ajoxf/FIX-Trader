@@ -140,11 +140,39 @@ the drawing wins.
 - **A checkbox shows what is IN FORCE, and Save writes it only if it was
   changed.** A box drawn unticked for a desk default of ON wrote OFF on the
   next Save — a stop loss switched off by saving a different field.
-- **With no algo order path the algo trades on PAPER** (`Engine.paper`,
-  from `gateway.connection_only`): fills simulated at the live bid/offer the
-  trade would cross, `PAPER-n` tickets, `is_simulated` on the position, and
-  nothing reaches the venue. The screen says PAPER; the same signal drives
-  real orders once the path exists.
+- **The Algo's orders go to TT over Order Routing** (`AlgoOrderRouter` in
+  `gateway.py`): New Order Single / Cancel / Cancel-Replace with an `FT-`
+  ClOrdID, the venue's account (tag 1), 77=O or 77=C (an unknown effect is a
+  CLOSE), 1028=N (automated), TT cancel-on-disconnect (18=o 2), and a close's
+  position and tickets in 58. Execution reports, cancel rejects (9) and
+  business rejects (j) for OUR ids become `GatewayEvent`s with a snapshot of
+  the order; a repeated ExecID is not a second fill; a manual ticket's
+  `FTM-` reports are never read as the Algo's. Only `FTM-` and `FT-` orders
+  can leave the session at all.
+- **PAPER until a person arms LIVE, every session** (`Engine.set_execution`).
+  A live venue comes back on PAPER after every restart; LIVE needs
+  `confirm` every time, with the engine's own text (venue, account,
+  positions). A switch either way is refused while anything is open or
+  working — a position at the venue does not become a paper one by a
+  setting. PAPER fills at the live bid/offer with `PAPER-n` tickets and
+  sends nothing.
+- **TT positions: asked for, never assumed.** A Request For Positions (AN)
+  goes at each logon. Answered (AO/AP), `positions()` is the account and the
+  book reconciles; refused (j, or a 35=3 naming AN — which must NOT stop the
+  session) or unanswered in `POSITIONS_TIMEOUT_SEC`, it is None — unknown,
+  never flat. LIVE on unknown positions is the trader's explicit word that
+  this book's fills are the record (`positions_waived`), said in a banner
+  for as long as it holds; without that word automatic trading on a live
+  venue is refused.
+- **Startup sweep, once the session is up**: orders of ours (`FT-`) a
+  previous run left recorded as working are adopted — so a fill for one is
+  applied as what it was — and cancelled. Nothing else at the venue is
+  touched. An adopted order the venue no longer knows is let go on its
+  cancel reject.
+- **A refused entry waits at least `ENTRY_RETRY_SEC`** before it is tried
+  again, whatever the contract's cooldown — the same refused order is never
+  sent three times a second — and "Last order" shows the refusal in the
+  venue's words, giving the trade back to the day's count.
 - **The touch study (Analysis) keeps its own rolling time window**
   (`stats.StatsWindow`), resumed across a restart only if the gap is short
   (`RESUME_MAX_GAP_MINUTES`). It is a reading for the Analysis window, not

@@ -874,3 +874,6 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 .an-slip td.dn { color: var(--ask); }
 .an-slip td.up { color: var(--good); }
 .an-slip-card h5 .an-slip-csv { float: right; font-size: calc(10px * var(--fs)); padding: 1px 6px; }
+
+/* LIVE: the Algo's orders go to the venue. Unmistakable on the taskbar. */
+#execution-toggle.live { background: linear-gradient(#c04141, #a32828); color: #fff; border-color: #7a1c1c; font-weight: 700; }

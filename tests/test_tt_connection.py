@@ -82,8 +82,17 @@ def test_two_sessions_logon_fragmented_response_heartbeat_and_logout(monkeypatch
         assert session.socket.sent[-1]['35'] == '0'
         with pytest.raises(NotImplementedError):
             session.send('D', [])
-        with pytest.raises(NotImplementedError):
-            gateway.send(None)
+        # The Algo's order path: an order for a contract with no TT security
+        # id on this session is refused in words, and nothing goes out.
+        from fixtrader.models import OrderRequest, Side
+        before = len(peers[0].sent) + len(peers[1].sent)
+        cid = gateway.send(OrderRequest(contract_key='nope', side=Side.BUY,
+                                        qty=1))
+        refused = gateway.algo.drain()
+        assert refused[-1].kind == 'REJECTED' and refused[-1].clordid == cid
+        assert 'no TT security id' in refused[-1].text
+        assert len(peers[0].sent) + len(peers[1].sent) == before
+        # Positions are unknown until TT answers — never an empty account.
         assert gateway.orders() is None and gateway.positions() is None
         session.state.error = 'Rejected md-secret'
         assert 'md-secret' not in gateway.state_text()

@@ -271,10 +271,27 @@ class AlgoRun:
             self.signal._entry_live = None
         self.last_mode = mode
 
-    def record(self, intent, now, mode, done=None, result=None):
+    def refused(self, clordid, text, now, was_entry):
+        """The venue refused an order this Algo sent: its "Last order" says
+        so in the venue's own words, an entry gives its trade back to the
+        day's count, and the cooldown starts so the same refused order is
+        not sent again on the next pass."""
+        for row in self.recent:
+            if clordid and row.get('clordid') == clordid:
+                if row.get('done') and row['action'] == 'ENTER':
+                    self.day['trades'] = max(0, self.day['trades'] - 1)
+                row['done'] = False
+                row['result'] = text
+                break
+        if was_entry:
+            self.signal.entry_failed(now)
+
+    def record(self, intent, now, mode, done=None, result=None,
+               clordid=None):
         """What the Algo did, for "Last order": the intent, the mode it was
         in, and — when it was acted on — whether it went."""
-        row = dict(intent, at=now, mode=mode, done=done, result=result)
+        row = dict(intent, at=now, mode=mode, done=done, result=result,
+                   clordid=clordid)
         self.recent.appendleft(row)
         if intent['action'] == 'ENTER' and (done or mode == 'DRY RUN'):
             self.day['trades'] += 1            # a dry run counts as one

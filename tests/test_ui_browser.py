@@ -1093,3 +1093,29 @@ def test_the_algo_window_shows_todays_slippage_beside_its_budget(server):
         assert slip == '+1.00 t'
         browser.close()
     assert errors == []
+
+
+def test_the_execution_button_says_PAPER_or_LIVE_and_the_waiver(server):
+    url, tmp = server
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['engine']['execution'] = {'mode': 'PAPER', 'can_live': True,
+                                   'positions': {'status': 'unavailable',
+                                                 'why': 'TT did not answer'},
+                                   'positions_waived': False}
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        button = page.locator('#execution-toggle')
+        page.wait_for_function(
+            "!document.getElementById('execution-toggle').classList.contains('hidden')")
+        assert button.inner_text() == 'Execution: PAPER'
+        assert 'TT did not answer' in button.get_attribute('title')
+        snap['engine']['execution'].update(mode='LIVE', positions_waived=True)
+        (tmp / 'status.json').write_text(json.dumps(snap))
+        page.wait_for_function(
+            "document.getElementById('execution-toggle').classList.contains('live')")
+        assert button.inner_text() == 'Execution: LIVE'
+        assert 'could not be read' in page.locator('#engine-banner').inner_text()
+        browser.close()
+    assert errors == []

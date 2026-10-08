@@ -3,12 +3,13 @@
 ## What is live today
 
 The app can connect its TT FIX sessions and consume real market data. The
-algorithm's statistics, signals, and risk checks are present. **Automated algo
-orders are not ready to enable in this checkout:** `FixGateway.send()`,
-`cancel()`, and `amend()` are intentionally unwired, while venue order and
-position queries report unknown. Do not arm the algo or point this build at a
-production account expecting automated execution. The manual TT ticket is a
-separate workflow and is not an algo execution adapter.
+algorithm's statistics, signals, and risk checks are present, and its orders
+go to TT over Order Routing (`AlgoOrderRouter`) — **TT UAT only**. Every
+restart comes back on PAPER; LIVE is armed from the Algo desk taskbar and
+confirmed every time. TT is asked for the account's positions at each logon;
+where it does not answer, arming LIVE is the operator's confirmation that the
+book's own fills are the record. The adapter refuses anything but UAT FIX
+4.2: do not point this build at a production account.
 
 The launcher now selects FIX mode by default. `--simulated` is an explicit
 development option; it must not be used to validate live connectivity or live
