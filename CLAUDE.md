@@ -42,38 +42,43 @@ the drawing wins.
   what is open closes it and the excess is reported, never booked; a close
   with nothing open opens nothing. `tests/test_close_safety.py` pins each,
   for a Take Profit and a Stop Loss alike.
-- **Manual AND algo, but never at the same time.** This program trades by
-  hand (Instruments & orders: tickets; and the desk ladder in MANUAL mode)
-  and by algo (the Algo desk),
-  and the desk is in exactly ONE trading mode, `ALGO` or `MANUAL`
-  (`Engine.trading_mode`, switched from the Algo desk taskbar or the
-  Instruments page, kept beside the status file so a restart comes back in
-  it). An algo and a hand on the same book fight — the trader puts a
-  position on and the algo closes it at its own target, or the trader gets
-  flat and the algo re-enters on the next pass — and a journal mixing the
-  two describes neither. So:
-  - In `ALGO` mode a NEW manual order is refused by `ManualTerminal` itself
-    (`mode_block`), at the review AND at the send, so no page or command can
-    go round it; a ticket reviewed in MANUAL is discarded on the switch.
-  - In `MANUAL` mode the algo neither enters nor proposes, and automatic
-    trading cannot be turned on. Statistics keep running.
-  - A switch is REFUSED while the side being left still has anything open
-    or working — an algo position or order, a manual working order or an
-    unclosed manual fill — and the refusal names each one.
-  - Closes and cancels are never refused, in either mode: the guard is on
-    new exposure only. A manual order recovered as UNKNOWN after a restart
-    is named, not counted as open (it would block the switch for ever).
+- **Manual AND algo, but never both on the same contract.** This program
+  trades by hand (Instruments & orders: tickets; and the desk ladder) and by
+  algo (the Algo desk). Each contract has ONE Algo switch — the MT5 desk's,
+  on its ladder AND its Algo window, always reading the same word —
+  `Engine.set_algo_state(key, OFF | DRY | TRADE)`, shown as ALGO OFF / ALGO
+  DRY RUN / ALGO PAPER / ALGO LIVE (`algo_state`). An algo and a hand on the
+  same book fight — the trader puts a position on and the algo closes it at
+  its own target, or the trader gets flat and the algo re-enters on the next
+  pass. So:
+  - While a contract's Algo TRADES it (PAPER or LIVE), a NEW manual order on
+    THAT contract is refused by `ManualTerminal` itself (`mode_block(ticket)`
+    → `Engine._manual_block`), at the review AND at the send, so no page or
+    command can go round it; it is also refused while the Algo still holds a
+    position or order there. Off and Dry run leave the contract to the hand,
+    as on the MT5 desk. Other instruments are never refused.
+  - A contract a hand is holding (a working manual order or an unclosed
+    manual fill on its Security ID) gets no Algo entry, and cannot be set to
+    TRADE; a contract whose Algo holds a position cannot be set Off or Dry
+    run (nothing would manage the exit) — CLOSE ALL closes it and stands the
+    Algo down. Each refusal names what is open.
+  - Setting ONE contract to TRADE turns automatic trading on without setting
+    any other armed contract trading: they stay dry runs. Dry-run choices
+    are kept beside the status file; a live venue still comes back with
+    automatic trading off, i.e. every Algo in a dry run.
+  - Closes and cancels are never refused. A manual order recovered as
+    UNKNOWN after a restart is named, not counted as open.
 - **The Algo desk is a ladder and an Algo window per contract**, each with
   a taskbar button that minimises and restores it. The desk ladder is the
   MT5 desk's ladder on ONE contract (Work / Bids / Price / Asks / LTQ, the
   rail, the B/S/W bar, the footer book): it shows the book, our working
-  orders and the Algo's levels against it. In MANUAL mode it trades by hand
-  THROUGH `ManualTerminal` — BUY / SELL, or a click in Bids (buys at that
+  orders and the Algo's levels against it. With its Algo Off or in a Dry run
+  it trades by hand THROUGH `ManualTerminal` — BUY / SELL, or a click in Bids (buys at that
   price) / Asks (sells), each a `terminal_preview` reviewed in the shared
   modal before `terminal_submit`, an `FTM-` ticket flagged 77=O with the
-  manual safety limits; never an order path of its own. In ALGO mode its
-  order controls are off and the lock banner says so (ManualTerminal refuses
-  regardless). CLOSE ALL and Close @ LMT always close — a manual position by
+  manual safety limits; never an order path of its own. While its Algo
+  trades, its order controls are off and the lock banner says so
+  (ManualTerminal refuses regardless). CLOSE ALL and Close @ LMT always close — a manual position by
   `preview_close` (77=C, capped at the ticket's open fills; a price makes it
   a LIMIT).
 - **Close @ LMT rests ONE closing limit at the trader's price**, by the

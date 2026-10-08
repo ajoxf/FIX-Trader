@@ -229,6 +229,65 @@ function setMinimised(el, on) {
   renderTabs();
 }
 
+/* -- the Algo switch ----------------------------------------------------------
+ *
+ * ONE per contract, the MT5 desk's: OFF (traded by hand), DRY RUN (signals
+ * only — still traded by hand) or TRADES (PAPER or LIVE, as the desk's
+ * Execution says; hand orders on this contract are refused). The ladder and
+ * the Algo window carry the same button and always read the same word.
+ */
+
+const ALGO_WORDS = { OFF: 'ALGO OFF', DRY: 'ALGO DRY RUN', PAPER: 'ALGO PAPER', LIVE: 'ALGO LIVE' };
+
+function renderAlgoSwitch(el, c) {
+  const st = c.algo_state || (c.algo_on ? 'DRY' : 'OFF');
+  const btn = el.querySelector('.algo-btn');
+  if (!btn) return;
+  btn.textContent = ALGO_WORDS[st] || st;
+  btn.className = 'algo-btn ' + ({ OFF: 'off', DRY: 'dry', PAPER: 'paper', LIVE: 'live' }[st] || 'off');
+  btn.dataset.state = st;
+  btn.title = st === 'LIVE' ? 'The Algo TRADES this contract and SENDS its orders to the venue — ' +
+      'hand orders on it are refused; CLOSE ALL still closes. Click to change.'
+    : st === 'PAPER' ? 'The Algo trades this contract on PAPER — filled here at the live ' +
+      'bid/offer, nothing sent. Hand orders on it are refused. Click to change.'
+    : st === 'DRY' ? 'Dry run: the Algo shows its signals and sends nothing. You may trade ' +
+      'this contract by hand. Click to change.'
+    : 'The Algo is off: you trade this contract by hand. Click to turn the Algo on.';
+}
+
+function wireAlgoSwitch(el, key) {
+  const btn = el.querySelector('.algo-btn');
+  const menu = el.querySelector('.algo-menu');
+  if (!btn || !menu) return;
+  btn.onclick = (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; };
+  menu.querySelectorAll('button[data-algo]').forEach((item) => {
+    item.onclick = async (e) => {
+      e.stopPropagation();
+      menu.hidden = true;
+      const choice = item.dataset.algo;
+      const now = btn.dataset.state;
+      if ((choice === 'OFF' && now === 'OFF') || (choice === 'DRY' && now === 'DRY') ||
+          (choice === 'TRADE' && (now === 'PAPER' || now === 'LIVE'))) return;
+      if (choice === 'TRADE') {
+        const ex = ((window.__lastSnapshot || {}).engine || {}).execution || {};
+        const live = ex.mode === 'LIVE';
+        const name = (el.querySelector('.title').textContent || key).replace(' · Algo', '');
+        const ok = await ask('The Algo trades ' + name + '?',
+          (live ? 'LIVE: the Algo will SEND REAL ORDERS to the venue on this contract'
+            : 'PAPER: the Algo will fill its own orders here at the live bid/offer — ' +
+              'nothing is sent (Execution: PAPER on the taskbar)') +
+          ' — in when the contract stretches past its band, out at the take-profit or ' +
+          'the stop loss. Hand orders on this contract are refused while it trades; ' +
+          'CLOSE ALL still closes.', live ? 'Trade LIVE' : 'Trade on PAPER');
+        if (!ok) return;
+      }
+      const r = await command('algo_state', key, { state: choice });
+      if (r && r.ok) toast('OK', 'ALGO', (ALGO_WORDS[r.algo_state] || r.algo_state), key);
+    };
+  });
+  document.addEventListener('click', () => { menu.hidden = true; });
+}
+
 /* The Algo window's ladder button: the contract's ladder, brought back —
  * reopened if it was closed, restored if minimised — and to the front, for
  * trading by hand (in MANUAL mode) or reading the book. */
@@ -264,10 +323,7 @@ function windowFor(key) {
   el = tpl.content.firstElementChild.cloneNode(true);
   el.dataset.key = key;
   wireWindow(el, key);
-  el.querySelector('.sw').onclick = async () => {
-    const on = el.querySelector('.sw').classList.contains('on');
-    await command(on ? 'algo_off' : 'algo_on', key);
-  };
+  wireAlgoSwitch(el, key);
   el.querySelector('.close-now').onclick = () => closeNowAsk(key,
     el.querySelector('.title').textContent);
   el.querySelector('.cog').onclick = () => configWindow(key);
@@ -303,7 +359,7 @@ function placeWindow(el, x, y) {
 function makeDraggable(el, key) {
   const bar = el.querySelector('.titlebar');
   bar.addEventListener('mousedown', (down) => {
-    if (down.target.closest('.winbtn')) return;
+    if (down.target.closest('.winbtn, .algo-switch')) return;
     const rect = el.getBoundingClientRect();
     const desk = document.getElementById('desktop').getBoundingClientRect();
     const dx = down.clientX - rect.left;
@@ -384,9 +440,7 @@ function renderContract(c) {
     : c.market_note ? 'Market: ' + c.market_note : '';
   el.classList.toggle('stale', !!(c.feed && c.feed.stale));
 
-  const sw = q('.sw');
-  sw.classList.toggle('on', !!c.algo_on);
-  sw.querySelector('span').textContent = c.algo_on ? 'ON' : 'OFF';
+  renderAlgoSwitch(el, c);
 
   // The one-way badge: a contract that is armed and passes over half its
   // signals otherwise looks broken.
@@ -606,7 +660,7 @@ function renderAlgoBody(el, c) {
   const entryZ = params.entry_z;
   const direction = params.direction || 'BOTH';
 
-  const mode = el.querySelector('.aw-mode');
+  const mode = el.querySelector('.aw-mode') || document.createElement('span');
   mode.textContent = block.mode || DASH;
   mode.className = 'aw-mode ' + (block.mode === 'LIVE' ? 'live'
     : block.mode === 'PAPER' ? 'paper' : 'dry');
@@ -962,8 +1016,7 @@ function ladderFor(key) {
   // MANUAL mode: hand trading on this ladder, through the manual ticket —
   // every order reviewed, then sent as an FTM- order. ManualTerminal refuses
   // it in ALGO mode whatever this page does.
-  // One switch for the desk's mode: the taskbar's, with its confirmation.
-  el.querySelector('.ld-switch').onclick = () => document.getElementById('mode-toggle').click();
+  wireAlgoSwitch(el, key);
   el.querySelector('.ld-buy').onclick = () => manualOrder(el, key, 'BUY', null);
   el.querySelector('.ld-sell').onclick = () => manualOrder(el, key, 'SELL', null);
   el.querySelectorAll('.ld-keypad button').forEach((b) => {
@@ -1138,16 +1191,19 @@ function renderLadder(c, engine) {
   const block = c.algo || {};
   const pos = c.position;
   const ex = (engine || {}).execution || {};
-  const tradingMode = (engine || {}).trading_mode || 'ALGO';
+  const algoState = c.algo_state || (c.algo_on ? 'DRY' : 'OFF');
+  const algoTrades = algoState === 'PAPER' || algoState === 'LIVE';
   const st = c.settings || {};
   const orders = c.orders || [];
   const has = (v) => v !== null && v !== undefined;
   ladderData[c.key] = { c, engine };
   const term = (engine || {}).manual_terminal;
-  // Hand trading on this ladder: MANUAL mode, a TT manual ticket behind it,
-  // and the session up. Anything else and the order controls are off.
+  // Hand trading on this ladder: its Algo not trading it (Off or Dry run)
+  // and holding nothing here, a TT manual ticket behind it, and the session
+  // up. Anything else and the order controls are off — and the banner says
+  // which.
   const sessionUp = ((engine || {}).session || {}).state === 'LOGGED_ON';
-  const manualOn = tradingMode === 'MANUAL' && !!term && !!c.security_id && sessionUp &&
+  const manualOn = !c.manual_block && !!term && !!c.security_id && sessionUp &&
     (engine || {}).alive !== false;
   el.classList.toggle('manual-on', manualOn);
   const mWorking = ladderManualWorking(c.key);
@@ -1169,17 +1225,8 @@ function renderLadder(c, engine) {
   const ot = otSel.value;
   el.querySelector('.ld-ordtype').textContent = ot + ' · ' + tifSel.value;
 
-  // Who trades this contract, and whether its orders reach TT.
-  const mode = el.querySelector('.ld-mode');
-  let modeText, modeCls;
-  if (tradingMode !== 'ALGO') { modeText = 'MANUAL'; modeCls = 'manual'; }
-  else if (!c.algo_on) { modeText = 'ALGO OFF'; modeCls = 'off'; }
-  else if (!(engine || {}).auto_trade_enabled) { modeText = 'ALGO DRY RUN'; modeCls = 'dry'; }
-  else if (ex.mode === 'LIVE') { modeText = 'ALGO LIVE'; modeCls = 'live'; }
-  else if (ex.mode === 'PAPER') { modeText = 'ALGO PAPER'; modeCls = 'paper'; }
-  else { modeText = 'ALGO SIM'; modeCls = 'paper'; }
-  mode.textContent = modeText;
-  mode.className = 'ld-mode ' + modeCls;
+  // Who trades this contract: the ONE Algo switch, as on the Algo window.
+  renderAlgoSwitch(el, c);
 
   // The quote strip: the mid against today's open, and the day's H/L/O —
   // ours, from the mids watched, and the badge says so.
@@ -1195,24 +1242,27 @@ function renderLadder(c, engine) {
 
   const lock = el.querySelector('.ld-lock');
   const lockText = el.querySelector('.ld-lock-text');
-  // The DESK's mode decides hand trading, not this contract's Algo switch:
-  // "ALGO OFF" on a desk in ALGO mode still takes no manual order.
-  el.querySelector('.ld-switch').classList.toggle('hidden', tradingMode !== 'ALGO');
-  if (tradingMode === 'ALGO') {
+  const word = ALGO_WORDS[algoState] || algoState;
+  if (algoTrades) {
     lock.className = 'ld-lock';
-    lockText.textContent = 'Desk in ALGO mode (' + modeText + ') — manual orders are off ' +
-      'on this ladder. CLOSE ALL and Close @ LMT still close.';
-    lock.title = 'Hand trading needs the DESK in MANUAL mode — this contract\'s Algo being ' +
-      'off is not enough. Switch here or with the taskbar\'s Mode button.';
+    lockText.textContent = word + ' — manual orders are off on this ladder. ' +
+      'CLOSE ALL and Close @ LMT still close.';
+    lock.title = 'Set the Algo to Off or Dry run (the button in the title bar) to trade ' +
+      'this contract by hand.';
+  } else if (c.manual_block) {
+    lock.className = 'ld-lock';
+    lockText.textContent = 'Manual orders are off: ' + c.manual_block;
+    lock.title = '';
   } else if (manualOn) {
     lock.className = 'ld-lock manual';
-    lockText.textContent = 'MANUAL — BUY / SELL, or click a price: Bids buys, Asks sells. ' +
-      'Every order is reviewed before it goes to TT.';
-    lock.title = 'Orders from this ladder are manual tickets (FTM-), with the same checks ' +
-      'and safety limits as Instruments & orders. Right-click a Work cell to cancel there.';
+    lockText.textContent = (algoState === 'DRY' ? 'DRY RUN — the Algo shows signals, you trade. '
+      : 'ALGO OFF — you trade. ') + 'BUY / SELL, or click a price: Bids buys, Asks sells.';
+    lock.title = 'Every order is reviewed before it goes to TT: a manual ticket (FTM-), with ' +
+      'the same checks and safety limits as Instruments & orders. Right-click a Work cell to ' +
+      'cancel there.';
   } else {
     lock.className = 'ld-lock manual';
-    lockText.textContent = 'MANUAL — ' + (!term ? 'hand orders need the TT session (not the simulator).'
+    lockText.textContent = word + ' — ' + (!term ? 'hand orders need the TT session (not the simulator).'
       : !c.security_id ? 'this contract has no TT Security ID.'
       : 'the TT session is not logged on.') + ' CLOSE ALL still closes.';
     lock.title = '';
@@ -2249,15 +2299,6 @@ function renderChrome(snap) {
   const master = document.getElementById('master-toggle');
   master.textContent = 'Master: ' + (engine.master_algo ? 'ON' : 'OFF');
   master.classList.toggle('act', !!engine.master_algo);
-  const mode = document.getElementById('mode-toggle');
-  mode.textContent = 'Mode: ' + (engine.trading_mode || '—');
-  mode.dataset.mode = engine.trading_mode || '';
-  mode.classList.toggle('manual', engine.trading_mode === 'MANUAL');
-  const auto = document.getElementById('auto-trade-toggle');
-  // On a venue whose order path is not wired (TT today) automatic trading is
-  // PAPER: filled at the live bid/offer inside the engine, nothing sent.
-  auto.textContent = 'Auto trade: ' + (engine.auto_trade_enabled
-    ? (engine.paper ? 'PAPER' : 'ON') : 'OFF');
   // PAPER or LIVE: where the Algo's orders go. LIVE is armed by a person,
   // confirmed every time, and is off after every restart.
   const ex = engine.execution || {};
@@ -2272,10 +2313,6 @@ function renderChrome(snap) {
         'fills are the record, on your confirmation.' : '')
     : 'PAPER: the Algo fills here at the live price; nothing is sent. Click ' +
       'to arm LIVE. TT positions: ' + (pos.why || pos.status || 'unknown') + '.';
-  auto.classList.toggle('act', !!engine.auto_trade_enabled);
-  auto.title = engine.auto_trade_available
-    ? 'Turn automatic order placement on or off'
-    : 'Automatic FIX orders require account recovery and execution integration';
 
   const stat = document.getElementById('loop-stat');
   stat.textContent = 'loop ' + (engine.loop_ms === undefined ? DASH
@@ -2633,26 +2670,6 @@ document.getElementById('master-toggle').onclick = async () => {
   const on = document.getElementById('master-toggle').classList.contains('act');
   await command('master_algo', '', { on: !on });
 };
-/* ALGO or MANUAL — one at a time. The engine refuses the switch while the
- * side being left has anything open or working, and says what. */
-document.getElementById('mode-toggle').onclick = async (e) => {
-  const now = e.currentTarget.dataset.mode;
-  const next = now === 'MANUAL' ? 'ALGO' : 'MANUAL';
-  const ok = await ask('Switch the desk to ' + next,
-    next === 'MANUAL'
-      ? 'The algo stops entering and proposing on every contract, and ' +
-        'automatic trading is turned off. Manual orders on Instruments & ' +
-        'orders are allowed. Refused while the algo has a position or ' +
-        'working order open.'
-      : 'Manual orders are refused from now on, and any reviewed manual ' +
-        'ticket is discarded. The algo may trade again. Refused while a ' +
-        'manual order is working or a manual fill is not yet closed.',
-    'Switch to ' + next);
-  if (!ok) return;
-  const answer = await command('trading_mode', '', { mode: next });
-  if (answer && answer.ok) toast('OK', 'MODE', 'the desk is in ' + next + ' mode');
-};
-
 document.getElementById('execution-toggle').onclick = async () => {
   const live = document.getElementById('execution-toggle').classList.contains('live');
   if (live) {
@@ -2670,11 +2687,6 @@ document.getElementById('execution-toggle').onclick = async () => {
     toast('ORDER', 'LIVE', 'the Algo now sends its orders to the venue' +
       (done.positions_waived ? ' — TT positions unread, on your word' : ''));
   }
-};
-
-document.getElementById('auto-trade-toggle').onclick = async () => {
-  const on = document.getElementById('auto-trade-toggle').classList.contains('act');
-  await command('auto_trade', '', { on: !on });
 };
 
 document.getElementById('sound-toggle').onclick = (e) => {

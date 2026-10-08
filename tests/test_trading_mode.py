@@ -1,11 +1,11 @@
-"""ALGO or MANUAL — one at a time.
+"""Algo or hand — per contract, never both on the same one (the MT5 desk's
+one switch per ladder: Off / Dry run / Trades).
 
 Two hands on one book fight: the algo closes a hand-placed position at its
-own target, or re-enters the moment the trader gets flat, and the journal
-then describes neither. So the desk is in one mode at a time. Each mode
-refuses the OTHER side's new orders; a switch is refused while the side
-being left still holds anything; and nothing ever refuses a close or a
-cancel.
+own target, or re-enters the moment the trader gets flat. So an Algo that
+TRADES a contract refuses NEW hand orders on it; Off and Dry run leave it to
+the hand. A switch is refused while the side being left still holds
+something on that contract, and nothing ever refuses a close or a cancel.
 """
 import pytest
 
@@ -23,6 +23,7 @@ def desk(tmp_path, terminal, mode_path=None):
     cfg = TraderConfig(path=str(tmp_path / 'config.json'))
     cfg.contracts['fef'] = ContractConfig(
         key='fef', name='Iron ore Oct/Nov', symbol='FEFV6-FEFX6', venue='SIM',
+        security_id='101',
         tick_size=0.01, tick_value=1.0, contract_multiplier=100.0,
         min_qty=1.0, qty_step=1.0, max_qty=50.0, enabled=True, algo_on=True,
         window_minutes=1e6, min_history_minutes=29 / 60.0,
@@ -51,101 +52,159 @@ def manual_fill(terminal):
     return oid
 
 
-# -- ALGO mode refuses a hand ---------------------------------------------
+# -- an Algo that TRADES a contract refuses a hand on it ------------------------
 
-def test_algo_mode_refuses_a_new_manual_order(tmp_path, terminal):
+def test_a_trading_algo_refuses_a_new_manual_order_on_its_contract(tmp_path, terminal):
     engine, _ = desk(tmp_path, terminal)
-    assert engine.trading_mode == 'ALGO'
-    with pytest.raises(ValueError, match='ALGO mode'):
+    assert engine.set_algo_state('fef', 'TRADE')['ok']
+    assert engine.algo_state('fef') == 'LIVE'           # the simulator trades
+    with pytest.raises(ValueError, match='TRADING'):
         terminal.preview(ticket())
+    # ...and the screen says so, before anybody fills a ticket
+    c = engine.snapshot()['contracts'][0]
+    assert c['algo_state'] == 'LIVE' and 'TRADING' in c['manual_block']
 
 
-def test_manual_mode_lets_the_hand_trade(tmp_path, terminal):
-    """The control."""
+def test_off_and_dry_run_let_the_hand_trade(tmp_path, terminal):
+    """The control: the same contract with its Algo Off, or in a Dry run
+    (signals only), takes a hand order — as on the MT5 desk."""
     engine, _ = desk(tmp_path, terminal)
-    assert engine.set_trading_mode('MANUAL')['ok']
-    assert terminal.preview(ticket())['ok']
+    for state in ('OFF', 'DRY'):
+        assert engine.set_algo_state('fef', state)['ok']
+        assert terminal.preview(ticket())['ok']
+        assert engine.snapshot()['contracts'][0]['manual_block'] is None
 
 
-def test_a_ticket_reviewed_in_manual_is_not_sent_after_a_switch_to_algo(
-        tmp_path, terminal):
+def test_a_hand_order_on_another_instrument_is_never_refused(tmp_path, terminal):
+    """Only the contract the Algo trades is refused — not the account."""
     engine, _ = desk(tmp_path, terminal)
-    engine.set_trading_mode('MANUAL')
+    engine.set_algo_state('fef', 'TRADE')
+    assert engine._manual_block({'security_id': '999'}) is None
+    assert engine._manual_block({'security_id': '101'})       # the control
+
+
+def test_a_ticket_reviewed_by_hand_is_not_sent_once_the_algo_trades(tmp_path, terminal):
+    engine, _ = desk(tmp_path, terminal)
+    engine.set_algo_state('fef', 'OFF')
     reviewed = terminal.preview(ticket())
-    assert engine.set_trading_mode('ALGO')['ok']
-    with pytest.raises(ValueError):
+    assert engine.set_algo_state('fef', 'TRADE')['ok']
+    with pytest.raises(ValueError, match='TRADING'):
         terminal.submit({'token': reviewed['token'], 'confirmed': True})
 
 
-# -- MANUAL mode stands the algo down ---------------------------------------
+# -- Off and Dry run: the Algo does not enter -----------------------------------
 
-def test_manual_mode_withholds_every_algo_entry(tmp_path, terminal):
+def test_a_dry_run_shows_the_signal_and_enters_nothing(tmp_path, terminal):
     engine, gw = desk(tmp_path, terminal)
-    engine.set_trading_mode('MANUAL')
+    assert engine.set_algo_state('fef', 'DRY')['ok']
     rt = warm_the_window(engine, gw)
     put_book_at_z(engine, gw, 2.5)
     engine.poll(now=gw.now); engine.poll(now=gw.now)
     assert rt.position is None
-    assert 'MANUAL mode' in rt.blocked_by
-    assert engine.set_auto_trade(True)['ok'] is False
+    assert rt.algo.recent and rt.algo.recent[0]['mode'] == 'DRY RUN'
+    assert engine.algo_state('fef') == 'DRY'
 
 
-def test_algo_mode_lets_the_algo_enter(tmp_path, terminal):
-    """The control: the same market, in ALGO mode, is an entry."""
+def test_a_trading_algo_enters(tmp_path, terminal):
+    """The control: the same market, its Algo set to trade, is an entry."""
     engine, gw = desk(tmp_path, terminal)
+    assert engine.set_algo_state('fef', 'TRADE')['ok']
     rt = warm_the_window(engine, gw)
     put_book_at_z(engine, gw, 2.5)
     engine.poll(now=gw.now); engine.poll(now=gw.now)
     assert rt.position is not None
 
 
-# -- a switch never leaves the other side's business on the book -----------
-
-def test_the_desk_cannot_go_manual_with_an_algo_position_open(tmp_path, terminal):
+def test_off_withholds_every_entry(tmp_path, terminal):
     engine, gw = desk(tmp_path, terminal)
+    assert engine.set_algo_state('fef', 'OFF')['ok']
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    assert rt.position is None and engine.algo_state('fef') == 'OFF'
+
+
+def test_trading_one_contract_does_not_set_the_others_trading(tmp_path, terminal):
+    """Automatic trading switched on for ONE contract leaves every other
+    armed contract a dry run — never trading behind the trader's back."""
+    engine, _ = desk(tmp_path, terminal)
+    engine.auto_trade_enabled = False                  # as after a restart
+    cfg = engine.config
+    cfg.contracts['two'] = ContractConfig(key='two', name='Two', symbol='TWO',
+                                          venue='SIM', algo_on=True)
+    from fixtrader.engine import ContractRuntime
+    engine.runtimes['two'] = ContractRuntime(cfg.contracts['two'], cfg.settings)
+    assert engine.algo_state('two') == 'DRY'
+    assert engine.set_algo_state('fef', 'TRADE')['ok']
+    assert engine.algo_state('fef') == 'LIVE'
+    assert engine.algo_state('two') == 'DRY'
+
+
+# -- a switch never leaves the other side's business on the contract ---------
+
+def test_the_algo_cannot_be_set_off_while_it_holds_a_position(tmp_path, terminal):
+    engine, gw = desk(tmp_path, terminal)
+    engine.set_algo_state('fef', 'TRADE')
     rt = warm_the_window(engine, gw)
     put_book_at_z(engine, gw, 2.5)
     engine.poll(now=gw.now); engine.poll(now=gw.now)
     assert rt.position is not None
-    refused = engine.set_trading_mode('MANUAL')
-    assert refused['ok'] is False and 'open algo position' in refused['error']
-    assert engine.trading_mode == 'ALGO'
-    # CLOSE NOW still works, and once flat the switch goes through
+    for state in ('OFF', 'DRY'):
+        refused = engine.set_algo_state('fef', state)
+        assert refused['ok'] is False and 'open algo position' in refused['error']
+    with pytest.raises(ValueError, match='TRADING'):
+        terminal.preview(ticket())
+    # CLOSE NOW still works; flat, it is the hand's again
     engine.close_now('fef'); engine.poll(now=gw.now)
     assert rt.position is None
-    assert engine.set_trading_mode('MANUAL')['ok']
+    assert engine.algo_state('fef') == 'OFF'
+    assert terminal.preview(ticket())['ok']
 
 
-def test_the_desk_cannot_go_algo_with_a_manual_fill_open(tmp_path, terminal):
+def test_the_algo_cannot_trade_a_contract_a_hand_is_holding(tmp_path, terminal):
     engine, _ = desk(tmp_path, terminal)
-    engine.set_trading_mode('MANUAL')
+    engine.set_algo_state('fef', 'OFF')
     oid = manual_fill(terminal)
-    refused = engine.set_trading_mode('ALGO')
+    refused = engine.set_algo_state('fef', 'TRADE')
     assert refused['ok'] is False and 'not yet closed' in refused['error']
-    assert engine.trading_mode == 'MANUAL'
+    assert engine.algo_state('fef') == 'OFF'
     # closing it is always allowed; closed, the switch goes through
     close = terminal.preview_close({'order_id': oid})
     cid = terminal.submit({'token': close['token'], 'confirmed': True})['order_id']
     report(terminal, {'35': '8', '11': cid, '39': '2', '150': '2', '17': 'F2',
                       '14': '2', '151': '0', '32': '2', '31': '-0.5'})
-    assert engine.set_trading_mode('ALGO')['ok']
+    assert engine.set_algo_state('fef', 'TRADE')['ok']
 
 
-def test_a_manual_close_is_never_refused_in_algo_mode(tmp_path, terminal):
-    """If a hand position is ever on the book in ALGO mode — a restart, a
-    recovered order — the way out is never the thing that is refused."""
+def test_a_hand_position_withholds_the_algos_entries(tmp_path, terminal):
+    """Even armed, the Algo does not enter a contract a hand is holding."""
+    engine, gw = desk(tmp_path, terminal)
+    engine.set_algo_state('fef', 'OFF')
+    manual_fill(terminal)
+    engine.config.contracts['fef'].algo_on = True       # forced, as a restart might
+    rt = warm_the_window(engine, gw)
+    put_book_at_z(engine, gw, 2.5)
+    engine.poll(now=gw.now); engine.poll(now=gw.now)
+    assert rt.position is None and 'a hand is holding' in rt.blocked_by
+
+
+def test_a_manual_close_is_never_refused(tmp_path, terminal):
+    """If a hand position is ever on a contract its Algo trades — a restart,
+    a recovered order — the way out is never the thing that is refused."""
     engine, _ = desk(tmp_path, terminal)
-    engine.set_trading_mode('MANUAL')
+    engine.set_algo_state('fef', 'OFF')
     oid = manual_fill(terminal)
-    engine.trading_mode = 'ALGO'              # forced, as a restart might
+    engine.dry_run.discard('fef')
+    engine.config.contracts['fef'].algo_on = True       # forced: trading now
+    assert engine.algo_state('fef') == 'LIVE'
     close = terminal.preview_close({'order_id': oid})
     assert terminal.submit({'token': close['token'], 'confirmed': True})['ok']
 
 
-def test_the_mode_survives_a_restart(tmp_path, terminal):
+def test_a_dry_run_survives_a_restart(tmp_path, terminal):
     path = str(tmp_path / 'mode.json')
     engine, _ = desk(tmp_path, terminal, mode_path=path)
-    engine.set_trading_mode('MANUAL')
+    engine.set_algo_state('fef', 'DRY')
     again, _ = desk(tmp_path, terminal, mode_path=path)
-    assert again.trading_mode == 'MANUAL'
-    assert again.snapshot()['engine']['trading_mode'] == 'MANUAL'
+    assert again.algo_state('fef') == 'DRY'
+    assert again.snapshot()['contracts'][0]['algo_state'] == 'DRY'

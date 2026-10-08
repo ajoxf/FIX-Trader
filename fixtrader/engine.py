@@ -40,8 +40,11 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-#: Who may trade the desk. One at a time — see Engine.trading_mode.
-TRADING_MODES = ('ALGO', 'MANUAL')
+#: One contract's Algo, as its ladder's button names it (the MT5 desk's
+#: switch): OFF — traded by hand; DRY — signals only, still by hand; TRADE —
+#: the Algo trades it (PAPER or LIVE, by the desk's Execution) and a NEW hand
+#: order on that contract is refused. See Engine.set_algo_state.
+ALGO_STATES = ('OFF', 'DRY', 'TRADE')
 
 
 class ContractRuntime:
@@ -146,16 +149,16 @@ class Engine:
         #: once the session is up (the startup sweep, scoped to our ids).
         self._swept_previous: bool = False
         self._paper_seq: int = 0
-        #: WHO is trading this desk: the algo or a person, never both. Two
-        #: hands on one book fight — the algo closes a hand-placed position at
-        #: its own target, or re-enters the moment the trader gets flat — and
-        #: the journal then describes neither. Each mode refuses the other's
-        #: NEW orders; a switch is refused while the side being switched away
-        #: from has anything open or working. Exits and cancels are never
-        #: refused, in either mode. Kept on disk beside the status file, so a
-        #: restart comes back in the mode it left.
+        #: WHO trades each contract: its Algo or a person, never both on the
+        #: same contract. Two hands on one book fight — the algo closes a
+        #: hand-placed position at its own target, or re-enters the moment
+        #: the trader gets flat. Per contract, as on the MT5 desk: an Algo
+        #: that TRADES a contract refuses NEW hand orders on it; Off and Dry
+        #: run leave it to the hand. A switch is refused while the side being
+        #: left still has something open there. Exits and cancels are never
+        #: refused. The Dry-run choices are kept beside the status file.
         self.mode_path = mode_path
-        self.trading_mode: str = self._load_mode()
+        self.dry_run: set = self._load_dry()
         terminal = getattr(gateway, 'terminal', None)
         if terminal is not None:
             terminal.mode_block = self._manual_block
@@ -404,10 +407,15 @@ class Engine:
                      'MEAN_REVERSION': ExitReason.MEAN,
                      'TIME_STOP': ExitReason.TIME_STOP}
 
-    def algo_mode(self) -> str:
+    def algo_mode(self, key: Optional[str] = None) -> str:
         """What an Algo intent does now: LIVE sends it, PAPER fills it at
-        the live price inside this process, DRY RUN only shows it."""
+        the live price inside this process, DRY RUN only shows it. A
+        contract in a dry run only shows; an Algo that is OFF keeps the
+        desk's mode so a position it still holds has its exits acted on."""
         if not self.auto_trade_enabled:
+            return 'DRY RUN'
+        rt = self.runtimes.get(key) if key is not None else None
+        if rt is not None and rt.contract.algo_on and key in self.dry_run:
             return 'DRY RUN'
         return 'PAPER' if self.paper else 'LIVE'
 
@@ -464,7 +472,7 @@ class Engine:
         only with the Algo armed, in ALGO mode, and Auto trade on.
         """
         algo = rt.algo
-        algo.mode_changed(self.algo_mode())
+        algo.mode_changed(self.algo_mode(contract.key))
         p = algo_mod.params_from_settings(settings)
         if p != algo.params:
             algo.reshape(p, now.timestamp())
@@ -500,8 +508,10 @@ class Engine:
         algo.settle_day(now.date().isoformat())
 
         mode_gate = None
-        if self.trading_mode == 'MANUAL':
-            mode_gate = 'MANUAL mode — a person is trading this desk'
+        manual_held = self.manual_business(contract.key)
+        if manual_held:
+            mode_gate = ('a hand is holding this contract — ' +
+                         '; '.join(manual_held))
         elif self.killed:
             mode_gate = 'KILL ALL is on'
         elif not self.master_algo:
@@ -529,7 +539,7 @@ class Engine:
         body = algo.observe(now.timestamp(), md, positions, gates,
                             {'k': money['k'], 'commission': money['commission'],
                              'slippage': money['slippage']},
-                            armed=armed and self.trading_mode == 'ALGO',
+                            armed=armed,
                             live=live)
         # The slippage BUDGET, so the window can put today's measured figure
         # beside it — a budget is corrected from data, or not at all.
@@ -548,7 +558,7 @@ class Engine:
                             'session flat time', book, now)
             return
 
-        mode = self.algo_mode()
+        mode = self.algo_mode(contract.key)
         for intent in body['intents']:
             if intent['action'] == 'EXIT':
                 reason = self._EXIT_REASONS.get(intent['reason'],
@@ -1021,77 +1031,138 @@ class Engine:
 
     # -- who is trading: the algo or a person ------------------------------
 
-    def _load_mode(self) -> str:
+    def _load_dry(self) -> set:
         if self.mode_path:
             try:
                 from . import atomicfile
                 saved = atomicfile.read_json(self.mode_path, default=None) or {}
-                if saved.get('mode') in TRADING_MODES:
-                    return saved['mode']
+                return set(saved.get('dry') or [])
             except Exception:                                # noqa: BLE001
-                logger.warning("could not read %s — starting in ALGO mode",
-                               self.mode_path)
-        return 'ALGO'
+                logger.warning("could not read %s", self.mode_path)
+        return set()
 
-    def _manual_block(self) -> Optional[str]:
-        """Why a NEW manual order is refused right now, or None."""
-        if self.trading_mode == 'ALGO':
-            return ("the desk is in ALGO mode — manual orders are refused so "
-                    "the algo's book is not mixed with hand trades. Switch to "
-                    "MANUAL on the Algo desk first. Closing and cancelling "
-                    "still work.")
-        return None
-
-    def algo_business(self) -> List[str]:
-        """What the algo has open or working, in words. Empty = nothing."""
-        out = []
-        for key, rt in self.runtimes.items():
-            if rt.position is not None and rt.position.is_open:
-                out.append(f"{rt.contract.name or key}: an open algo position "
-                           f"({rt.position.side.value} {rt.position.qty:g})")
-            if self.executor.working_for(key):
-                out.append(f"{rt.contract.name or key}: a working algo order")
-        return out
-
-    def manual_business(self) -> List[str]:
-        terminal = getattr(self.gateway, 'terminal', None)
-        return terminal.open_business() if terminal is not None else []
-
-    def set_trading_mode(self, mode: str) -> Dict[str, Any]:
-        mode = str(mode or '').upper()
-        if mode not in TRADING_MODES:
-            return {'ok': False, 'error': f"unknown mode {mode!r} — ALGO or MANUAL"}
-        if mode == self.trading_mode:
-            return {'ok': True, 'trading_mode': mode}
-        # Switching AWAY from a side that still holds something would leave
-        # its position on a book the other side is now trading.
-        leaving = (self.algo_business() if mode == 'MANUAL'
-                   else self.manual_business())
-        if leaving:
-            side = 'algo' if mode == 'MANUAL' else 'manual'
-            return {'ok': False, 'error': (
-                f"cannot switch to {mode}: the {side} side still has "
-                + '; '.join(leaving)
-                + f". Close or cancel it first — the {side} side can always "
-                  f"close what it opened.")}
-        if mode == 'MANUAL':
-            # No automatic order may go out behind a person's back.
-            self.set_auto_trade(False)
-            for rt in self.runtimes.values():
-                rt.proposal = None
-        else:
-            terminal = getattr(self.gateway, 'terminal', None)
-            if terminal is not None:
-                # A ticket reviewed in MANUAL mode must not be sent in ALGO.
-                terminal.previews = {k: v for k, v in terminal.previews.items()
-                                     if v.get('close_of')}
-        self.trading_mode = mode
+    def _save_dry(self) -> None:
         if self.mode_path:
             from . import atomicfile
-            atomicfile.write_json(self.mode_path, {'mode': mode,
-                                                   'at': utcnow().isoformat()})
-        logger.info("trading mode is now %s", mode)
-        return {'ok': True, 'trading_mode': mode}
+            atomicfile.write_json(self.mode_path, {
+                'dry': sorted(self.dry_run), 'at': utcnow().isoformat()})
+
+    def algo_state(self, key: str) -> str:
+        """OFF, DRY, PAPER or LIVE — what this contract's Algo does NOW, the
+        one word its ladder and its Algo window both show."""
+        rt = self.runtimes.get(key)
+        if rt is None or not rt.contract.algo_on:
+            return 'OFF'
+        if key in self.dry_run or not self.auto_trade_enabled:
+            return 'DRY'
+        return 'PAPER' if self.paper else 'LIVE'
+
+    def _contract_for_security(self, security_id) -> Optional[str]:
+        sid = str(security_id or '')
+        if not sid:
+            return None
+        return next((k for k, rt in self.runtimes.items()
+                     if str(getattr(rt.contract, 'security_id', '') or '') == sid),
+                    None)
+
+    def _manual_block(self, ticket=None) -> Optional[str]:
+        """Why a NEW manual order is refused right now, or None. Only where
+        an Algo TRADES the contract — or still holds something on it."""
+        key = self._contract_for_security((ticket or {}).get('security_id'))
+        if key is None:
+            return None
+        name = self.runtimes[key].contract.name or key
+        if self.algo_state(key) in ('PAPER', 'LIVE'):
+            return (f"the Algo is TRADING {name} — hand orders on it are "
+                    f"refused so its book is not mixed with the Algo's. Set "
+                    f"its Algo to Off or Dry run (the button on its ladder) "
+                    f"to trade it by hand. Closing and cancelling still work.")
+        held = self.algo_business(key)
+        if held:
+            return (f"the Algo still holds {'; '.join(held)} — close it first "
+                    f"(CLOSE ALL on the ladder). Closing and cancelling still "
+                    f"work.")
+        return None
+
+    def algo_business(self, key: Optional[str] = None) -> List[str]:
+        """What the algo has open or working, in words. Empty = nothing."""
+        out = []
+        for k, rt in self.runtimes.items():
+            if key is not None and k != key:
+                continue
+            if rt.position is not None and rt.position.is_open:
+                out.append(f"{rt.contract.name or k}: an open algo position "
+                           f"({rt.position.side.value} {rt.position.qty:g})")
+            if self.executor.working_for(k):
+                out.append(f"{rt.contract.name or k}: a working algo order")
+        return out
+
+    def manual_business(self, key: Optional[str] = None) -> List[str]:
+        terminal = getattr(self.gateway, 'terminal', None)
+        if terminal is None:
+            return []
+        if key is None:
+            return terminal.open_business()
+        rt = self.runtimes.get(key)
+        sid = str(getattr(rt.contract, 'security_id', '') or '') if rt else ''
+        return terminal.open_business(sid) if sid else []
+
+    def set_algo_state(self, key: str, state: str) -> Dict[str, Any]:
+        """One contract's Algo: OFF, DRY (signals only) or TRADE — the MT5
+        desk's one switch per ladder. Refused, in words naming what is open,
+        while the side being left still holds something on this contract."""
+        rt = self.runtimes.get(key)
+        if rt is None:
+            return {'ok': False, 'error': f"no contract {key}"}
+        state = str(state or '').upper()
+        if state not in ALGO_STATES:
+            return {'ok': False, 'error': f"unknown Algo state {state!r} — OFF, DRY or TRADE"}
+        name = rt.contract.name or key
+        now_state = self.algo_state(key)
+        if state != 'TRADE' and now_state in ('PAPER', 'LIVE'):
+            held = self.algo_business(key)
+            if held:
+                # In a dry run nothing would manage the exit any more.
+                return {'ok': False, 'error': (
+                    f"the Algo still holds {'; '.join(held)}. CLOSE ALL on "
+                    f"the ladder closes it and stands the Algo down — or "
+                    f"leave it trading until it exits.")}
+        if state == 'TRADE':
+            held = self.manual_business(key)
+            if held:
+                return {'ok': False, 'error': (
+                    f"{name} has manual business: {'; '.join(held)}. Close or "
+                    f"cancel it first — the Algo never trades a book a hand "
+                    f"is holding.")}
+            if self.killed:
+                return {'ok': False, 'error': 'KILL ALL is on'}
+            if not self.master_algo:
+                return {'ok': False, 'error': 'the Master switch is off'}
+            if not self.auto_trade_enabled:
+                # Turning automatic trading on must not set every OTHER
+                # armed contract trading behind the trader's back: they
+                # were dry runs a moment ago, and they stay dry runs.
+                others = {k for k, r in self.runtimes.items()
+                          if k != key and r.contract.algo_on}
+                result = self.set_auto_trade(True)
+                if not result.get('ok'):
+                    return result
+                self.dry_run |= others
+            self.dry_run.discard(key)
+            if not rt.contract.algo_on:
+                self.set_algo(key, True)
+        elif state == 'DRY':
+            self.dry_run.add(key)
+            if not rt.contract.algo_on:
+                self.set_algo(key, True)
+        else:
+            self.dry_run.discard(key)
+            if rt.contract.algo_on:
+                self.set_algo(key, False)
+            rt.proposal = None
+        self._save_dry()
+        self._say(rt, "CONFIG", f"Algo {self.algo_state(key)}")
+        return {'ok': True, 'algo_state': self.algo_state(key)}
 
     # -- the venue: sweep, reconcile, arm LIVE ------------------------------
 
@@ -1173,9 +1244,6 @@ class Engine:
                 self.gateway, 'connection_only', False):
             return {'ok': False, 'error': 'this engine has no venue to send '
                     'Algo orders to'}
-        if self.trading_mode != 'ALGO':
-            return {'ok': False, 'error': 'The desk is in MANUAL mode — switch '
-                    'it to ALGO first'}
         if self.killed:
             return {'ok': False, 'error': 'KILL ALL is on'}
         if self.gateway.state().value != 'LOGGED_ON':
@@ -1213,9 +1281,6 @@ class Engine:
                 'positions_waived': self.positions_waived}
 
     def set_auto_trade(self, on: bool) -> Dict[str, Any]:
-        if on and self.trading_mode == 'MANUAL':
-            return {'ok': False, 'error': 'The desk is in MANUAL mode. Switch '
-                    'it to ALGO before turning automatic trading on.'}
         if on and self.paper:
             # Paper trading sends nothing, so there is no venue book to
             # recover and no session it depends on.
@@ -1669,7 +1734,12 @@ class Engine:
                 'proposal': rt.proposal,
                 #: The Algo window: Signal & Position, Statistics, Filters,
                 #: the last signal held back and the last order.
-                'algo': (rt.algo.block(self.algo_mode())
+                #: The ONE word this contract's ladder and Algo window show:
+                #: OFF / DRY / PAPER / LIVE, and why a hand order is refused.
+                'algo_state': self.algo_state(key),
+                'manual_block': self._manual_block(
+                    {'security_id': getattr(contract, 'security_id', '')}),
+                'algo': (rt.algo.block(self.algo_mode(key))
                          if rt.algo is not None else None),
                 'last_close': rt.last_close,
                 #: The day's O/H/L of the mid this system watched (ours).
@@ -1706,7 +1776,6 @@ class Engine:
                 'loop_ms': round(self.loop_ms, 1),
                 'master_algo': self.master_algo,
                 'auto_trade_enabled': self.auto_trade_enabled,
-                'trading_mode': self.trading_mode,
                 'auto_trade_available': True,
                 'paper': self.paper,
                 'execution': {

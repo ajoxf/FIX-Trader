@@ -133,7 +133,8 @@ window.TradingMonitor = function (root, opts) {
       ['FIX account (tag 1)', (pnl.account || {}).name || m.account || DASH, ''],
       ['Venue', e.environment || DASH, ''],
       ['Execution', ex.mode || DASH, ex.mode === 'LIVE' ? 'live' : 'paper'],
-      ['Trading mode', e.trading_mode || DASH, ''],
+      ['Algos trading', String(contracts().filter((c) => c.algo_state === 'PAPER' ||
+        c.algo_state === 'LIVE').length) + ' of ' + contracts().length, ''],
       ['Open positions', String(algoOpen + manualOpen) +
         (manualOpen ? '  (' + algoOpen + ' algo · ' + manualOpen + ' manual)' : ''), ''],
       ['Algo open P&L (net)', money(p.open_pnl), cls(p.open_pnl)],

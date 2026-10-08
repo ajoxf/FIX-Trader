@@ -21,10 +21,11 @@ logging for `fixtrader.gateway` and `fixtrader.engine` records normalized
 events and strategy consumption. The Algo's orders go to TT over the Order
 Routing session (TT UAT, FIX 4.2) — but only once a person arms **LIVE**.
 
-The Algo desk has separate **Master** and **Auto trade** controls. Master runs
-the strategy on live quotes and displays signal proposals. Auto trade controls
-automatic order placement and starts OFF on a live venue after every restart.
-**Execution** is PAPER or LIVE, on the taskbar. Every restart comes back on
+Each contract's **Algo button** (on its ladder and its Algo window) is Off,
+Dry run (signals only) or Trades; on a live venue every Algo comes back in a
+dry run after a restart. **Master** on the taskbar stands every Algo down at
+once. **Execution** is PAPER or LIVE, on the taskbar — where a trading Algo's
+orders go. Every restart comes back on
 PAPER: fills simulated at the live bid/offer, nothing sent. LIVE sends the
 Algo's orders to TT and is armed by hand, confirmed every time. TT is asked
 for the account's positions at each logon; if it does not answer, arming
@@ -40,12 +41,12 @@ size are kept together in the algorithm model.
 options and listed spreads, save a watchlist, receive bid/ask prices, and
 review/send manual orders with cancel/replace and execution reports.
 See [symbol and order instructions](docs/INSTRUMENTS_AND_ORDERS.md).
-This manual workflow was added explicitly at the operator's request. The desk
-is in ONE trading mode at a time — **ALGO** or **MANUAL**, switched from the
-Algo desk taskbar or the Instruments page — so hand trades and algo trades are
-never on the book together: each mode refuses the other's new orders, and a
-switch is refused while the side being left has anything open. Closing and
-cancelling always work. Algorithmic execution and complete account-position
+This manual workflow was added explicitly at the operator's request. Each
+contract has ONE Algo switch, on its ladder and its Algo window — **Off**,
+**Dry run** (signals only) or **Trades** (PAPER or LIVE) — so hand trades and
+algo trades are never on the same contract: while its Algo trades, hand orders
+on it are refused, and the Algo never trades a contract a hand is holding.
+Closing and cancelling always work. Algorithmic execution and complete account-position
 recovery remain unfinished.
 
 **Local TT UAT connection:** the native connection code from
@@ -93,9 +94,10 @@ so there are no legs:
   margin you enter per contract, or an ATR multiple) and the stop loss (2%,
   or an ATR multiple). Optional: z stop, back at the mean in profit, time
   stop.
-- **Modes**: DRY RUN (Auto trade off: signals only), PAPER (filled at the
-  live bid/offer, nothing sent — every restart comes back here), LIVE (sent
-  to TT; armed by hand and confirmed).
+- **Modes**, per contract on its Algo button: OFF (traded by hand), DRY RUN
+  (signals only), and Trades — PAPER (filled at the live bid/offer, nothing
+  sent — every restart comes back here) or LIVE (sent to TT; armed by hand
+  and confirmed).
 
 The top bar puts trading first — **Algo desk**, **Instruments & orders**,
 **Account** — then the connection pages. **Account** is the Trading

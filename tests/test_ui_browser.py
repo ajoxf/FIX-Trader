@@ -54,6 +54,8 @@ SNAPSHOT = {
         'key': 'fef', 'name': 'Iron ore Oct/Nov', 'symbol': 'FEFV6-FEFX6',
         'venue': 'SIM', 'decimals': 4, 'tick_size': 0.01, 'state': 'IN',
         'algo_on': True,
+        'algo_state': 'PAPER',
+        'manual_block': None,
         'market': {'bid': 0.48, 'ask': 0.49, 'bid_size': 25, 'ask_size': 25,
                    'mid': 0.485},
         'feed': {'age_sec': 0.2, 'stale': False, 'settling': False},
@@ -183,7 +185,9 @@ def test_the_window_renders_every_field_without_a_page_error(server):
         win = page.locator('.contractwin')
         assert win.locator('.state').inner_text() == 'IN'
         assert win.locator('.title').inner_text() == 'Iron ore Oct/Nov · Algo'
-        assert win.locator('.aw-mode').inner_text() == 'PAPER'
+        # ONE word for the contract's Algo, on its window and its ladder alike
+        assert win.locator('.algo-btn').inner_text().startswith('ALGO PAPER')
+        assert page.locator('.ladderwin .algo-btn').inner_text().startswith('ALGO PAPER')
         assert win.locator('.aw-tile.sell .aw-tile-price').inner_text() == '0.4800'
         assert win.locator('.aw-tile.buy .aw-tile-price').inner_text() == '0.4900'
         assert win.locator('.aw-tile.sell .aw-tile-z').inner_text() == '-0.50'
@@ -250,14 +254,50 @@ def test_a_missing_figure_renders_as_an_em_dash_never_as_zero(server):
 
 
 def test_the_algo_switch_sends_a_command(server):
+    """The MT5 desk's switch: one click opens Off / Dry run / Trades."""
     url, tmp = server
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
-        page.locator('.sw').click()
+        win = page.locator('.contractwin')
+        win.locator('.algo-btn').click()
+        items = win.locator('.algo-menu button').all_inner_texts()
+        assert [i.split()[0] for i in items] == ['Off', 'Dry', 'Trades']
+        win.locator('.algo-menu button[data-algo="DRY"]').click()
         page.wait_for_timeout(400)
-        lines = (tmp / 'commands.jsonl').read_text().strip().splitlines()
-        assert json.loads(lines[-1])['action'] == 'algo_off'
+        sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
+        assert sent['action'] == 'algo_state' and sent['args']['state'] == 'DRY'
+        assert sent['contract'] == 'fef'
+        browser.close()
+    assert errors == []
+
+
+def test_setting_the_algo_to_trade_asks_first(server):
+    """Trades takes the contract from the hand — so it asks, and says
+    PAPER or LIVE. An unanswered question sends nothing (the control)."""
+    url, tmp = server
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['contracts'][0]['algo_state'] = 'DRY'
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        ladder = page.locator('.ladderwin')
+        page.wait_for_timeout(600)
+        ladder.locator('.algo-btn').click()
+        ladder.locator('.algo-menu button[data-algo="TRADE"]').click()
+        page.wait_for_selector('#modal:not(.hidden)')
+        assert 'refused while it trades' in page.locator('#modal-body').inner_text()
+        page.locator('#modal-cancel').click()
+        page.wait_for_timeout(300)
+        log = tmp / 'commands.jsonl'
+        assert not log.exists() or 'algo_state' not in log.read_text()
+        ladder.locator('.algo-btn').click()
+        ladder.locator('.algo-menu button[data-algo="TRADE"]').click()
+        page.locator('#modal-confirm').click()
+        page.wait_for_timeout(400)
+        sent = json.loads(log.read_text().strip().splitlines()[-1])
+        assert sent['action'] == 'algo_state' and sent['args']['state'] == 'TRADE'
         browser.close()
     assert errors == []
 
@@ -478,12 +518,18 @@ def test_closing_from_the_trading_monitor_asks_and_then_sends(server):
     assert errors == []
 
 
-# -- hand trading on the desk ladder (MANUAL mode) -------------------------------
+# -- hand trading on the desk ladder (its Algo Off or Dry run) ---------------------
 
 def manual_desk(tmp, mode='MANUAL'):
+    """MANUAL: the contract's Algo is Off — the hand's. ALGO: its Algo
+    trades it, and the engine says hand orders on it are refused."""
     snap = json.loads((tmp / 'status.json').read_text())
-    snap['engine'].update({'trading_mode': mode,
-                           'session': {'state': 'LOGGED_ON', 'text': 'up'},
+    for c in snap['contracts']:
+        c['algo_state'] = 'OFF' if mode == 'MANUAL' else 'PAPER'
+        c['algo_on'] = mode != 'MANUAL'
+        c['manual_block'] = (None if mode == 'MANUAL' else
+                             'the Algo is TRADING Iron ore Oct/Nov')
+    snap['engine'].update({'session': {'state': 'LOGGED_ON', 'text': 'up'},
                            'manual_terminal': {'account': 'ACC1', 'orders': [],
                                                'pnl': {'positions': []}}})
     for c in snap['contracts']:
@@ -505,6 +551,7 @@ def test_manual_mode_ladder_buy_goes_to_the_manual_ticket_review(server):
         page.wait_for_selector('.ladderwin.manual-on')
         assert ladder.locator('.ld-buy').is_enabled()
         assert 'Bids buys' in ladder.locator('.ld-lock').inner_text()
+        assert 'ALGO OFF' in ladder.locator('.ld-lock').inner_text()
         ladder.locator('.ld-buy').click()
         page.wait_for_timeout(600)
         sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
@@ -1250,34 +1297,35 @@ def test_the_algo_windows_ladder_button_brings_the_ladder_back(server):
     assert errors == []
 
 
-def test_the_ladder_offers_the_switch_to_manual_in_algo_mode(server):
-    """An Algo switched OFF does not make the ladder a manual one — the DESK
-    must be in MANUAL. The ladder says so and carries the switch, which asks
-    (the same confirmation as the taskbar) and then sends it."""
+def test_a_trading_algo_locks_its_ladder_and_says_how_to_unlock_it(server):
+    """The Algo trading THIS contract is what takes it from the hand — the
+    banner says so on the ladder, and points at the switch on it."""
     url, tmp = server
     manual_desk(tmp, mode='ALGO')
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
         page.wait_for_selector('.ladderwin .ld-grid tbody tr')
+        page.wait_for_timeout(500)
         ladder = page.locator('.ladderwin')
-        assert 'Desk in ALGO mode' in ladder.locator('.ld-lock').inner_text()
-        ladder.locator('.ld-switch').click()
-        page.wait_for_selector('#modal:not(.hidden)')
-        assert 'MANUAL' in page.locator('#modal-title').inner_text()
-        page.locator('#modal-confirm').click()
-        page.wait_for_timeout(400)
-        sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
-        assert sent['action'] == 'trading_mode' and sent['args']['mode'] == 'MANUAL'
+        assert 'ALGO PAPER' in ladder.locator('.ld-lock').inner_text()
+        assert 'manual orders are off' in ladder.locator('.ld-lock').inner_text()
+        assert 'Off or Dry run' in ladder.locator('.ld-lock').get_attribute('title')
         browser.close()
+    assert errors == []
 
 
-def test_in_manual_mode_the_ladder_has_no_switch_button(server):
-    """The control: already MANUAL, nothing to switch to on the ladder."""
+def test_a_dry_run_leaves_the_ladder_to_the_hand(server):
+    """The control, as on the MT5 desk: a dry run shows signals and the
+    trader still trades the contract by hand."""
     url, tmp = server
     manual_desk(tmp)
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['contracts'][0].update({'algo_state': 'DRY', 'algo_on': True})
+    (tmp / 'status.json').write_text(json.dumps(snap))
     with sync_playwright() as p:
         browser, page = open_page(p, url, [])
         page.wait_for_selector('.ladderwin.manual-on')
-        assert not page.locator('.ladderwin .ld-switch').is_visible()
+        assert 'DRY RUN' in page.locator('.ladderwin .ld-lock').inner_text()
+        assert page.locator('.ladderwin .ld-buy').is_enabled()
         browser.close()

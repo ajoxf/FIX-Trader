@@ -321,13 +321,15 @@
       $('feed-status').textContent=`Source: TT ${engine.environment||'UAT'} FIX · Market data: ${md?.status||'DISCONNECTED'} · quote stream: ${streamState}${streamLatency===null?'':` · FIX-to-screen ${streamLatency} ms`} · Last heartbeat: ${clock(md?.last_heartbeat)}. UAT is a test feed; quote age reflects actual TT updates.`;
       $('session').textContent=!engine.alive?'Engine offline':`${engine.environment||''} · ${engine.session?.state||'DOWN'}`;
       $('session').className='tag '+(engine.alive&&engine.session?.state==='LOGGED_ON'?'good':'error');
-      // Who is trading: in ALGO mode a new manual order is refused by the
-      // terminal itself; the screen says so before the trader fills a ticket.
-      const mode=engine.trading_mode||'';
-      $('mode-text').textContent=mode==='ALGO'?'Trading mode: ALGO — manual orders are refused (closing and cancelling still work).':mode==='MANUAL'?'Trading mode: MANUAL — you are trading; the algo is not entering.':'Trading mode: unknown — engine offline';
-      $('mode-bar').className='mode-bar'+(mode==='ALGO'?' algo':'');
-      $('mode-switch').textContent=mode==='ALGO'?'Switch to MANUAL':'Switch to ALGO';$('mode-switch').dataset.next=mode==='ALGO'?'MANUAL':'ALGO';
-      $('review-order').disabled=!engine.alive||engine.session?.state!=='LOGGED_ON'||mode==='ALGO';
+      // Who is trading: a hand order is refused only on a contract whose
+      // Algo TRADES it (the button on its ladder). The terminal refuses it
+      // regardless; the screen says so before the trader fills a ticket.
+      const trading=(snapshot.contracts||[]).filter(c=>c.algo_state==='PAPER'||c.algo_state==='LIVE');
+      $('mode-text').textContent=!engine.alive?'Engine offline':trading.length
+        ?'Hand orders are refused on the contracts the Algo is trading: '+trading.map(c=>c.name+' ('+c.algo_state+')').join(', ')+'. Everything else is yours. Closing and cancelling always work.'
+        :'No Algo is trading — every instrument can be traded by hand.';
+      $('mode-bar').className='mode-bar'+(trading.length?' algo':'');
+      $('review-order').disabled=!engine.alive||engine.session?.state!=='LOGGED_ON';
       if(!engine.alive)notice('The engine is offline. Prices below are historical and orders are unavailable.',true);
       if(!engine.alive)for(const w of data.watchlist||[])w.quote.stale=true;
       if(!$('account').value&&data.account)$('account').value=data.account;
@@ -335,21 +337,6 @@
     }catch(error){for(const w of data.watchlist||[])w.quote.stale=true;if(snapshot.engine)snapshot.engine.alive=false;$('session').textContent='Engine unavailable';$('session').className='tag error';$('review-order').disabled=true;notice(error.message,true);renderWatch();}
     setTimeout(poll,1000);
   }
-  async function switchMode(next){
-    {
-      const queued=await request('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'trading_mode',args:{mode:next}})});
-      if(!queued.ok)throw new Error(queued.error||'Refused');
-      for(const deadline=Date.now()+10000;Date.now()<deadline;){const r=await request('/api/result/'+encodeURIComponent(queued.id));if(!r.pending){if(!r.ok)throw new Error(r.error||'Refused');return {message:'The desk is now in '+next+' mode.'};}await new Promise(ok=>setTimeout(ok,60));}
-      throw new Error('The engine did not answer.');
-    }
-  }
-  $('mode-switch').onclick=()=>{
-    const next=$('mode-switch').dataset.next;if(!next)return;
-    confirmDialog('Switch the desk to '+next,text('p',next==='MANUAL'
-      ?'The algo stops entering on every contract and automatic trading is turned off; manual orders are allowed. Refused while the algo has a position or working order open.'
-      :'Manual orders are refused from now on and any reviewed manual ticket is discarded; the algo may trade again. Refused while a manual order is working or a manual fill is not yet closed.'),
-      'Switch to '+next,()=>switchMode(next));
-  };
   $('explore-open').onclick=()=>{renderExplorer(true);$('explore-dialog').showModal();$('explore-product-input').focus();};
   $('explore-cancel').onclick=()=>$('explore-dialog').close();
   const pickExplorer=(key,value)=>{explorer[key]=value;if(key!=='contract'){explorer.contract='';explorer.filter='';$('explore-contract-filter').value='';}rememberExplorer();renderExplorer(true);};
