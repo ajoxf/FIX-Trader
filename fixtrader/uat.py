@@ -21,6 +21,7 @@ Manual (the ladder / manual ticket, FTM- orders):
   M4  a marketable LIMIT fills; Close @ LMT rests (77=C); cancelled; market close
   M5  a LIMIT at the touch fills when the price is hit (waits; may not trade)
   M6  an order TT refuses is shown in TT's own words (tag 58)
+  M7  MARKET SELL opens a short; a MARKET close by ticket (77=C) flattens
 Algo (its own path, FT- orders, 1028=N):
   A1  MARKET opens; the Algo's position shows with TT's tickets; CLOSE NOW
       closes it by ticket (77=C)
@@ -28,6 +29,7 @@ Algo (its own path, FT- orders, 1028=N):
   A3  a marketable LIMIT fills; Close @ LMT rests pinned (77=C); CLOSE ALL
       escalates it — cancel, then market — never two closes at once
   A4  a LIMIT at the touch fills when the price is hit (waits; may not trade)
+  A5  MARKET SELL opens a short; CLOSE NOW closes it by ticket
 
 Refused anywhere but a UAT venue. Quantity 1 unless told otherwise.
 """
@@ -43,29 +45,41 @@ WORKING = ('PENDING', 'NEW', 'PARTIALLY_FILLED', 'REPLACED')
 DONE = ('FILLED', 'CANCELED', 'REJECTED', 'EXPIRED')
 
 SCENARIOS = [
+    ('M3', 'Manual MARKET BUY opens, position shows, MARKET close by ticket flattens'),
+    ('M7', 'Manual MARKET SELL opens a short, position shows, MARKET close by ticket flattens'),
     ('M1', 'Manual LIMIT away from the market rests, is working, cancels'),
     ('M2', 'Manual resting LIMIT is replaced to a new price, then cancelled'),
-    ('M3', 'Manual MARKET opens, position shows, MARKET close by ticket flattens'),
     ('M4', 'Manual marketable LIMIT fills; Close @ LMT rests; cancelled; market close'),
     ('M5', 'Manual LIMIT at the touch fills when the price is hit'),
     ('M6', "Manual order refused by TT is shown in TT's words"),
-    ('A1', 'Algo MARKET opens, position with TT tickets; CLOSE NOW closes by ticket'),
+    ('A1', 'Algo MARKET BUY opens, position with TT tickets; CLOSE NOW closes by ticket'),
+    ('A5', 'Algo MARKET SELL opens a short; CLOSE NOW closes by ticket'),
     ('A2', 'Algo LIMIT away from the market rests, is working, cancels'),
     ('A3', 'Algo marketable LIMIT fills; Close @ LMT pinned; CLOSE ALL escalates'),
     ('A4', 'Algo LIMIT at the touch fills when the price is hit'),
 ]
+#: Who sends it and what kind of order: the four groups on the page.
+GROUPS = {'M3': ('manual', 'market'), 'M7': ('manual', 'market'),
+          'M1': ('manual', 'limit'), 'M2': ('manual', 'limit'),
+          'M4': ('manual', 'limit'), 'M5': ('manual', 'limit'),
+          'M6': ('manual', 'limit'),
+          'A1': ('algo', 'market'), 'A5': ('algo', 'market'),
+          'A2': ('algo', 'limit'), 'A3': ('algo', 'limit'),
+          'A4': ('algo', 'limit')}
 #: Each flow in a few plain words, for the Order tests page.
 SHORT = {
     'M1': 'Limit order rests, then cancels',
     'M2': 'Limit order price is changed',
-    'M3': 'Market order fills, position shows, CLOSE ALL flattens',
+    'M3': 'BUY at market: fills, position shows, CLOSE ALL flattens',
+    'M7': 'SELL at market: fills short, position shows, CLOSE ALL flattens',
     'M4': 'Limit fills at once; Close @ LMT rests; closed at market',
     'M5': 'Limit order fills when the market reaches it',
     'M6': "A refused order shows TT's reason",
-    'A1': 'Algo market order fills; CLOSE ALL closes it',
-    'A2': 'Algo limit order rests, then cancels',
-    'A3': 'Algo Close @ LMT rests; CLOSE ALL replaces it with one market close',
-    'A4': 'Algo limit order fills when the market reaches it',
+    'A1': 'BUY at market: fills, Algo position shows, CLOSE ALL closes it',
+    'A5': 'SELL at market: fills short, CLOSE ALL closes it',
+    'A2': 'Limit order rests, then cancels',
+    'A3': 'Limit fills at once; Close @ LMT rests; CLOSE ALL replaces it with one market close',
+    'A4': 'Limit order fills when the market reaches it',
 }
 #: The two that wait on the market to trade at a price: run with --with-hits.
 HIT_SCENARIOS = ('M5', 'A4')
@@ -79,6 +93,7 @@ STEPS = {
           'TT answers REPLACED at the new price (35=G, tag 44 in FIX logs). Cancel it.',
     'M3': 'Ladder: BUY (market) → review → Send. The fill and the position show (Trading Monitor › Positions). '
           'CLOSE ALL → review: a SELL flagged CLOSE (77=C) for that ticket only. Flat.',
+    'M7': 'Ladder (Algo Off): Market type, SELL → review → Send. A short position shows; CLOSE ALL buys it back (77=C).',
     'M4': 'Ladder: BUY LIMIT at the offer — fills at once. Close @ LMT at a price above the market: it RESTS (77=C). '
           'Cancel it; then CLOSE ALL closes at market.',
     'M5': 'Ladder: BUY LIMIT at the bid. It rests until the market trades there, then fills and the position shows. '
@@ -87,6 +102,7 @@ STEPS = {
     'A1': 'Hands-on ladder: Execution LIVE, Algo switch on Trades (ALGO LIVE). Market type, BUY: the Algo\'s order '
           '(FT-, 77=O, 1028=N) fills; its position shows with TT tickets (not PAPER-) and its TP / SL on the Algo window. '
           'CLOSE ALL closes it by ticket (77=C, "Close P<id>" in 58).',
+    'A5': 'Algo switch on UAT. Market type, SELL: the Algo\'s order fills short; CLOSE ALL closes it by ticket.',
     'A2': 'Hands-on ladder, ALGO LIVE: click a Bids price well below the market — the Algo\'s LIMIT rests (Work column, '
           'Working Orders, FT- id). Cancel all (CXL All) pulls it.',
     'A3': 'Hands-on ladder, ALGO LIVE: BUY; then Close @ LMT above the market — it rests PINNED (77=C). CLOSE ALL '
@@ -290,6 +306,14 @@ class OrderTestRun:
                     self.state['current'] = None
                     self.state['finished'] = time.strftime('%Y-%m-%d %H:%M:%S')
                     record = dict(self.state)
+                # The newest result of EVERY flow, whichever run it came
+                # from: checking one group does not wipe the others' ticks.
+                latest = dict((self.last() or {}).get('latest') or {})
+                for row in record.get('results') or []:
+                    if row.get('id') != 'PRE':
+                        latest[row['id']] = dict(row, contract=contract,
+                                                 at=record['finished'])
+                record['latest'] = latest
                 try:
                     with open(self.results_path, 'w', encoding='utf-8') as f:
                         json.dump(record, f, indent=1)
@@ -508,8 +532,9 @@ class Runner:
         c = self.contract(snap)
         if not c.get('security_id'):
             raise Failed(f'{self.key} has no TT Security ID')
-        if (c.get('feed') or {}).get('stale'):
-            raise Failed(f'{self.key}: the price is stale — TT is not publishing it')
+        # A price that has not MOVED is a quiet UAT market, not a missing
+        # one: these checks need a bid and an offer (`book()` below), not a
+        # market that trades.
         if c.get('algo_state') in ('PAPER', 'LIVE'):
             raise Failed(f'the Algo is trading {self.key} — set its Algo switch to Off '
                          f'or Signals first')
@@ -557,9 +582,10 @@ class Runner:
         self.manual_cancel(oid)
         return f'{price} → {new_price}, then cancelled'
 
-    def _manual_round_trip(self, oid, close_with_limit=False):
+    def _manual_round_trip(self, oid, close_with_limit=False, side='BUY'):
         """An opening manual order that filled: its position shows, and it
         closes by its own ticket — flagged CLOSE, never a second open."""
+        close_side = '2' if side == 'BUY' else '1'
         fill = self.manual_status(oid, ('FILLED',), f'{oid} filled')
         pos = self.until('the manual position on the book', lambda s: self.manual_open(s))
         if abs(sum(p['quantity'] for p in pos) - self.qty) > 1e-9:
@@ -567,15 +593,16 @@ class Runner:
         note = ''
         if close_with_limit:
             bid, ask, tick, dec = self.book()
-            far = self.px(ask + self.away * tick, tick, dec)    # a SELL far above
+            far = (self.px(ask + self.away * tick, tick, dec) if side == 'BUY'   # a SELL far above
+                   else self.px(bid - self.away * tick, tick, dec))         # a BUY far below
             cl = self.manual_close(oid, far)
             self.manual_status(cl, ('NEW',), 'the Close @ LMT resting at TT')
-            self.tags(cl, t77='C', t40='2', t44=self.wire(far), t54='2')
+            self.tags(cl, t77='C', t40='2', t44=self.wire(far), t54=close_side)
             self.manual_cancel(cl)
             note = f'Close @ LMT rested at {far} (77=C), cancelled; '
         cl = self.manual_close(oid)
         self.manual_status(cl, ('FILLED',), 'the close filled')
-        self.tags(cl, t77='C', t40='1', t54='2')
+        self.tags(cl, t77='C', t40='1', t54=close_side)
         self.until('flat again — no manual position left', lambda s: not self.manual_open(s))
         return note + f'filled @ {fill.get("avg_price")}, closed by ticket'
 
@@ -583,6 +610,11 @@ class Runner:
         oid = self.manual('BUY', 'MARKET')
         self.tags(oid, t40='1', t77='O', t54='1')
         return self._manual_round_trip(oid)
+
+    def m7(self):
+        oid = self.manual('SELL', 'MARKET')
+        self.tags(oid, t40='1', t77='O', t54='2')
+        return 'short: ' + self._manual_round_trip(oid, side='SELL')
 
     def m4(self):
         bid, ask, tick, dec = self.book()
@@ -617,10 +649,10 @@ class Runner:
             raise Failed(f'rejected without TT\'s own words: {text!r}')
         return f'TT said: {text}'
 
-    def a1(self):
-        cid = self.algo_open('BUY', 'MARKET')
+    def a1(self, side='BUY'):
+        cid = self.algo_open(side, 'MARKET')
         self.tags(cid, t11=lambda v: str(v).startswith('FT-'), t77='O', t1028='N',
-                  t40='1', t54='1', t1=lambda v: bool(v))
+                  t40='1', t54='1' if side == 'BUY' else '2', t1=lambda v: bool(v))
         pos = self.until('the Algo position on the book', lambda s: self.algo_position(s))
         tickets = pos.get('tickets') or []
         if not tickets or any(str(t).startswith('PAPER-') for t in tickets):
@@ -630,10 +662,15 @@ class Runner:
         closes = [m for m in self._algo_sent() if m.get('77') == 'C']
         if not closes:
             raise Failed('no closing order (77=C) found in the FIX log')
+        closes.sort(key=lambda m: int(str(m.get('11', '0')).rsplit('-', 1)[-1] or 0))
         close = closes[-1]
-        if close.get('54') != '2' or 'Close P' not in close.get('58', ''):
+        want = '2' if side == 'BUY' else '1'
+        if close.get('54') != want or 'Close P' not in close.get('58', ''):
             raise Failed(f'the close went as 54={close.get("54")} 58={close.get("58")!r}')
         return f'opened with tickets {tickets}; closed by ticket ({close.get("11")})'
+
+    def a5(self):
+        return 'short: ' + self.a1(side='SELL')
 
     def _algo_sent(self):
         """Every D the Algo sent during this run (FT- ids), via the journal."""

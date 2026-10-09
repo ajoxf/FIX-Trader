@@ -130,8 +130,9 @@ the drawing wins.
   each test cleans up by ticket, pass or fail. `tests/test_uat_orders.py`
   proves them against `tests/fake_tt.py` (real web app, engine loop and FIX
   sessions). A new order path gets a scenario here.
-  The page is three steps — pick a contract, Check automatically (manual
-  or Algo), Try it yourself — the last embedding the desk's ladder, Algo
+  The page is three steps — pick a contract, Check automatically (four
+  groups: Manual / Algo × Market / Limit, each flow keeping its newest
+  result; a quiet, unmoving UAT price never blocks a check), Try it yourself — the last embedding the desk's ladder, Algo
   window and Trading Monitor for the contract: with the Algo switch on UAT
   the ladder makes the Algo send its order now (`Engine.uat_order`) and its
   TP / SL manage the result. Keep it that simple.

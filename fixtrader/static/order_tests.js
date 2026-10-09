@@ -36,10 +36,15 @@ function flowRow(s, result, current) {
   li.append(st, text);
   if (result || current) {
     const ev = document.createElement('small');
-    ev.textContent = current ? 'running…' : String(result.detail || '').replace(/^SKIP: /, '');
+    ev.textContent = current ? 'running…' : String(result.detail || '').replace(/^SKIP: /, '') +
+      (result.at ? '  · ' + result.at : '');
     li.appendChild(ev);
   }
   return li;
+}
+
+function groups() {
+  return [...document.querySelectorAll('.ot-group')];
 }
 
 function paint(body) {
@@ -48,24 +53,36 @@ function paint(body) {
   const run = body.run && body.run.running ? body.run : null;
   OT.running = !!run;
   const shown = run || body.last || null;
-  const results = {};
-  ((shown && shown.results) || []).forEach((r) => { results[r.id] = r; });
-  const ul = $('ot-flows');
-  ul.textContent = '';
-  if (results.PRE) {
-    ul.appendChild(flowRow({ short: 'Ready to test', title: 'Preflight' }, results.PRE, false));
-  }
-  [['MANUAL ORDERS', 'manual'], ['ALGO ORDERS', 'algo']].forEach(([label, kind]) => {
-    const g = document.createElement('li'); g.className = 'group'; g.textContent = label;
-    ul.appendChild(g);
-    OT.scenarios.filter((s) => s.kind === kind)
-      .forEach((s) => ul.appendChild(flowRow(s, results[s.id], run && run.current === s.id)));
+  // The newest result of every flow, from whichever run; the running one's
+  // over it as they land.
+  const results = Object.assign({}, (body.last || {}).latest || {});
+  delete results.PRE;
+  // While a run is going its rows land over the record; the last run's own
+  // refusal to start (PRE) is shown until the next run.
+  ((run && run.results) || []).forEach((r) => { results[r.id] = r; });
+  const refused = ((shown && shown.results) || []).find((r) => r.id === 'PRE');
+  if (refused) results.PRE = refused;
+  const hits = $('ot-hits').checked;
+  groups().forEach((g) => {
+    const ul = g.querySelector('.ot-flows');
+    ul.textContent = '';
+    OT.scenarios.filter((s) => s.kind === g.dataset.kind && s.order_type === g.dataset.type)
+      .forEach((s) => {
+        const li = flowRow(s, results[s.id], run && run.current === s.id);
+        if (s.waits && !hits && !results[s.id]) li.classList.add('optional');
+        ul.appendChild(li);
+      });
   });
+  const pre = $('ot-pre');
+  pre.hidden = !results.PRE;
+  pre.textContent = results.PRE ? 'Could not start: ' + results.PRE.detail : '';
   $('ot-log').textContent = ((shown && shown.log) || []).join('\n') ||
     (shown ? '' : 'Nothing has been run yet.');
   const uat = OT.env === 'UAT';
-  $('ot-run-manual').disabled = $('ot-run-algo').disabled = OT.running || !uat;
+  document.querySelectorAll('.ot-check').forEach((b) => { b.disabled = OT.running || !uat; });
   $('ot-stop').disabled = !OT.running;
+  $('ot-run-note').textContent = run ? 'running…' : shown && shown.finished
+    ? 'last run ' + shown.finished + ' · ' + (shown.contract || '') : '';
   paintTried();
   const b = $('ot-banner');
   if (uat) {
@@ -143,13 +160,14 @@ async function refresh() {
   } catch (e) { /* idem */ }
 }
 
-function chosen(kind) {
+function chosen(kind, type) {
   const hits = $('ot-hits').checked;
-  return OT.scenarios.filter((s) => s.kind === kind && (hits || !s.waits)).map((s) => s.id);
+  return OT.scenarios.filter((s) => s.kind === kind && s.order_type === type &&
+    (hits || !s.waits)).map((s) => s.id);
 }
 
-async function run(kind) {
-  const ids = chosen(kind);
+async function run(kind, type) {
+  const ids = chosen(kind, type);
   const contract = $('ot-contract').value;
   const qty = $('ot-qty').value;
   const sel = $('ot-contract');
@@ -165,7 +183,7 @@ async function run(kind) {
       if (!done.ok) { toast('REJECT', 'Algo orders', done.error || 'refused'); return; }
     }
   }
-  const what = kind === 'algo' ? 'the Algo\'s order flows' : 'the manual order flows';
+  const what = (kind === 'algo' ? 'the Algo\'s ' : 'manual ') + type + ' order flows';
   const yes = await ask('Check ' + what + ' on ' + name + '?',
     `${ids.length} checks, ${qty} lot(s) per order. Real orders go to TT UAT; each check cancels and closes ` +
     'what it placed, so the contract ends flat. Takes about a minute' +
@@ -177,8 +195,9 @@ async function run(kind) {
   refresh();
 }
 
-$('ot-run-manual').onclick = () => run('manual');
-$('ot-run-algo').onclick = () => run('algo');
+groups().forEach((g) => {
+  g.querySelector('.ot-check').onclick = () => run(g.dataset.kind, g.dataset.type);
+});
 $('ot-stop').onclick = async () => {
   const r = await postJSON('/api/order-tests/stop', {});
   toast(r.data.ok ? 'INFO' : 'REJECT', 'Order tests', r.data.text || r.data.error || '');

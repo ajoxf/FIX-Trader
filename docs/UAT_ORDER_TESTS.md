@@ -9,11 +9,15 @@ the screen. **Order tests** in the top bar (`/order-tests`).
 
 1. **Pick a contract** — flat (nothing open, nothing working), with a bid and
    an offer. *Options* holds the quantity and the rest; the defaults are fine.
-2. **Check automatically** — *Check manual orders* or *Check Algo orders*.
+2. **Check automatically** — four groups, each with its own **Check** button:
+   **Manual · Market**, **Manual · Limit**, **Algo · Market**, **Algo · Limit**.
    The program places, fills, cancels and closes real orders on TT UAT and
-   ticks each flow ✓ or ✗ with what TT answered. The contract ends flat.
-   *Check Algo orders* first asks to send the Algo's orders to TT UAT (the
-   engine's own confirmation).
+   ticks each flow ✓ or ✗ with what TT answered and when; each flow keeps its
+   newest result, whichever group was run. The contract ends flat. An Algo
+   group first asks to send the Algo's orders to TT UAT (the engine's own
+   confirmation). "Fills when the market reaches it" waits for the market and
+   is off unless ticked under *Options*. A price that has not moved does not
+   stop a check — a quiet UAT market is normal; a bid and an offer is enough.
 3. **Try it yourself** — the desk's own ladder, Algo window and Trading
    Monitor, as you will trade live:
    - **By hand:** Algo switch on **OFF** (or SIGNALS). BUY / SELL, or click a
@@ -39,18 +43,20 @@ From a terminal instead: `run_uat_tests.bat esz6` or
 
 ## The tests
 
-| Test | Path | What it proves |
+| Group | Test | What it proves |
 |------|------|----------------|
-| M1 | Manual LIMIT | Rests away from the market, shows as working with TT's order id (37), cancels. 40=2, 44 in TT units, 54, 77=O, account. |
-| M2 | Manual replace | A resting LIMIT is replaced (35=G) to a new price; TT confirms; cancelled. |
-| M3 | Manual MARKET | Fills; the position shows; CLOSE by ticket goes 77=C 40=1 and flattens. |
-| M4 | Manual marketable LIMIT + Close @ LMT | Fills at the offer; a Close @ LMT RESTS (77=C, 40=2); cancelled; market close. |
-| M5 | Manual LIMIT hit | A LIMIT at the bid fills when the market trades there (waits; SKIP if it never does). |
-| M6 | Manual refusal | An order TT refuses is shown REJECTED in TT's own words (tag 58). |
-| A1 | Algo MARKET | FT- id, 77=O, 1028=N; the position carries TT tickets (not PAPER-); CLOSE NOW closes it by ticket (77=C, "Close P<id>" in 58). |
-| A2 | Algo LIMIT | Rests (FT-), Cancel all pulls it. |
-| A3 | Algo Close @ LMT + CLOSE ALL | The close rests PINNED; CLOSE ALL cancels it and, on TT's CANCELLED, sends ONE market close — never two. |
-| A4 | Algo LIMIT hit | A LIMIT at the bid fills when the market trades there. |
+| Manual · Market | M3 | BUY at market fills; the position shows; CLOSE ALL by ticket goes 77=C 40=1 and flattens. |
+| Manual · Market | M7 | SELL at market fills short; CLOSE ALL buys it back by ticket (77=C, 54=1). |
+| Manual · Limit | M1 | Rests away from the market with TT's order id (37); cancels. 40=2, 44 in TT units, 77=O. |
+| Manual · Limit | M2 | A resting LIMIT is replaced (35=G) to a new price; cancelled. |
+| Manual · Limit | M4 | Fills at the offer; a Close @ LMT RESTS (77=C, 40=2); cancelled; market close. |
+| Manual · Limit | M5 | A LIMIT at the bid fills when the market trades there (waits; skipped if it never does). |
+| Manual · Limit | M6 | An order TT refuses shows REJECTED in TT's own words (tag 58). |
+| Algo · Market | A1 | BUY: FT- id, 77=O, 1028=N; TT tickets (not PAPER-); CLOSE ALL closes by ticket ("Close P<id>" in 58). |
+| Algo · Market | A5 | SELL: the same, short. |
+| Algo · Limit | A2 | Rests (FT-); Cancel all pulls it. |
+| Algo · Limit | A3 | Close @ LMT rests PINNED; CLOSE ALL cancels it and, on TT's CANCELLED, sends ONE market close. |
+| Algo · Limit | A4 | A LIMIT at the bid fills when the market trades there. |
 
 On a **live venue** the page runs nothing and keeps the last UAT results.
 

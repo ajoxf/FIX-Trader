@@ -134,7 +134,7 @@ def test_prices_reach_the_screen_in_trader_units(desk):
 
 
 def test_the_manual_scenarios_pass(desk):
-    passed(desk.runner().run(['M1', 'M2', 'M3', 'M4', 'M6']))
+    passed(desk.runner().run(['M3', 'M7', 'M1', 'M2', 'M4', 'M6']))
     # Every order went out in TT's FIX units, never the screen's.
     prices = [float(o['44']) for o in desk.tt.orders_in if o.get('44')]
     assert prices and all(p > 1000 for p in prices), prices
@@ -149,7 +149,7 @@ def test_the_algo_scenarios_need_live_and_say_so(desk):
 def test_the_algo_scenarios_pass_on_live(desk):
     armed = desk.d.command('execution', '', {'mode': 'LIVE', 'confirm': True})
     assert armed.get('ok'), armed
-    passed(desk.runner().run(['A1', 'A2', 'A3']))
+    passed(desk.runner().run(['A1', 'A5', 'A2', 'A3']))
     algo = [o for o in desk.tt.orders_in if o['11'].startswith('FT-')]
     assert algo and all(o.get('1028') == 'N' for o in algo if o['35'] == 'D')
 
@@ -208,19 +208,23 @@ def test_the_page_runs_the_tests_and_keeps_the_run(desk):
     assert b'Order tests' in page and b'order_tests.js' in page
     body = c.get('/api/order-tests').get_json()
     assert body['environment'] == 'UAT'
-    assert [s['id'] for s in body['scenarios']][:2] == ['M1', 'M2']
+    groups = {(s['kind'], s['order_type']) for s in body['scenarios']}
+    assert groups == {('manual', 'market'), ('manual', 'limit'),
+                      ('algo', 'market'), ('algo', 'limit')}
     assert all(s['steps'] for s in body['scenarios'])       # each says how by hand
     # Not without the trader's word.
     refused = c.post('/api/order-tests/run', json={'ids': ['M1'], 'contract': 'clz6'})
     assert refused.status_code == 400 and not desk.tt.orders_in
-    ok = c.post('/api/order-tests/run', json={'ids': ['M1', 'M3'], 'contract': 'clz6',
-                                              'qty': 1, 'confirm': True}).get_json()
+    # M5 waits (3 s here) for a market that never trades at our bid: the run
+    # is still going when the second one is asked for.
+    ok = c.post('/api/order-tests/run', json={'ids': ['M5', 'M1', 'M3'], 'contract': 'clz6',
+                                              'qty': 1, 'hit_wait': 3, 'confirm': True}).get_json()
     assert ok['ok'], ok
     again = c.post('/api/order-tests/run', json={'ids': ['M1'], 'contract': 'clz6',
                                                  'confirm': True})
     assert again.status_code == 409                          # one run at a time
     body = wait_run(c)
-    assert [r['status'] for r in body['last']['results']] == ['PASS', 'PASS'], body['last']
+    assert [r['status'] for r in body['last']['results']] == ['SKIP', 'PASS', 'PASS'], body['last']
     assert body['last']['log']
 
 
@@ -283,3 +287,39 @@ def test_a_test_done_by_hand_is_recorded_and_cleared(desk):
     bad = c.post('/api/order-tests/check', json={'id': 'Z9', 'result': 'PASS'})
     assert bad.status_code == 400
     assert not desk.tt.orders_in                              # a record, never an order
+
+
+def test_a_quiet_uat_price_does_not_stop_the_checks():
+    """Found on UAT: preflight refused because the price had not MOVED —
+    'stale' — which on a quiet test market is normal. A bid and an offer is
+    what the checks need; with neither, they still refuse (the control)."""
+    def snap(market):
+        return {'engine': {'environment': 'UAT', 'session': {'state': 'LOGGED_ON'},
+                           'execution': {'mode': 'PAPER'},
+                           'manual_terminal': {'orders': [], 'pnl': {'positions': []}}},
+                'contracts': [{'key': 'esz6', 'security_id': 'ES1', 'algo_state': 'OFF',
+                               'feed': {'stale': True}, 'market': market,
+                               'tick_size': 0.25, 'decimals': 2}]}
+
+    class Driver:
+        def __init__(self, s):
+            self.s = s
+
+        def snapshot(self):
+            return self.s
+    ok = uat.Runner(Driver(snap({'bid': 6800.0, 'ask': 6800.25})), 'esz6', log=lambda s: None)
+    assert ok.preflight(need_live=False)['key'] == 'esz6'
+    none = uat.Runner(Driver(snap({'bid': None, 'ask': None})), 'esz6', log=lambda s: None)
+    with pytest.raises(uat.Failed, match='no bid/offer'):
+        none.preflight(need_live=False)
+
+
+def test_each_flow_keeps_its_newest_result_across_runs(desk):
+    c = desk.d.client
+    for ids in (['M3'], ['M1']):
+        assert c.post('/api/order-tests/run', json={'ids': ids, 'contract': 'clz6',
+                                                    'confirm': True}).get_json()['ok']
+        body = wait_run(c)
+    latest = body['last']['latest']
+    assert latest['M3']['status'] == 'PASS' and latest['M1']['status'] == 'PASS'
+    assert [r['id'] for r in body['last']['results']] == ['M1']     # the run itself
