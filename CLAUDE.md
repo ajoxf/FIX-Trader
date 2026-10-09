@@ -269,6 +269,18 @@ the drawing wins.
   (`NativeFixSession.ready`, a 5 s fallback if TT never says) — a CLOSE
   (77=C) never waits. ClOrdID (11) is at most 20 characters (TT): FTM- +
   16 hex for manual tickets, FT-<ms hex>-<base 36> for the Algo.
+- **What an Execution Report IS is decided before anything is booked**
+  (`tt_exec.kind`, both books): an exchange-listed spread's fill comes as
+  the spread (442=3 or 1) AND one report per LEG (442=2) at the leg's price
+  — only the spread is booked; a trade bust or correction (20=1/2, 150=H/G)
+  is SAID, never booked as a new fill; a status (20=3, 150=I/D) is not a
+  fill. A fill is known by TT's UniqueExecID (16612), or 17 with TT's
+  TradeDate (75) — never a date that depends on an optional tag. A reject
+  says OrdRejReason (103) in words.
+- **TT FIX Order Routing does not support Request For Positions (AN)** —
+  it is not among its messages, and TT asks clients to send nothing it does
+  not list. `AlgoOrderRouter.ASK_POSITIONS` is off: positions are unknown,
+  with the reason, until a TT Drop Copy session provides them.
 - **TT positions: asked for, never assumed.** A Request For Positions (AN)
   goes at each logon. Answered (AO/AP), `positions()` is the account and the
   book reconciles; refused (j, or a 35=3 naming AN — which must NOT stop the

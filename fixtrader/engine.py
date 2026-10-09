@@ -963,6 +963,11 @@ class Engine:
             return
         if event.kind in ("FILL", "PARTIAL") and event.fill is not None:
             self._apply_fill(rt, event, intent, now)
+        elif event.kind == "TRADE_CHANGE":
+            # TT busted or corrected an earlier fill: never booked as a new
+            # one, and never quiet.
+            self._say(rt, "REJECT", event.text)
+            self.notify("REJECT", rt.contract.key, event.text)
         elif event.kind in ("CANCELLED", "EXPIRED"):
             self._say(rt, "ORDER", event.kind.lower())
         elif event.kind == "CANCEL_REJECTED":

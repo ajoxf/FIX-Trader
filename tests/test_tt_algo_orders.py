@@ -94,6 +94,10 @@ class TT:
 def connect(monkeypatch):
     monkeypatch.setenv('TEST_OR', 'or-secret')
     monkeypatch.setenv('TEST_MD', 'md-secret')
+    # These tests exercise the request path, kept for a venue that answers
+    # it; TT's Order Routing does not, so it is off by default.
+    from fixtrader.gateway import AlgoOrderRouter
+    monkeypatch.setattr(AlgoOrderRouter, 'ASK_POSITIONS', True)
 
     def make(positions='answer'):
         peers = []
@@ -303,5 +307,37 @@ def test_positions_unanswered_time_out_as_unknown(connect, monkeypatch):
         assert status['status'] == 'unavailable'
         assert 'did not answer' in status['why']
         assert gw.positions() is None
+    finally:
+        gw.stop()
+
+
+def test_by_default_no_positions_request_goes_to_tt_and_positions_are_unknown(
+        monkeypatch):
+    """TT FIX Order Routing does not list Request For Positions (AN) and asks
+    clients to send nothing it does not list: nothing is sent, and positions
+    are UNKNOWN (never flat), with the reason."""
+    monkeypatch.setenv('TEST_OR', 'or-secret')
+    peers = []
+
+    def create(*a, **k):
+        p = TT()
+        peers.append(p)
+        return p
+    monkeypatch.setattr(socket, 'create_connection', create)
+    venue = VenueConfig(name='TT-UAT', host='or.example', port=11502,
+                        fix_version='FIX.4.2', use_tls=False,
+                        sender_comp_id='ORDER', target_comp_id='TT',
+                        password_env='TEST_OR', account='ACC1')
+    gw = FixGateway(venue)
+    gw.start()
+    try:
+        deadline = time.monotonic() + 2
+        while gw.state() != SessionState.LOGGED_ON and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.1)
+        gw.algo.request_positions(time.monotonic())
+        assert not [f for p in peers for f in p.sent if f['35'] == 'AN']
+        assert gw.positions() is None
+        assert 'Drop Copy' in gw.positions_status()['why']
     finally:
         gw.stop()

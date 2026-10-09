@@ -1128,7 +1128,20 @@ class ManualTerminal:
             order['status'] = {'0': 'NEW', '1': 'PARTIALLY_FILLED', '2': 'FILLED', '4': 'CANCELED', 'C': 'EXPIRED'}.get(fields.get('39'), 'UNKNOWN')
             order['text'] = self.gateway._redact(fields.get('58', 'TT rejected the order change'))
         else:
-            if fields.get('150') in ('1', '2', 'F') and self.db.execute('SELECT 1 FROM manual_fills WHERE id=?', (fields.get('17'),)).fetchone():
+            from . import tt_exec
+            what = tt_exec.kind(fields)
+            if what in (tt_exec.BUST, tt_exec.CORRECTION):
+                # A change to an earlier fill: said, never booked as new.
+                text = tt_exec.correction_text(fields, what)
+                self.errors = (self.errors + [text])[-10:]
+                order['text'] = text
+                order['updated'] = now()
+                self._save('order', order['id'], order)
+                return
+            if what == tt_exec.LEG:
+                return          # a spread leg's own fill: the spread is booked once
+            key = tt_exec.exec_key(fields)
+            if what == tt_exec.FILL and self.db.execute('SELECT 1 FROM manual_fills WHERE id=?', (key,)).fetchone():
                 return
             states = {'0':'NEW', '1':'PARTIALLY_FILLED', '2':'FILLED', '4':'CANCELED', '5':'REPLACED',
                       '6':'PENDING_CANCEL', '8':'REJECTED', 'A':'PENDING', 'C':'EXPIRED', 'E':'PENDING_REPLACE'}
@@ -1147,7 +1160,9 @@ class ManualTerminal:
                     order[key] = (self.to_display(sid, number(fields[tag], key))
                                   if tag == '6' else float(number(fields[tag], key)))
             order['text'] = self.gateway._redact(fields.get('58', ''))
-            if fields.get('17') and fields.get('150') in ('1', '2', 'F'):
+            if order['status'] == 'REJECTED':
+                order['text'] = tt_exec.reject_reason(fields, order['text'])
+            if fields.get('17') and what == tt_exec.FILL:
                 fill = {'exec_id': fields['17'], 'order_id': order['id'], 'symbol': order['ticket']['instrument']['description'],
                         'side': order['ticket']['side'], 'quantity': fields.get('32'),
                         'price': (self.to_display(sid, fields['31']) if fields.get('31') else None), 'time': now(),
@@ -1155,7 +1170,7 @@ class ManualTerminal:
                 fill.update(self._fill_slippage(order, fill['price'], fields.get('32')))
                 if self.price_factor(sid) is not None:
                     fill['units'] = 'display'
-                self.db.execute('INSERT OR IGNORE INTO manual_fills VALUES (?,?)', (fields['17'], json.dumps(fill)))
+                self.db.execute('INSERT OR IGNORE INTO manual_fills VALUES (?,?)', (key, json.dumps(fill)))
         order['updated'] = now()
         self._save('order', order['id'], order)
 

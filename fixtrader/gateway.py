@@ -116,7 +116,7 @@ class FixGateway:
                     return
             for name, cfg in configs.items():
                 cfg['allowed_messages'] = (('c', 'V') if name == 'Market Data'
-                                           else ('D', 'F', 'G', 'AN'))
+                                           else ('D', 'F', 'G', 'H', 'AN'))
                 existing = self._sessions.get(name)
                 if existing is not None:
                     if existing.is_running():
@@ -1132,17 +1132,18 @@ class AlgoOrderRouter:
         """One fill on the tape, in TT's own fields: 60 TransactTime, 1
         Account, 48/55 instrument, 54 side, 77 Open/Close, 32/31 LastQty/
         LastPx, 14/151 cum/leaves, 37 OrderID, 17 ExecID, 11 ClOrdID, 58."""
-        if f.get('150') not in ('1', '2', 'F'):
-            return
+        from . import tt_exec
+        if tt_exec.kind(f) != tt_exec.FILL:
+            return                       # a spread leg, a bust, a status: not a fill
         exec_id = f.get('17')
         try:
             qty = float(f.get('32') or 0)
             price = self._to_display(f.get('48') or '', f.get('31'))
         except (TypeError, ValueError, ArithmeticError):
             return
-        if not exec_id or qty <= 0 or exec_id in self.tape_ids:
+        if not exec_id or qty <= 0 or tt_exec.exec_key(f) in self.tape_ids:
             return
-        self.tape_ids.add(exec_id)
+        self.tape_ids.add(tt_exec.exec_key(f))
         clordid = f.get('11') or ''
         sid = f.get('48') or ''
         contract = next((c for c in self.gw.contracts
@@ -1202,14 +1203,23 @@ class AlgoOrderRouter:
                 vo.qty = float(f['38'])
         if exec_type in ('4', '5', '8') and rec['pending']:
             rec['pending'] = None
+        from . import tt_exec
+        what = tt_exec.kind(f)
+        if what in (tt_exec.BUST, tt_exec.CORRECTION):
+            # A change to an EARLIER fill: said, never booked as a new one.
+            self._emit('TRADE_CHANGE', rec, tt_exec.correction_text(f, what))
+            return
+        if what in (tt_exec.LEG, tt_exec.STATUS):
+            return          # a spread leg's own fill, or a status answer
         if exec_type in ('1', '2', 'F'):
             if f.get('151') == '0' and not f.get('39'):
                 vo.state = OrderState.FILLED       # nothing left: filled
-            exec_id = f.get('17')
+            exec_id = f.get('16612') or f.get('17')
+            key = tt_exec.exec_key(f)
             qty = float(f.get('32') or 0)
-            if not exec_id or exec_id in self.exec_ids or qty <= 0:
+            if not exec_id or key in self.exec_ids or qty <= 0:
                 return
-            self.exec_ids.add(exec_id)
+            self.exec_ids.add(key)
             venue_ts = None
             try:
                 venue_ts = datetime.strptime(f.get('60', ''),
@@ -1228,6 +1238,8 @@ class AlgoOrderRouter:
             return
         kind = {'0': 'ACK', '4': 'CANCELLED', '5': 'REPLACED', '8': 'REJECTED',
                 'C': 'EXPIRED', '3': 'EXPIRED'}.get(exec_type)
+        if kind == 'REJECTED':
+            vo.text = tt_exec.reject_reason(f, vo.text)
         if kind:
             self._emit(kind, rec, vo.text or kind.lower())
 
@@ -1258,12 +1270,27 @@ class AlgoOrderRouter:
 
     # -- positions -------------------------------------------------------------
 
+    #: TT FIX Order Routing does NOT support Request For Positions (AN) —
+    #: it is not among its supported messages, and TT asks clients to send
+    #: nothing it does not list. Positions come from a TT Drop Copy session.
+    #: Off: positions are unknown (never flat), said with the reason. The
+    #: request path is kept for a venue that does answer it.
+    ASK_POSITIONS = False
+    NO_POSITIONS_WHY = ("TT FIX Order Routing does not provide positions — "
+                        "they come from a TT Drop Copy session")
+
     def request_positions(self, now_monotonic: float) -> None:
         """Ask TT for the account's positions, once per logon."""
         session = self._session()
         if session is None or not getattr(session, 'ready', lambda: True)():
             return
         logon = session.state.last_logon
+        if not self.ASK_POSITIONS:
+            with self.lock:
+                if self.pos['logon'] != logon:
+                    self.pos.update(logon=logon, reports={}, expected=None)
+                    self._positions_unavailable(self.NO_POSITIONS_WHY)
+            return
         with self.lock:
             if self.pos['logon'] == logon:
                 if (self.pos['status'] == 'requested' and self.pos['sent_at']
