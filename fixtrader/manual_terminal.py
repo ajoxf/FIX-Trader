@@ -878,6 +878,10 @@ class ManualTerminal:
         ticket['order_type'] = 'LIMIT'
         ticket['price'] = format(price, 'f')
         ticket['tif'] = 'IOC'
+        if ticket['instrument'].get('exchange') == 'CME':
+            # TT: a CME IOC that carries a MinQty (110) is treated as a FILL OR
+            # KILL — "at market" would quietly become all-or-nothing.
+            ticket['min_qty'] = None
         ticket['market_as_limit'] = {'ticks': float(ticks), 'touch': touch}
         return ticket
 

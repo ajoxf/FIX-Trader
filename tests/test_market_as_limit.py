@@ -71,6 +71,30 @@ def test_with_zero_ticks_a_manual_market_ticket_is_a_true_market_order(terminal)
     assert t['order_type'] == 'MARKET' and t['price'] is None
 
 
+def test_at_market_on_cme_never_carries_a_min_qty(terminal):
+    """TT: a CME IOC (59=3) WITH a MinQty (110) is a fill-or-kill. A market
+    ticket sent as a marketable IOC drops the MinQty, or "at market" becomes
+    all-or-nothing."""
+    quote(terminal, 9050, 9052)
+    terminal.market_ticks = lambda sid: 2
+    terminal.submit({'token': terminal.preview(dict(market_ticket(), quantity='3',
+                                                    min_qty='2'))['token'],
+                     'confirmed': True})
+    fields = [dict(f) for k, f in terminal.gateway._sessions['Order Routing'].sent if k == 'D'][-1]
+    assert fields['59'] == '3' and '110' not in fields
+
+
+def test_a_true_market_ticket_keeps_its_min_qty(terminal):
+    """The control: with no conversion to IOC the MinQty is the trader's."""
+    quote(terminal, 9050, 9052)
+    terminal.market_ticks = lambda sid: 0
+    terminal.submit({'token': terminal.preview(dict(market_ticket(), quantity='3',
+                                                    min_qty='2'))['token'],
+                     'confirmed': True})
+    fields = [dict(f) for k, f in terminal.gateway._sessions['Order Routing'].sent if k == 'D'][-1]
+    assert fields['40'] == '1' and fields['110'] == '2'
+
+
 def test_a_manual_market_ticket_with_no_fresh_quote_still_goes(terminal):
     """A close is never withheld for want of a price: no quote, a true
     market order."""
