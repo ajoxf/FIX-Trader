@@ -30,14 +30,18 @@ function flowRow(s, result, current) {
   li.className = status;
   const st = document.createElement('span'); st.className = 'st';
   st.textContent = ICON[status] || '·';
-  const text = document.createElement('span');
-  text.textContent = s.short;
+  const body = document.createElement('span');
+  const name = document.createElement('b'); name.textContent = s.short;
+  const exp = document.createElement('span'); exp.className = 'exp';
+  exp.textContent = s.expect || '';
+  body.append(name, exp);
   li.title = s.title;
-  li.append(st, text);
+  li.append(st, body);
   if (result || current) {
     const ev = document.createElement('small');
-    ev.textContent = current ? 'running…' : String(result.detail || '').replace(/^SKIP: /, '') +
-      (result.at ? '  · ' + result.at : '');
+    const word = { PASS: 'Passed', FAIL: 'Failed', SKIP: 'Skipped' }[status] || '';
+    ev.textContent = current ? 'running now…' : (word ? word + ': ' : '') +
+      String(result.detail || '').replace(/^SKIP: /, '') + (result.at ? '  · ' + result.at : '');
     li.appendChild(ev);
   }
   return li;
@@ -100,26 +104,33 @@ function paint(body) {
 }
 
 /* What the trader has tried by hand: a tick per flow, kept with the time. */
+/* What the trader has tried by hand: the same four groups as step 2, a
+ * tick per flow, kept with the time. */
 function paintTried() {
   const box = $('ot-tried');
-  if (box.dataset.built === OT.scenarios.length + '' && box.querySelectorAll('input').length) {
+  if (box.dataset.built === String(OT.scenarios.length)) {
     box.querySelectorAll('input').forEach((i) => { i.checked = !!(OT.checks[i.value] || {}).result; });
     return;
   }
   box.textContent = '';
-  const lead = document.createElement('span'); lead.className = 'lead'; lead.textContent = 'Tried by hand:';
-  box.appendChild(lead);
-  OT.scenarios.filter((s) => s.id !== 'M6').forEach((s) => {
-    const l = document.createElement('label');
-    const i = document.createElement('input');
-    i.type = 'checkbox'; i.value = s.id;
-    i.checked = !!(OT.checks[s.id] || {}).result;
-    i.onchange = () => postJSON('/api/order-tests/check',
-      { id: s.id, result: i.checked ? 'PASS' : '', contract: $('ot-contract').value });
-    l.append(i, document.createTextNode(s.short));
-    box.appendChild(l);
+  [['manual', 'market', 'Manual · Market'], ['manual', 'limit', 'Manual · Limit'],
+   ['algo', 'market', 'Algo · Market'], ['algo', 'limit', 'Algo · Limit']].forEach(([k, t, label]) => {
+    const col = document.createElement('div');
+    const h = document.createElement('b'); h.textContent = label;
+    col.appendChild(h);
+    OT.scenarios.filter((s) => s.kind === k && s.order_type === t && s.id !== 'M6').forEach((s) => {
+      const l = document.createElement('label');
+      const i = document.createElement('input');
+      i.type = 'checkbox'; i.value = s.id;
+      i.checked = !!(OT.checks[s.id] || {}).result;
+      i.onchange = () => postJSON('/api/order-tests/check',
+        { id: s.id, result: i.checked ? 'PASS' : '', contract: $('ot-contract').value });
+      l.append(i, document.createTextNode(s.short.replace(/^Algo /, '')));
+      col.appendChild(l);
+    });
+    box.appendChild(col);
   });
-  box.dataset.built = OT.scenarios.length + '';
+  box.dataset.built = String(OT.scenarios.length);
 }
 
 function paintDesk() {

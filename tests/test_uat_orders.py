@@ -134,7 +134,7 @@ def test_prices_reach_the_screen_in_trader_units(desk):
 
 
 def test_the_manual_scenarios_pass(desk):
-    passed(desk.runner().run(['M3', 'M7', 'M1', 'M2', 'M4', 'M6']))
+    passed(desk.runner().run(['M3', 'M7', 'M1', 'M8', 'M2', 'M4', 'M6']))
     # Every order went out in TT's FIX units, never the screen's.
     prices = [float(o['44']) for o in desk.tt.orders_in if o.get('44')]
     assert prices and all(p > 1000 for p in prices), prices
@@ -149,7 +149,7 @@ def test_the_algo_scenarios_need_live_and_say_so(desk):
 def test_the_algo_scenarios_pass_on_live(desk):
     armed = desk.d.command('execution', '', {'mode': 'LIVE', 'confirm': True})
     assert armed.get('ok'), armed
-    passed(desk.runner().run(['A1', 'A5', 'A2', 'A3']))
+    passed(desk.runner().run(['A1', 'A5', 'A2', 'A6', 'A3']))
     algo = [o for o in desk.tt.orders_in if o['11'].startswith('FT-')]
     assert algo and all(o.get('1028') == 'N' for o in algo if o['35'] == 'D')
 
@@ -211,7 +211,7 @@ def test_the_page_runs_the_tests_and_keeps_the_run(desk):
     groups = {(s['kind'], s['order_type']) for s in body['scenarios']}
     assert groups == {('manual', 'market'), ('manual', 'limit'),
                       ('algo', 'market'), ('algo', 'limit')}
-    assert all(s['steps'] for s in body['scenarios'])       # each says how by hand
+    assert all(s['steps'] and s['expect'] for s in body['scenarios'])  # what to do, what to see
     # Not without the trader's word.
     refused = c.post('/api/order-tests/run', json={'ids': ['M1'], 'contract': 'clz6'})
     assert refused.status_code == 400 and not desk.tt.orders_in

@@ -22,6 +22,7 @@ Manual (the ladder / manual ticket, FTM- orders):
   M5  a LIMIT at the touch fills when the price is hit (waits; may not trade)
   M6  an order TT refuses is shown in TT's own words (tag 58)
   M7  MARKET SELL opens a short; a MARKET close by ticket (77=C) flattens
+  M8  SELL LIMIT above the market rests, shows as working, cancels
 Algo (its own path, FT- orders, 1028=N):
   A1  MARKET opens; the Algo's position shows with TT's tickets; CLOSE NOW
       closes it by ticket (77=C)
@@ -30,6 +31,7 @@ Algo (its own path, FT- orders, 1028=N):
       escalates it — cancel, then market — never two closes at once
   A4  a LIMIT at the touch fills when the price is hit (waits; may not trade)
   A5  MARKET SELL opens a short; CLOSE NOW closes it by ticket
+  A6  SELL LIMIT above the market rests, shows as working, cancels
 
 Refused anywhere but a UAT venue. Quantity 1 unless told otherwise.
 """
@@ -45,41 +47,67 @@ WORKING = ('PENDING', 'NEW', 'PARTIALLY_FILLED', 'REPLACED')
 DONE = ('FILLED', 'CANCELED', 'REJECTED', 'EXPIRED')
 
 SCENARIOS = [
-    ('M3', 'Manual MARKET BUY opens, position shows, MARKET close by ticket flattens'),
-    ('M7', 'Manual MARKET SELL opens a short, position shows, MARKET close by ticket flattens'),
-    ('M1', 'Manual LIMIT away from the market rests, is working, cancels'),
-    ('M2', 'Manual resting LIMIT is replaced to a new price, then cancelled'),
-    ('M4', 'Manual marketable LIMIT fills; Close @ LMT rests; cancelled; market close'),
-    ('M5', 'Manual LIMIT at the touch fills when the price is hit'),
-    ('M6', "Manual order refused by TT is shown in TT's words"),
-    ('A1', 'Algo MARKET BUY opens, position with TT tickets; CLOSE NOW closes by ticket'),
-    ('A5', 'Algo MARKET SELL opens a short; CLOSE NOW closes by ticket'),
-    ('A2', 'Algo LIMIT away from the market rests, is working, cancels'),
-    ('A3', 'Algo marketable LIMIT fills; Close @ LMT pinned; CLOSE ALL escalates'),
-    ('A4', 'Algo LIMIT at the touch fills when the price is hit'),
+    ('M3', 'Manual: buy at market, then CLOSE ALL'),
+    ('M7', 'Manual: sell at market (short), then CLOSE ALL'),
+    ('M1', 'Manual: buy limit below the market waits, then cancel'),
+    ('M8', 'Manual: sell limit above the market waits, then cancel'),
+    ('M2', 'Manual: change the price of a waiting limit'),
+    ('M4', 'Manual: buy limit at the offer fills; take-profit limit waits; CLOSE ALL'),
+    ('M5', 'Manual: buy limit at the bid fills when the market comes to it'),
+    ('M6', "Manual: an order TT refuses shows TT's reason"),
+    ('A1', 'Algo: buys at market, then CLOSE ALL'),
+    ('A5', 'Algo: sells at market (short), then CLOSE ALL'),
+    ('A2', 'Algo: buy limit below the market waits, then cancel'),
+    ('A6', 'Algo: sell limit above the market waits, then cancel'),
+    ('A3', 'Algo: buy limit fills; your take-profit limit waits; CLOSE ALL closes once'),
+    ('A4', 'Algo: buy limit at the bid fills when the market comes to it'),
 ]
 #: Who sends it and what kind of order: the four groups on the page.
 GROUPS = {'M3': ('manual', 'market'), 'M7': ('manual', 'market'),
-          'M1': ('manual', 'limit'), 'M2': ('manual', 'limit'),
-          'M4': ('manual', 'limit'), 'M5': ('manual', 'limit'),
-          'M6': ('manual', 'limit'),
+          'M1': ('manual', 'limit'), 'M8': ('manual', 'limit'),
+          'M2': ('manual', 'limit'), 'M4': ('manual', 'limit'),
+          'M5': ('manual', 'limit'), 'M6': ('manual', 'limit'),
           'A1': ('algo', 'market'), 'A5': ('algo', 'market'),
-          'A2': ('algo', 'limit'), 'A3': ('algo', 'limit'),
-          'A4': ('algo', 'limit')}
-#: Each flow in a few plain words, for the Order tests page.
+          'A2': ('algo', 'limit'), 'A6': ('algo', 'limit'),
+          'A3': ('algo', 'limit'), 'A4': ('algo', 'limit')}
+#: Each flow as a trader says it: what is done ...
 SHORT = {
-    'M1': 'Limit order rests, then cancels',
-    'M2': 'Limit order price is changed',
-    'M3': 'BUY at market: fills, position shows, CLOSE ALL flattens',
-    'M7': 'SELL at market: fills short, position shows, CLOSE ALL flattens',
-    'M4': 'Limit fills at once; Close @ LMT rests; closed at market',
-    'M5': 'Limit order fills when the market reaches it',
-    'M6': "A refused order shows TT's reason",
-    'A1': 'BUY at market: fills, Algo position shows, CLOSE ALL closes it',
-    'A5': 'SELL at market: fills short, CLOSE ALL closes it',
-    'A2': 'Limit order rests, then cancels',
-    'A3': 'Limit fills at once; Close @ LMT rests; CLOSE ALL replaces it with one market close',
-    'A4': 'Limit order fills when the market reaches it',
+    'M3': 'Buy at market, then close',
+    'M7': 'Sell at market (go short), then close',
+    'M1': 'Buy limit below the market, then cancel',
+    'M8': 'Sell limit above the market, then cancel',
+    'M2': 'Move a waiting limit to a new price',
+    'M4': 'Buy limit at the offer, then a take-profit limit',
+    'M5': 'Buy limit at the bid — wait for a seller',
+    'M6': 'An order TT rejects',
+    'A1': 'Algo buys at market, then close',
+    'A5': 'Algo sells at market (goes short), then close',
+    'A2': 'Algo buy limit below the market, then cancel',
+    'A6': 'Algo sell limit above the market, then cancel',
+    'A3': 'Algo buy limit fills, then your take-profit limit',
+    'A4': 'Algo buy limit at the bid — wait for a seller',
+}
+#: ... and what the trader should see happen.
+EXPECT = {
+    'M3': 'Fills at the offer straight away — you are long 1. CLOSE ALL sells it back: flat.',
+    'M7': 'Fills at the bid straight away — you are short 1. CLOSE ALL buys it back: flat.',
+    'M1': 'Waits in the book (Working orders) and does not fill. Cancel removes it.',
+    'M8': 'Waits in the book above the market and does not fill. Cancel removes it.',
+    'M2': 'TT confirms the new price and the order keeps waiting there. Then cancelled.',
+    'M4': 'Priced at the offer, so it fills at once. A Close @ LMT (take-profit) then waits above '
+          'the market; it is cancelled and CLOSE ALL closes at market.',
+    'M5': 'Waits at the bid until someone sells to it, then you are long 1 and it is closed. '
+          'On a quiet market nobody may — then it is cancelled.',
+    'M6': 'Sent to an account TT does not know: shows REJECTED, with TT\'s own reason.',
+    'A1': 'The Algo sends a buy, as on a signal. It fills; the Algo\'s position shows with its '
+          'take-profit and stop loss. CLOSE ALL closes it: flat.',
+    'A5': 'The Algo sends a sell, as on a signal. It fills short; CLOSE ALL buys it back: flat.',
+    'A2': 'The Algo\'s order waits in the book and does not fill. Cancel all removes it.',
+    'A6': 'The Algo\'s sell waits above the market and does not fill. Cancel all removes it.',
+    'A3': 'The Algo is long. Your Close @ LMT (take-profit) waits above the market. CLOSE ALL '
+          'cancels it and closes at market — one close, never two.',
+    'A4': 'The Algo\'s buy waits at the bid until someone sells to it, then it is closed. On a '
+          'quiet market nobody may — then it is cancelled.',
 }
 #: The two that wait on the market to trade at a price: run with --with-hits.
 HIT_SCENARIOS = ('M5', 'A4')
@@ -93,6 +121,8 @@ STEPS = {
           'TT answers REPLACED at the new price (35=G, tag 44 in FIX logs). Cancel it.',
     'M3': 'Ladder: BUY (market) → review → Send. The fill and the position show (Trading Monitor › Positions). '
           'CLOSE ALL → review: a SELL flagged CLOSE (77=C) for that ticket only. Flat.',
+    'M8': 'Ladder (Algo Off): click an Asks price well above the market → review → Send. It waits; cancel it.',
+    'A6': 'Algo switch on UAT: click an Asks price well above the market. The Algo\'s sell waits; CXL All pulls it.',
     'M7': 'Ladder (Algo Off): Market type, SELL → review → Send. A short position shows; CLOSE ALL buys it back (77=C).',
     'M4': 'Ladder: BUY LIMIT at the offer — fills at once. Close @ LMT at a price above the market: it RESTS (77=C). '
           'Cancel it; then CLOSE ALL closes at market.',
@@ -551,18 +581,22 @@ class Runner:
         self.book()
         return c
 
-    def m1(self):
+    def m1(self, side='BUY'):
         bid, ask, tick, dec = self.book()
-        price = self.px(bid - self.away * tick, tick, dec)
-        oid = self.manual('BUY', 'LIMIT', price)
+        price = (self.px(bid - self.away * tick, tick, dec) if side == 'BUY'
+                 else self.px(ask + self.away * tick, tick, dec))
+        oid = self.manual(side, 'LIMIT', price)
         o = self.manual_status(oid, ('NEW',), f'{oid} acknowledged by TT')
         if not o.get('venue_order_id'):
             raise Failed('acknowledged without a TT order id (37)')
-        self.tags(oid, t40='2', t44=self.wire(price), t54='1', t77='O', t1=lambda v: bool(v),
-                  t48=self.sid())
+        self.tags(oid, t40='2', t44=self.wire(price), t54='1' if side == 'BUY' else '2',
+                  t77='O', t1=lambda v: bool(v), t48=self.sid())
         self.manual_cancel(oid)
         self.tags(oid, msg='F')
-        return f'rested at {price} (TT {o["venue_order_id"]}), cancelled'
+        return f'waited at {price} (TT order {o["venue_order_id"]}), cancelled'
+
+    def m8(self):
+        return self.m1(side='SELL')
 
     def m2(self):
         bid, ask, tick, dec = self.book()
@@ -599,12 +633,13 @@ class Runner:
             self.manual_status(cl, ('NEW',), 'the Close @ LMT resting at TT')
             self.tags(cl, t77='C', t40='2', t44=self.wire(far), t54=close_side)
             self.manual_cancel(cl)
-            note = f'Close @ LMT rested at {far} (77=C), cancelled; '
+            note = f'take-profit waited at {far}, cancelled; '
         cl = self.manual_close(oid)
         self.manual_status(cl, ('FILLED',), 'the close filled')
         self.tags(cl, t77='C', t40='1', t54=close_side)
         self.until('flat again — no manual position left', lambda s: not self.manual_open(s))
-        return note + f'filled @ {fill.get("avg_price")}, closed by ticket'
+        verb = 'bought' if side == 'BUY' else 'sold'
+        return note + f'{verb} at {fill.get("avg_price")}, closed — flat'
 
     def m3(self):
         oid = self.manual('BUY', 'MARKET')
@@ -614,7 +649,7 @@ class Runner:
     def m7(self):
         oid = self.manual('SELL', 'MARKET')
         self.tags(oid, t40='1', t77='O', t54='2')
-        return 'short: ' + self._manual_round_trip(oid, side='SELL')
+        return self._manual_round_trip(oid, side='SELL')
 
     def m4(self):
         bid, ask, tick, dec = self.book()
@@ -667,10 +702,12 @@ class Runner:
         want = '2' if side == 'BUY' else '1'
         if close.get('54') != want or 'Close P' not in close.get('58', ''):
             raise Failed(f'the close went as 54={close.get("54")} 58={close.get("58")!r}')
-        return f'opened with tickets {tickets}; closed by ticket ({close.get("11")})'
+        verb = 'bought' if side == 'BUY' else 'sold'
+        return (f'{verb} at {pos.get("avg_price")} (TT ticket {", ".join(map(str, tickets))}), '
+                f'closed — flat')
 
     def a5(self):
-        return 'short: ' + self.a1(side='SELL')
+        return self.a1(side='SELL')
 
     def _algo_sent(self):
         """Every D the Algo sent during this run (FT- ids), via the journal."""
@@ -681,15 +718,20 @@ class Runner:
                 out += [m for m in self.d.sent(cid) if m.get('35') == 'D']
         return out
 
-    def a2(self):
+    def a2(self, side='BUY'):
         bid, ask, tick, dec = self.book()
-        price = float(self.px(bid - self.away * tick, tick, dec))
-        cid = self.algo_open('BUY', 'LIMIT', price)
+        price = float(self.px(bid - self.away * tick, tick, dec) if side == 'BUY'
+                      else self.px(ask + self.away * tick, tick, dec))
+        cid = self.algo_open(side, 'LIMIT', price)
         self.until(f'{cid} working at TT', lambda s: (self.algo_order(cid, s) or {}).get('state') == 'WORKING')
-        self.tags(cid, t40='2', t77='O', t1028='N', t44=self.wire(price))
+        self.tags(cid, t40='2', t77='O', t1028='N', t44=self.wire(price),
+                  t54='1' if side == 'BUY' else '2')
         self.ok(self.d.command('cancel_all', self.key), 'cancel')
         self.algo_flat(f'{cid} cancelled, nothing open')
-        return f'rested at {price}, cancelled'
+        return f'waited at {price}, cancelled'
+
+    def a6(self):
+        return self.a2(side='SELL')
 
     def a3(self):
         bid, ask, tick, dec = self.book()
@@ -719,7 +761,7 @@ class Runner:
         if len(closes) != 2 or closes[-1].get('40') != '1':
             raise Failed(f'expected the resting close then ONE market close, '
                          f'saw {[(m.get("11"), m.get("40")) for m in closes]}')
-        return f'Close @ LMT at {far} cancelled, then one market close'
+        return f'take-profit at {far} cancelled, then closed at market once — flat'
 
     def a4(self):
         bid, ask, tick, dec = self.book()

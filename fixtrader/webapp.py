@@ -112,6 +112,7 @@ def create_app(config_path: str = "config.json",
         return jsonify({
             'scenarios': [{'id': sid, 'title': title, 'steps': uat_mod.STEPS.get(sid, ''),
                            'short': uat_mod.SHORT.get(sid, title),
+                           'expect': uat_mod.EXPECT.get(sid, ''),
                            'kind': uat_mod.GROUPS[sid][0],
                            'order_type': uat_mod.GROUPS[sid][1],
                            'waits': sid in uat_mod.HIT_SCENARIOS}

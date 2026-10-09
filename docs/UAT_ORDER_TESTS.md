@@ -43,20 +43,22 @@ From a terminal instead: `run_uat_tests.bat esz6` or
 
 ## The tests
 
-| Group | Test | What it proves |
-|------|------|----------------|
-| Manual · Market | M3 | BUY at market fills; the position shows; CLOSE ALL by ticket goes 77=C 40=1 and flattens. |
-| Manual · Market | M7 | SELL at market fills short; CLOSE ALL buys it back by ticket (77=C, 54=1). |
-| Manual · Limit | M1 | Rests away from the market with TT's order id (37); cancels. 40=2, 44 in TT units, 77=O. |
-| Manual · Limit | M2 | A resting LIMIT is replaced (35=G) to a new price; cancelled. |
-| Manual · Limit | M4 | Fills at the offer; a Close @ LMT RESTS (77=C, 40=2); cancelled; market close. |
-| Manual · Limit | M5 | A LIMIT at the bid fills when the market trades there (waits; skipped if it never does). |
-| Manual · Limit | M6 | An order TT refuses shows REJECTED in TT's own words (tag 58). |
-| Algo · Market | A1 | BUY: FT- id, 77=O, 1028=N; TT tickets (not PAPER-); CLOSE ALL closes by ticket ("Close P<id>" in 58). |
-| Algo · Market | A5 | SELL: the same, short. |
-| Algo · Limit | A2 | Rests (FT-); Cancel all pulls it. |
-| Algo · Limit | A3 | Close @ LMT rests PINNED; CLOSE ALL cancels it and, on TT's CANCELLED, sends ONE market close. |
-| Algo · Limit | A4 | A LIMIT at the bid fills when the market trades there. |
+| Group | Flow | What you should see |
+|---|---|---|
+| Manual · Market | Buy at market, then close (M3) | Fills at the offer straight away — you are long 1. CLOSE ALL sells it back: flat. |
+| Manual · Market | Sell at market (go short), then close (M7) | Fills at the bid straight away — you are short 1. CLOSE ALL buys it back: flat. |
+| Manual · Limit | Buy limit below the market, then cancel (M1) | Waits in the book (Working orders) and does not fill. Cancel removes it. |
+| Manual · Limit | Sell limit above the market, then cancel (M8) | Waits in the book above the market and does not fill. Cancel removes it. |
+| Manual · Limit | Move a waiting limit to a new price (M2) | TT confirms the new price and the order keeps waiting there. Then cancelled. |
+| Manual · Limit | Buy limit at the offer, then a take-profit limit (M4) | Priced at the offer, so it fills at once. A Close @ LMT (take-profit) then waits above the market; it is cancelled and CLOSE ALL closes at market. |
+| Manual · Limit | Buy limit at the bid — wait for a seller (M5) | Waits at the bid until someone sells to it, then you are long 1 and it is closed. On a quiet market nobody may — then it is cancelled. |
+| Manual · Limit | An order TT rejects (M6) | Sent to an account TT does not know: shows REJECTED, with TT's own reason. |
+| Algo · Market | Algo buys at market, then close (A1) | The Algo sends a buy, as on a signal. It fills; the Algo's position shows with its take-profit and stop loss. CLOSE ALL closes it: flat. |
+| Algo · Market | Algo sells at market (goes short), then close (A5) | The Algo sends a sell, as on a signal. It fills short; CLOSE ALL buys it back: flat. |
+| Algo · Limit | Algo buy limit below the market, then cancel (A2) | The Algo's order waits in the book and does not fill. Cancel all removes it. |
+| Algo · Limit | Algo sell limit above the market, then cancel (A6) | The Algo's sell waits above the market and does not fill. Cancel all removes it. |
+| Algo · Limit | Algo buy limit fills, then your take-profit limit (A3) | The Algo is long. Your Close @ LMT (take-profit) waits above the market. CLOSE ALL cancels it and closes at market — one close, never two. |
+| Algo · Limit | Algo buy limit at the bid — wait for a seller (A4) | The Algo's buy waits at the bid until someone sells to it, then it is closed. On a quiet market nobody may — then it is cancelled. |
 
 On a **live venue** the page runs nothing and keeps the last UAT results.
 
