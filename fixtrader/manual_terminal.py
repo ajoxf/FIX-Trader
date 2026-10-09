@@ -221,9 +221,12 @@ class ManualTerminal:
             # are already the prices a trader knows.
             instrument['display_factor'] = '1'
             instrument['display_factor_source'] = 'none given by TT'
-        if not p.get('16552') and p.get('969') and instrument['display_factor']:
-            # TT's own tick (969) is in FIX units; the ticket is in trader
-            # prices, so its tick is 969 x the factor.
+        if p.get('969') and instrument['display_factor']:
+            # TT's own tick (969) is in FIX units — the units of the prices TT
+            # sends — so the ticket's tick, in trader prices, is 969 x the
+            # factor. ALWAYS, when both are known: TT's 16552 is not reliably
+            # in trader prices (ES on UAT: 969=25, 16552=25, 9787=0.01 — a
+            # tick of 25 refused every price a trader types).
             try:
                 instrument['tick_size'] = format((Decimal(p['969']) * Decimal(
                     instrument['display_factor'])).normalize(), 'f')

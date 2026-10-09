@@ -85,6 +85,7 @@ function paint(body) {
   const uat = OT.env === 'UAT';
   document.querySelectorAll('.ot-check').forEach((b) => { b.disabled = OT.running || !uat; });
   $('ot-stop').disabled = !OT.running;
+  $('ot-clear').disabled = OT.running;
   $('ot-run-note').textContent = run ? 'running…' : shown && shown.finished
     ? 'last run ' + shown.finished + ' · ' + (shown.contract || '') : '';
   paintTried();
@@ -212,6 +213,14 @@ groups().forEach((g) => {
 $('ot-stop').onclick = async () => {
   const r = await postJSON('/api/order-tests/stop', {});
   toast(r.data.ok ? 'INFO' : 'REJECT', 'Order tests', r.data.text || r.data.error || '');
+  refresh();
+};
+$('ot-clear').onclick = async () => {
+  if (!await ask('Clear every result?', 'The ticks and failures on this page are forgotten — ' +
+      'automatic and by hand. Nothing is sent to TT.', 'Clear')) return;
+  const r = await postJSON('/api/order-tests/clear', {});
+  toast(r.data.ok ? 'INFO' : 'REJECT', 'Order tests', r.data.text || r.data.error || '');
+  $('ot-tried').dataset.built = '';
   refresh();
 };
 $('ot-contract').onchange = paintDesk;

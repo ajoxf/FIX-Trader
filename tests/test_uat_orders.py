@@ -352,3 +352,18 @@ def test_an_at_market_order_tt_cancels_unfilled_fails_at_once_and_says_why(desk)
 def test_an_at_market_order_that_trades_still_passes(desk):
     """The control: the same check with liquidity at the touch."""
     passed(desk.runner().run(['M3']))
+
+
+def test_clear_results_gives_a_fresh_page_and_sends_nothing(desk):
+    client = desk.d.client
+    assert client.post('/api/order-tests/run', json={
+        'ids': ['M1'], 'contract': 'clz6', 'confirm': True}).get_json()['ok']
+    wait_run(client)
+    client.post('/api/order-tests/check', json={'id': 'M3', 'result': 'PASS'})
+    sent = len(desk.tt.orders_in)
+    body = client.get('/api/order-tests').get_json()
+    assert body['last'] and body['checks']
+    assert client.post('/api/order-tests/clear').get_json()['ok']
+    body = client.get('/api/order-tests').get_json()
+    assert not body['last'] and not body['checks']
+    assert len(desk.tt.orders_in) == sent                    # nothing sent

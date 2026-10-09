@@ -166,6 +166,15 @@ def create_app(config_path: str = "config.json",
                                 environment=env)
         return jsonify(out), (200 if out.get('ok') else 409)
 
+    @app.post('/api/order-tests/clear')
+    def api_order_tests_clear():
+        """A fresh page: the automatic results AND the by-hand ticks."""
+        out = order_tests.clear()
+        if out.get('ok'):
+            for sid in list(hand_checks.all()):
+                hand_checks.mark(sid, '')
+        return jsonify(out), (200 if out.get('ok') else 409)
+
     @app.post('/api/order-tests/stop')
     def api_order_tests_stop():
         return jsonify(order_tests.stop())

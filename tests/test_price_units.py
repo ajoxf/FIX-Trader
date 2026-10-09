@@ -46,7 +46,9 @@ def terminal(tmp_path):
     define(t, rid, 'GC1', **{'969': '1', '16552': '0.1', '16554': '100'})
     # A product TT quotes in trader prices already: no factor, none needed.
     define(t, rid, 'ES1', **{'969': '0.25', '16552': '0.25', '16554': '50'})
-    for key in ('CL1', 'GC1', 'ES1'):
+    # E-mini as TT UAT defines it: tick 25 in FIX units, 16552 ALSO 25.
+    define(t, rid, 'ESZ6', **{'969': '25', '16552': '25', '9787': '0.01'})
+    for key in ('CL1', 'GC1', 'ES1', 'ESZ6'):
         t.add({'security_id': key})
     return t
 
@@ -189,3 +191,17 @@ def test_a_recording_already_in_trader_units_is_left_alone(tmp_path):
                                   open_business=lambda sid: [])
     engine.poll(now=gw.now)
     assert db.samples_between('fef')[0][1] == 90.5
+
+
+def test_the_tick_is_tts_tick_times_the_factor_even_when_16552_is_in_fix_units(terminal):
+    """ES on TT UAT: 969=25, 16552=25, 9787=0.01. The tick a trader prices in
+    is 0.25 — read as 25, every price but whole hundreds was refused."""
+    assert terminal.watch['ESZ6']['tick_size'] == '0.25'
+    preview = terminal.preview({'security_id': 'ESZ6', 'side': 'BUY', 'order_type': 'LIMIT',
+                                'quantity': '1', 'price': '7919.25', 'tif': 'DAY',
+                                'account': 'ACC', 'open_close': 'O'})
+    assert dict(preview['fields'])['44'] == '791925'
+    with pytest.raises(ValueError, match='tick'):           # the control: off the tick
+        terminal.preview({'security_id': 'ESZ6', 'side': 'BUY', 'order_type': 'LIMIT',
+                          'quantity': '1', 'price': '7919.30', 'tif': 'DAY',
+                          'account': 'ACC', 'open_close': 'O'})

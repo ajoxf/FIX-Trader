@@ -37,6 +37,7 @@ Refused anywhere but a UAT venue. Quantity 1 unless told otherwise.
 """
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -290,6 +291,19 @@ class OrderTestRun:
     def status(self) -> Dict[str, Any]:
         with self.lock:
             return json.loads(json.dumps(self.state))
+
+    def clear(self) -> Dict[str, Any]:
+        """Forget every recorded result — a fresh page. Nothing is sent and
+        nothing at TT changes; refused while a run is going."""
+        with self.lock:
+            if self.state.get('running'):
+                return {'ok': False, 'error': 'a test run is going — stop it first'}
+            try:
+                os.remove(self.results_path)
+            except FileNotFoundError:
+                pass
+            self.state = {'running': False}
+        return {'ok': True, 'text': 'results cleared'}
 
     def stop(self) -> Dict[str, Any]:
         with self.lock:
