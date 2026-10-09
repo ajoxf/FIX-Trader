@@ -1,13 +1,16 @@
-/* Order tests: every order path the desk uses, run on TT UAT from the screen.
- * The tests run in the web process (fixtrader/uat.py) through the same
- * commands the ladder and the Algo window send; this page starts them,
- * shows each result as it lands, and keeps the last run.
+/* Order tests: test every order flow on TT UAT.
+ *   1  pick a contract
+ *   2  check automatically — the program runs each flow (fixtrader/uat.py)
+ *      through the same commands the ladder and the Algo window send
+ *   3  try it yourself — the desk's own ladder, Algo window and Trading
+ *      Monitor, embedded, as they are traded live
  */
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const OT = { scenarios: [], picked: new Set(), env: null, running: false,
-             contractsSeen: '', mode: null, checks: {}, deskFor: null };
+const OT = { scenarios: [], env: null, running: false, contractsSeen: '',
+             mode: null, sendWord: 'UAT', checks: {}, deskFor: null };
+const ICON = { PASS: '✓', FAIL: '✗', SKIP: '–', RUNNING: '…' };
 
 async function command(action, contract, args) {
   const q = await postJSON('/api/command', { action, contract: contract || '', args: args || {} });
@@ -21,84 +24,22 @@ async function command(action, contract, args) {
   return { ok: false, error: 'the engine did not answer' };
 }
 
-function rowFor(s, result, current) {
-  const tr = document.createElement('tr');
+function flowRow(s, result, current) {
+  const li = document.createElement('li');
   const status = current ? 'RUNNING' : (result ? result.status : '');
-  tr.className = status;
-  const box = document.createElement('input');
-  box.type = 'checkbox';
-  box.checked = OT.picked.has(s.id);
-  box.disabled = OT.running;
-  box.onchange = () => { box.checked ? OT.picked.add(s.id) : OT.picked.delete(s.id); paintSummary(); };
-  const td0 = document.createElement('td'); td0.appendChild(box);
-  const td1 = document.createElement('td');
-  td1.innerHTML = '<span class="kind"></span><b></b>';
-  td1.querySelector('.kind').textContent = s.kind === 'algo' ? 'ALGO' : 'MANUAL';
-  td1.querySelector('b').textContent = s.id;
-  const td2 = document.createElement('td'); td2.className = 'txt';
-  td2.textContent = s.title + (s.waits ? ' (waits for the market)' : '');
-  const how = document.createElement('details');
-  how.innerHTML = '<summary>By hand</summary><div></div>';
-  how.querySelector('div').textContent = s.steps;
-  td2.appendChild(how);
-  const td3 = document.createElement('td'); td3.className = 'res';
-  td3.textContent = status || DASH;
-  const td4 = document.createElement('td'); td4.className = 'ev';
-  td4.textContent = result ? result.detail : (current ? 'running…' : '');
-  const td5 = document.createElement('td'); td5.className = 'r';
-  td5.textContent = result && result.seconds != null ? result.seconds : '';
-  const td6 = document.createElement('td'); td6.className = 'ot-hand';
-  if (s.id !== 'PRE') {
-    const mark = OT.checks[s.id] || {};
-    ['PASS', 'FAIL'].forEach((word) => {
-      const b = document.createElement('button');
-      b.type = 'button';
-      b.textContent = word === 'PASS' ? '✓ PASS' : '✗ FAIL';
-      b.className = word + (mark.result === word ? ' on' : '');
-      b.onclick = () => markHand(s.id, mark.result === word ? '' : word);
-      td6.appendChild(b);
-    });
-    if (mark.result) {
-      const note = document.createElement('small');
-      note.textContent = `${mark.at} · ${mark.contract || ''} · ${mark.environment || ''}` +
-        (mark.note ? ' — ' + mark.note : '');
-      td6.appendChild(note);
-    }
+  li.className = status;
+  const st = document.createElement('span'); st.className = 'st';
+  st.textContent = ICON[status] || '·';
+  const text = document.createElement('span');
+  text.textContent = s.short;
+  li.title = s.title;
+  li.append(st, text);
+  if (result || current) {
+    const ev = document.createElement('small');
+    ev.textContent = current ? 'running…' : String(result.detail || '').replace(/^SKIP: /, '');
+    li.appendChild(ev);
   }
-  tr.append(td0, td1, td2, td3, td4, td5, td6);
-  return tr;
-}
-
-function paintSummary(results) {
-  const n = OT.picked.size;
-  const r = results || [];
-  const count = (k) => r.filter((x) => x.status === k).length;
-  $('ot-summary').textContent = r.length
-    ? `${count('PASS')} passed · ${count('FAIL')} failed · ${count('SKIP')} skipped`
-    : `${n} selected`;
-  $('ot-run').disabled = OT.running || !n || OT.env !== 'UAT';
-}
-
-async function markHand(id, result) {
-  let note = '';
-  if (result === 'FAIL') {
-    const ok = await ask('Mark ' + id + ' FAILED by hand?',
-      'Recorded beside the automatic result, with the contract, the venue and the time. ' +
-      'Say what went wrong in the FIX logs or on the ladder before moving to a live market.', 'Mark FAIL');
-    if (!ok) return;
-    note = 'failed by hand';
-  }
-  await postJSON('/api/order-tests/check', { id, result, note, contract: $('ot-contract').value });
-  refresh();
-}
-
-/* The hands-on desk: the real desk, embedded, on the chosen contract. */
-function paintDesk() {
-  const key = $('ot-contract').value;
-  if (!key || key === OT.deskFor) return;
-  OT.deskFor = key;
-  $('ot-desk').src = '/desk?embed=uat&contract=' + encodeURIComponent(key);
-  $('ot-hands-note').textContent = key + ' · ' + (OT.env || DASH);
+  return li;
 }
 
 function paint(body) {
@@ -109,44 +50,72 @@ function paint(body) {
   const shown = run || body.last || null;
   const results = {};
   ((shown && shown.results) || []).forEach((r) => { results[r.id] = r; });
-  const rows = $('ot-rows');
-  rows.textContent = '';
+  const ul = $('ot-flows');
+  ul.textContent = '';
   if (results.PRE) {
-    const s = { id: 'PRE', title: 'Preflight — the venue, the session, the contract, flat', steps: '', kind: 'manual' };
-    rows.appendChild(rowFor(s, results.PRE, false));
-    rows.lastChild.firstChild.textContent = '';
+    ul.appendChild(flowRow({ short: 'Ready to test', title: 'Preflight' }, results.PRE, false));
   }
-  OT.scenarios.forEach((s) => rows.appendChild(rowFor(s, results[s.id], run && run.current === s.id)));
-  paintSummary(shown ? shown.results : null);
+  [['MANUAL ORDERS', 'manual'], ['ALGO ORDERS', 'algo']].forEach(([label, kind]) => {
+    const g = document.createElement('li'); g.className = 'group'; g.textContent = label;
+    ul.appendChild(g);
+    OT.scenarios.filter((s) => s.kind === kind)
+      .forEach((s) => ul.appendChild(flowRow(s, results[s.id], run && run.current === s.id)));
+  });
+  $('ot-log').textContent = ((shown && shown.log) || []).join('\n') ||
+    (shown ? '' : 'Nothing has been run yet.');
+  const uat = OT.env === 'UAT';
+  $('ot-run-manual').disabled = $('ot-run-algo').disabled = OT.running || !uat;
   $('ot-stop').disabled = !OT.running;
-  $('ot-log').textContent = ((shown && shown.log) || []).join('\n');
-  $('ot-when').textContent = shown
-    ? `${run ? 'running since' : 'last run'} ${shown.started || ''} · ${shown.contract || ''} · ` +
-      `${shown.environment || ''}${shown.finished ? ' · finished ' + shown.finished : ''}`
-    : 'no run yet';
+  paintTried();
   const b = $('ot-banner');
-  if (OT.env === 'UAT') {
+  if (uat) {
     b.className = 'ot-banner uat';
-    b.textContent = 'TT UAT — these tests send REAL orders to TT UAT and close them again. ' +
-      'Start from flat on the contract. Algo tests need Execution LIVE.';
+    b.textContent = 'TT UAT — orders placed here are REAL orders on TT UAT (a test venue). ' +
+      'Nothing goes to a live market.';
   } else if (OT.env === 'PROD') {
     b.className = 'ot-banner prod';
-    b.textContent = 'LIVE venue — automatic order tests are refused here. The last UAT run is shown ' +
-      'as the record of what was proven; test by hand with the steps under each test, at the size you mean.';
+    b.textContent = 'LIVE MARKET — order tests are off here. The last UAT results are kept below.';
   } else {
     b.className = 'ot-banner off';
-    b.textContent = 'No TT UAT venue is running (' + (OT.env || 'engine not up') +
-      ') — start the program on TT UAT to run the order tests.';
+    b.textContent = 'Not connected to TT UAT (' + (OT.env || 'the engine is not up') +
+      ') — start the program on TT UAT to test orders.';
   }
+}
+
+/* What the trader has tried by hand: a tick per flow, kept with the time. */
+function paintTried() {
+  const box = $('ot-tried');
+  if (box.dataset.built === OT.scenarios.length + '' && box.querySelectorAll('input').length) {
+    box.querySelectorAll('input').forEach((i) => { i.checked = !!(OT.checks[i.value] || {}).result; });
+    return;
+  }
+  box.textContent = '';
+  const lead = document.createElement('span'); lead.className = 'lead'; lead.textContent = 'Tried by hand:';
+  box.appendChild(lead);
+  OT.scenarios.filter((s) => s.id !== 'M6').forEach((s) => {
+    const l = document.createElement('label');
+    const i = document.createElement('input');
+    i.type = 'checkbox'; i.value = s.id;
+    i.checked = !!(OT.checks[s.id] || {}).result;
+    i.onchange = () => postJSON('/api/order-tests/check',
+      { id: s.id, result: i.checked ? 'PASS' : '', contract: $('ot-contract').value });
+    l.append(i, document.createTextNode(s.short));
+    box.appendChild(l);
+  });
+  box.dataset.built = OT.scenarios.length + '';
+}
+
+function paintDesk() {
+  const key = $('ot-contract').value;
+  if (!key || key === OT.deskFor) return;
+  OT.deskFor = key;
+  $('ot-desk').src = '/desk?embed=uat&contract=' + encodeURIComponent(key);
 }
 
 async function refresh() {
   try {
     const body = await getJSON('/api/order-tests');
-    if (!OT.scenarios.length) {
-      OT.scenarios = body.scenarios;
-      OT.scenarios.filter((s) => !s.waits && s.kind === 'manual').forEach((s) => OT.picked.add(s.id));
-    }
+    if (!OT.scenarios.length) OT.scenarios = body.scenarios;
     paint(body);
   } catch (e) { /* the next poll tries again */ }
   try {
@@ -160,7 +129,7 @@ async function refresh() {
       (snap.contracts || []).forEach((c) => {
         const o = document.createElement('option');
         o.value = c.key;
-        o.textContent = `${c.key} — ${c.name || c.symbol || ''}`;
+        o.textContent = `${c.name || c.symbol || c.key} (${c.key})`;
         sel.appendChild(o);
       });
       if (was) sel.value = was;
@@ -168,48 +137,53 @@ async function refresh() {
     }
     const ex = (snap.engine || {}).execution || {};
     OT.mode = ex.mode || null;
-    $('ot-exec').textContent = 'EXECUTION ' + (ex.mode || DASH);
-    $('ot-live-text').textContent = ex.mode === 'LIVE'
-      ? 'Execution LIVE — the Algo tests send to TT.'
-      : 'Execution ' + (ex.mode || DASH) + ' — the Algo tests need LIVE (manual tests do not).';
-    $('ot-arm').disabled = ex.mode === 'LIVE' || OT.env !== 'UAT';
+    OT.sendWord = ex.send_word || 'UAT';
+    $('ot-exec').textContent = 'ALGO ORDERS: ' + (ex.mode === 'LIVE' ? 'TT ' + OT.sendWord
+      : ex.mode === 'PAPER' ? 'PAPER' : (ex.mode || DASH));
   } catch (e) { /* idem */ }
 }
 
-$('ot-pick-manual').onclick = () => { OT.picked = new Set(OT.scenarios.filter((s) => s.kind === 'manual' && !s.waits).map((s) => s.id)); refresh(); };
-$('ot-pick-algo').onclick = () => { OT.picked = new Set(OT.scenarios.filter((s) => s.kind === 'algo' && !s.waits).map((s) => s.id)); refresh(); };
-$('ot-pick-all').onclick = () => { OT.picked = new Set(OT.scenarios.map((s) => s.id)); refresh(); };
+function chosen(kind) {
+  const hits = $('ot-hits').checked;
+  return OT.scenarios.filter((s) => s.kind === kind && (hits || !s.waits)).map((s) => s.id);
+}
 
-$('ot-arm').onclick = async () => {
-  const first = await command('execution', '', { mode: 'LIVE' });
-  if (first.ok) { refresh(); return; }
-  if (!first.confirm) { toast('REJECT', 'Execution', first.error || 'refused'); return; }
-  if (!await ask('Arm LIVE execution', first.text, 'Arm LIVE')) return;
-  const done = await command('execution', '', { mode: 'LIVE', confirm: true });
-  if (!done.ok) toast('REJECT', 'Execution', done.error || 'refused');
-  refresh();
-};
-
-$('ot-run').onclick = async () => {
-  const ids = OT.scenarios.map((s) => s.id).filter((id) => OT.picked.has(id));
+async function run(kind) {
+  const ids = chosen(kind);
   const contract = $('ot-contract').value;
   const qty = $('ot-qty').value;
-  const yes = await ask('Run order tests on TT UAT',
-    `${ids.join(', ')} on ${contract}, ${qty} lot(s) per order. These send REAL orders to TT UAT ` +
-    '(and close or cancel them again). Nothing on another contract is touched.', 'Run');
+  const sel = $('ot-contract');
+  const name = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : contract;
+  if (kind === 'algo' && OT.mode !== 'LIVE') {
+    // The Algo's orders go to TT UAT, not filled on paper: the engine's own
+    // words, confirmed once.
+    const asked = await command('execution', '', { mode: 'LIVE' });
+    if (!asked.ok && !asked.confirm) { toast('REJECT', 'Algo orders', asked.error || 'refused'); return; }
+    if (asked.confirm) {
+      if (!await ask('Send the Algo\'s orders to TT UAT?', asked.text, 'Send to UAT')) return;
+      const done = await command('execution', '', { mode: 'LIVE', confirm: true });
+      if (!done.ok) { toast('REJECT', 'Algo orders', done.error || 'refused'); return; }
+    }
+  }
+  const what = kind === 'algo' ? 'the Algo\'s order flows' : 'the manual order flows';
+  const yes = await ask('Check ' + what + ' on ' + name + '?',
+    `${ids.length} checks, ${qty} lot(s) per order. Real orders go to TT UAT; each check cancels and closes ` +
+    'what it placed, so the contract ends flat. Takes about a minute' +
+    ($('ot-hits').checked ? ' — longer with the "wait for a fill" checks.' : '.'), 'Start');
   if (!yes) return;
   const r = await postJSON('/api/order-tests/run', {
     ids, contract, qty, away: $('ot-away').value, hit_wait: $('ot-wait').value, confirm: true });
   if (!r.data.ok) toast('REJECT', 'Order tests', r.data.error || 'refused');
   refresh();
-};
+}
 
+$('ot-run-manual').onclick = () => run('manual');
+$('ot-run-algo').onclick = () => run('algo');
 $('ot-stop').onclick = async () => {
   const r = await postJSON('/api/order-tests/stop', {});
   toast(r.data.ok ? 'INFO' : 'REJECT', 'Order tests', r.data.text || r.data.error || '');
   refresh();
 };
-
 $('ot-contract').onchange = paintDesk;
 
 refresh();

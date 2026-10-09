@@ -54,7 +54,12 @@ the drawing wins.
   on its ladder AND its Algo window, always reading the same word —
   `Engine.set_algo_state(key, OFF | DRY | TRADE)` — DRY is shown as
   **SIGNALS** — read as ALGO OFF / ALGO SIGNALS / ALGO PAPER / ALGO LIVE
-  (`algo_state`). An algo and a hand on the
+  (`algo_state`). **On a UAT venue the sending state is SHOWN as UAT**
+  (ALGO UAT, Orders: UAT — `execution.send_word`): "LIVE" on the screen is
+  only ever a live market. The switch's menu is Off / Signals / Paper / UAT
+  (LIVE on a live venue) and sets where the Algo's orders go itself
+  (`set_execution`, with the engine's own confirmation) — no second control
+  to find. An algo and a hand on the
   same book fight — the trader puts a position on and the algo closes it at
   its own target, or the trader gets flat and the algo re-enters on the next
   pass. So:
@@ -125,10 +130,11 @@ the drawing wins.
   each test cleans up by ticket, pass or fail. `tests/test_uat_orders.py`
   proves them against `tests/fake_tt.py` (real web app, engine loop and FIX
   sessions). A new order path gets a scenario here.
-  The page also embeds the desk's ladder and Algo window for the contract
-  (hands-on, as live): with the Algo TRADING on LIVE, on UAT only, the
-  ladder sends through the Algo's own path (`Engine.uat_order`) and the
-  Algo's TP / SL manage the result; by-hand PASS / FAIL is recorded.
+  The page is three steps — pick a contract, Check automatically (manual
+  or Algo), Try it yourself — the last embedding the desk's ladder, Algo
+  window and Trading Monitor for the contract: with the Algo switch on UAT
+  the ladder makes the Algo send its order now (`Engine.uat_order`) and its
+  TP / SL manage the result. Keep it that simple.
 - **UAT and PROD are separate venues** and the screen always says which.
 
 ## Conventions that are easy to lose in a refactor

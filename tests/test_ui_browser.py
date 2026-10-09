@@ -254,15 +254,24 @@ def test_a_missing_figure_renders_as_an_em_dash_never_as_zero(server):
 
 
 def test_the_algo_switch_sends_a_command(server):
-    """The MT5 desk's switch: one click opens Off / Dry run / Trades."""
+    """One switch: Off / Signals / Paper / UAT — on a UAT venue the choice
+    that sends orders is called UAT; LIVE is only ever a live market."""
     url, tmp = server
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['engine'].setdefault('execution', {})['send_word'] = 'UAT'
+    (tmp / 'status.json').write_text(json.dumps(snap))
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
         win = page.locator('.contractwin')
         win.locator('.algo-btn').click()
         items = win.locator('.algo-menu button').all_inner_texts()
-        assert [i.split()[0] for i in items] == ['Off', 'Signals', 'Trades']
+        page.wait_for_timeout(300)
+        win.locator('.algo-btn').click()
+        win.locator('.algo-btn').click()
+        items = win.locator('.algo-menu button').all_inner_texts()
+        assert [i.split()[0] for i in items] == ['Off', 'Signals', 'Paper', 'UAT']
+        assert 'LIVE' not in ' '.join(items)
         win.locator('.algo-menu button[data-algo="DRY"]').click()
         page.wait_for_timeout(400)
         sent = json.loads((tmp / 'commands.jsonl').read_text().strip().splitlines()[-1])
@@ -285,7 +294,7 @@ def test_setting_the_algo_to_trade_asks_first(server):
         ladder = page.locator('.ladderwin')
         page.wait_for_timeout(600)
         ladder.locator('.algo-btn').click()
-        ladder.locator('.algo-menu button[data-algo="TRADE"]').click()
+        ladder.locator('.algo-menu button[data-algo="PAPER"]').click()
         page.wait_for_selector('#modal:not(.hidden)')
         assert 'refused while it trades' in page.locator('#modal-body').inner_text()
         page.locator('#modal-cancel').click()
@@ -293,7 +302,7 @@ def test_setting_the_algo_to_trade_asks_first(server):
         log = tmp / 'commands.jsonl'
         assert not log.exists() or 'algo_state' not in log.read_text()
         ladder.locator('.algo-btn').click()
-        ladder.locator('.algo-menu button[data-algo="TRADE"]').click()
+        ladder.locator('.algo-menu button[data-algo="PAPER"]').click()
         page.locator('#modal-confirm').click()
         page.wait_for_timeout(400)
         sent = json.loads(log.read_text().strip().splitlines()[-1])
@@ -1258,13 +1267,15 @@ def test_the_execution_button_says_PAPER_or_LIVE_and_the_waiver(server):
         button = page.locator('#execution-toggle')
         page.wait_for_function(
             "!document.getElementById('execution-toggle').classList.contains('hidden')")
-        assert button.inner_text() == 'Execution: PAPER'
+        assert button.inner_text() == 'Orders: PAPER'
         assert 'TT did not answer' in button.get_attribute('title')
-        snap['engine']['execution'].update(mode='LIVE', positions_waived=True)
+        # On a UAT venue sending is called UAT — "LIVE" is a live market.
+        snap['engine']['execution'].update(mode='LIVE', positions_waived=True,
+                                           send_word='UAT')
         (tmp / 'status.json').write_text(json.dumps(snap))
         page.wait_for_function(
             "document.getElementById('execution-toggle').classList.contains('live')")
-        assert button.inner_text() == 'Execution: LIVE'
+        assert button.inner_text() == 'Orders: UAT'
         assert 'could not be read' in page.locator('#engine-banner').inner_text()
         browser.close()
     assert errors == []

@@ -54,6 +54,19 @@ SCENARIOS = [
     ('A3', 'Algo marketable LIMIT fills; Close @ LMT pinned; CLOSE ALL escalates'),
     ('A4', 'Algo LIMIT at the touch fills when the price is hit'),
 ]
+#: Each flow in a few plain words, for the Order tests page.
+SHORT = {
+    'M1': 'Limit order rests, then cancels',
+    'M2': 'Limit order price is changed',
+    'M3': 'Market order fills, position shows, CLOSE ALL flattens',
+    'M4': 'Limit fills at once; Close @ LMT rests; closed at market',
+    'M5': 'Limit order fills when the market reaches it',
+    'M6': "A refused order shows TT's reason",
+    'A1': 'Algo market order fills; CLOSE ALL closes it',
+    'A2': 'Algo limit order rests, then cancels',
+    'A3': 'Algo Close @ LMT rests; CLOSE ALL replaces it with one market close',
+    'A4': 'Algo limit order fills when the market reaches it',
+}
 #: The two that wait on the market to trade at a price: run with --with-hits.
 HIT_SCENARIOS = ('M5', 'A4')
 
@@ -498,7 +511,8 @@ class Runner:
         if (c.get('feed') or {}).get('stale'):
             raise Failed(f'{self.key}: the price is stale — TT is not publishing it')
         if c.get('algo_state') in ('PAPER', 'LIVE'):
-            raise Failed(f'the Algo is trading {self.key} — set it to Off or Signals')
+            raise Failed(f'the Algo is trading {self.key} — set its Algo switch to Off '
+                         f'or Signals first')
         if c.get('position') or c.get('orders') or self.manual_open(snap) or [
                 o for o in self.terminal(snap).get('orders', [])
                 if str((o.get('ticket') or {}).get('security_id')) == c['security_id']
@@ -506,8 +520,9 @@ class Runner:
             raise Failed(f'something is already open or working on {self.key} — '
                          f'flatten it first; these tests start from flat')
         if need_live and (engine.get('execution') or {}).get('mode') != 'LIVE':
-            raise Failed('Execution is PAPER — the Algo scenarios need LIVE armed '
-                         '(Execution on the taskbar), so its orders go to TT UAT')
+            raise Failed("the Algo's orders are on PAPER (filled here) — they must go "
+                         "to TT UAT for these checks: press Check Algo orders, which "
+                         "asks to send them there")
         self.book()
         return c
 

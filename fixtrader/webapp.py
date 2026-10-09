@@ -111,6 +111,7 @@ def create_app(config_path: str = "config.json",
         engine = read_status().get('engine') or {}
         return jsonify({
             'scenarios': [{'id': sid, 'title': title, 'steps': uat_mod.STEPS.get(sid, ''),
+                           'short': uat_mod.SHORT.get(sid, title),
                            'kind': 'algo' if sid.startswith('A') else 'manual',
                            'waits': sid in uat_mod.HIT_SCENARIOS}
                           for sid, title in uat_mod.SCENARIOS],

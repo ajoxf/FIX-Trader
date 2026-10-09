@@ -142,7 +142,7 @@ def test_the_manual_scenarios_pass(desk):
 
 def test_the_algo_scenarios_need_live_and_say_so(desk):
     results = desk.runner().run(['A1'])
-    assert results[0]['status'] == 'FAIL' and 'LIVE' in results[0]['detail']
+    assert results[0]['status'] == 'FAIL' and 'TT UAT' in results[0]['detail']
     assert not desk.tt.orders_in                    # nothing sent
 
 

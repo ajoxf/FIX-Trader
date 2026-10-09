@@ -34,7 +34,7 @@
     <span id="link-badge" class="link unknown" title="The venue session, and whether prices are arriving">checking&hellip;</span>
     <a class="tk" href="/desk" title="Open the algorithm desk">Algo desk</a>
     <button id="master-toggle" class="tk" title="The one switch that stands every contract's algo down at once">Master: &mdash;</button>
-    <button id="execution-toggle" class="tk hidden" title="PAPER fills the Algo's orders here at the live price; LIVE sends them to the venue">Execution: &mdash;</button>
+    <button id="execution-toggle" class="tk hidden" title="Where the Algo's orders go: PAPER fills them here; UAT (or LIVE on a live venue) sends them to TT">Orders: &mdash;</button>
     <button id="sound-toggle" class="tk" title="A blip when an order is sent, two rising notes on a fill, a low note on a reject">Sound: on</button>
     <button id="tidy" class="tk" title="Put every window back in a row">Tidy</button>
     <button id="text-smaller" class="tk" title="Smaller text">A&minus;</button><span id="text-size" class="stat" title="Text size — kept in this browser">Text 130%</span><button id="text-bigger" class="tk" title="Bigger text">A+</button>
@@ -288,7 +288,7 @@
     <div class="badgebar">
       <span class="state">&mdash;</span>
       <span class="dirbadge hidden" title="This contract enters in one direction only; exits are never restricted"></span>
-      <span class="algo-switch" title="This contract's Algo — Off (you trade it by hand), Signals (the Algo signals and watches your position's TP/SL — you trade it on the ladder) or Trades (the Algo trades it; hand orders on it are refused)"><button type="button" class="algo-btn off">ALGO OFF</button><span class="algo-menu" hidden><button type="button" data-algo="OFF">Off — trade by hand</button><button type="button" data-algo="DRY">Signals — the Algo signals, you trade</button><button type="button" data-algo="TRADE" class="live">Trades — the Algo trades it</button></span></span>
+      <span class="algo-switch" title="This contract's Algo — Off (you trade it by hand), Signals (the Algo signals and watches your position's TP/SL — you trade it on the ladder), Paper (the Algo trades it, filled here) or UAT / LIVE (the Algo trades it, orders sent to TT)"><button type="button" class="algo-btn off">ALGO OFF</button><span class="algo-menu" hidden><button type="button" data-algo="OFF">Off — trade by hand</button><button type="button" data-algo="DRY">Signals — the Algo signals, you trade</button><button type="button" data-algo="PAPER">Paper — the Algo trades it, filled here, nothing sent</button><button type="button" data-algo="SEND" class="live">UAT — the Algo trades it, orders sent to TT UAT</button></span></span>
     </div>
     <div class="wbody aw-body">
       <div class="aw-section aw-signal"></div>
@@ -330,7 +330,7 @@
       <span class="title"></span>
       <span class="ld-route" title="TT Security ID"></span>
       <span class="ld-ordtype" title="How the Algo sends its orders — set in this contract's settings"></span>
-      <span class="algo-switch" title="This contract's Algo — Off (you trade it by hand), Signals (the Algo signals and watches your position's TP/SL — you trade it on the ladder) or Trades (the Algo trades it; hand orders on it are refused)"><button type="button" class="algo-btn off">ALGO OFF</button><span class="algo-menu" hidden><button type="button" data-algo="OFF">Off — trade by hand</button><button type="button" data-algo="DRY">Signals — the Algo signals, you trade</button><button type="button" data-algo="TRADE" class="live">Trades — the Algo trades it</button></span></span>
+      <span class="algo-switch" title="This contract's Algo — Off (you trade it by hand), Signals (the Algo signals and watches your position's TP/SL — you trade it on the ladder), Paper (the Algo trades it, filled here) or UAT / LIVE (the Algo trades it, orders sent to TT)"><button type="button" class="algo-btn off">ALGO OFF</button><span class="algo-menu" hidden><button type="button" data-algo="OFF">Off — trade by hand</button><button type="button" data-algo="DRY">Signals — the Algo signals, you trade</button><button type="button" data-algo="PAPER">Paper — the Algo trades it, filled here, nothing sent</button><button type="button" data-algo="SEND" class="live">UAT — the Algo trades it, orders sent to TT UAT</button></span></span>
       <span class="winbtns"><button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button><button class="winbtn close" title="Close this window">&times;</button></span>
     </div>
     <div class="ld-quotestrip">

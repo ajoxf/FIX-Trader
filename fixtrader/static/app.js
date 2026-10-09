@@ -252,7 +252,15 @@ function setMinimised(el, on) {
  * the Algo window carry the same button and always read the same word.
  */
 
-const ALGO_WORDS = { OFF: 'ALGO OFF', DRY: 'ALGO SIGNALS', PAPER: 'ALGO PAPER', LIVE: 'ALGO LIVE' };
+/* What SENDING orders to the venue is called: the venue's own word — UAT on
+ * TT UAT, LIVE only on a live market. Never "LIVE" for a test venue. */
+function sendWord() {
+  return (((window.__lastSnapshot || {}).engine || {}).execution || {}).send_word || 'LIVE';
+}
+const ALGO_WORDS = {
+  OFF: 'ALGO OFF', DRY: 'ALGO SIGNALS', PAPER: 'ALGO PAPER',
+  get LIVE() { return 'ALGO ' + sendWord(); },
+};
 
 function renderAlgoSwitch(el, c) {
   const st = c.algo_state || (c.algo_on ? 'DRY' : 'OFF');
@@ -261,7 +269,8 @@ function renderAlgoSwitch(el, c) {
   btn.textContent = ALGO_WORDS[st] || st;
   btn.className = 'algo-btn ' + ({ OFF: 'off', DRY: 'dry', PAPER: 'paper', LIVE: 'live' }[st] || 'off');
   btn.dataset.state = st;
-  btn.title = st === 'LIVE' ? 'The Algo TRADES this contract and SENDS its orders to the venue — ' +
+  menuWords(el);
+  btn.title = st === 'LIVE' ? 'The Algo TRADES this contract and SENDS its orders to TT ' + sendWord() + ' — ' +
       'hand orders on it are refused; CLOSE ALL still closes. Click to change.'
     : st === 'PAPER' ? 'The Algo trades this contract on PAPER — filled here at the live ' +
       'bid/offer, nothing sent. Hand orders on it are refused. Click to change.'
@@ -271,33 +280,66 @@ function renderAlgoSwitch(el, c) {
     : 'The Algo is off: you trade this contract by hand. Click to turn the Algo on.';
 }
 
+/* The menu's last item says where the orders go: UAT on TT UAT, LIVE on a
+ * live market. */
+function menuWords(el) {
+  const send = el.querySelector('.algo-menu button[data-algo="SEND"]');
+  if (send) {
+    send.textContent = sendWord() === 'UAT'
+      ? 'UAT — the Algo trades it, orders sent to TT UAT'
+      : 'LIVE — the Algo trades it, REAL orders to the live market';
+  }
+}
+
+/* ONE switch per contract: Off · Signals · Paper · UAT (LIVE on a live
+ * venue). Paper and UAT both mean "the Algo trades it"; they differ only in
+ * where its orders go — filled here, or sent to TT — and the switch sets
+ * that too, so there is no second control to find. Where the orders go is
+ * one setting for the whole desk: the engine refuses to change it while
+ * anything is open or working, in its own words. */
 function wireAlgoSwitch(el, key) {
   const btn = el.querySelector('.algo-btn');
   const menu = el.querySelector('.algo-menu');
   if (!btn || !menu) return;
-  btn.onclick = (e) => { e.stopPropagation(); menu.hidden = !menu.hidden; };
+  btn.onclick = (e) => { e.stopPropagation(); menuWords(el); menu.hidden = !menu.hidden; };
   menu.querySelectorAll('button[data-algo]').forEach((item) => {
     item.onclick = async (e) => {
       e.stopPropagation();
       menu.hidden = true;
       const choice = item.dataset.algo;
       const now = btn.dataset.state;
-      if ((choice === 'OFF' && now === 'OFF') || (choice === 'DRY' && now === 'DRY') ||
-          (choice === 'TRADE' && (now === 'PAPER' || now === 'LIVE'))) return;
-      if (choice === 'TRADE') {
+      const want = choice === 'SEND' ? 'LIVE' : choice;
+      if (want === now || (choice === 'OFF' && now === 'OFF')) return;
+      const name = (el.querySelector('.title').textContent || key).replace(' · Algo', '');
+      const word = sendWord();
+      if (choice === 'PAPER' || choice === 'SEND') {
         const ex = ((window.__lastSnapshot || {}).engine || {}).execution || {};
-        const live = ex.mode === 'LIVE';
-        const name = (el.querySelector('.title').textContent || key).replace(' · Algo', '');
-        const ok = await ask('The Algo trades ' + name + '?',
-          (live ? 'LIVE: the Algo will SEND REAL ORDERS to the venue on this contract'
-            : 'PAPER: the Algo will fill its own orders here at the live bid/offer — ' +
-              'nothing is sent (Execution: PAPER on the taskbar)') +
-          ' — in when the contract stretches past its band, out at the take-profit or ' +
-          'the stop loss. Hand orders on this contract are refused while it trades; ' +
-          'CLOSE ALL still closes.', live ? 'Trade LIVE' : 'Trade on PAPER');
-        if (!ok) return;
+        const sending = ex.mode === 'LIVE';
+        if (choice === 'PAPER' && sending) {
+          const r = await command('execution', '', { mode: 'PAPER' });
+          if (!r || !r.ok) return;
+        } else if (choice === 'SEND' && !sending) {
+          const asked = await command('execution', '', { mode: 'LIVE' });
+          if (!asked || (!asked.ok && !asked.confirm)) return;
+          if (asked.confirm) {
+            const ok = await ask('The Algo trades ' + name + ' on ' + word + '?',
+              asked.text + ' It enters when the contract stretches past its band and gets out at its ' +
+              'take-profit or stop loss. Hand orders on this contract are refused while it trades; ' +
+              'CLOSE ALL still closes.', 'Trade on ' + word);
+            if (!ok) return;
+            const done = await command('execution', '', { mode: 'LIVE', confirm: true });
+            if (!done || !done.ok) return;
+          }
+        } else if (choice === 'PAPER') {
+          const ok = await ask('The Algo trades ' + name + ' on PAPER?',
+            'Its orders are filled here at the live bid/offer — nothing is sent to TT. ' +
+            'Hand orders on this contract are refused while it trades; CLOSE ALL still closes.',
+            'Trade on PAPER');
+          if (!ok) return;
+        }
       }
-      const r = await command('algo_state', key, { state: choice });
+      const r = await command('algo_state', key,
+        { state: choice === 'PAPER' || choice === 'SEND' ? 'TRADE' : choice });
       if (r && r.ok) toast('OK', 'ALGO', (ALGO_WORDS[r.algo_state] || r.algo_state), key);
     };
   });
@@ -677,11 +719,11 @@ function renderAlgoBody(el, c) {
   const direction = params.direction || 'BOTH';
 
   const mode = el.querySelector('.aw-mode') || document.createElement('span');
-  mode.textContent = block.mode || DASH;
+  mode.textContent = block.mode === 'LIVE' ? sendWord() : (block.mode || DASH);
   mode.className = 'aw-mode ' + (block.mode === 'LIVE' ? 'live'
     : block.mode === 'PAPER' ? 'paper' : 'dry');
   mode.title = block.mode === 'LIVE'
-    ? 'the Algo SENDS its orders to the venue'
+    ? 'the Algo SENDS its orders to TT ' + sendWord()
     : block.mode === 'PAPER'
       ? 'the Algo fills on paper at the live bid/offer — nothing is sent'
       : 'signals only — nothing is sent or filled (Auto trade is off)';
@@ -1334,14 +1376,14 @@ function renderLadder(c, engine) {
   const word = ALGO_WORDS[algoState] || algoState;
   if (algoTest) {
     lock.className = 'ld-lock algo-test';
-    lockText.textContent = 'UAT TEST · ' + word + ' — BUY / SELL or a click in Bids / Asks sends through the ' +
-      'ALGO\'s own order path (FT-), as its signal would live; its TP / SL manage the position.';
+    lockText.textContent = word + ' — BUY / SELL or a click in Bids / Asks makes the Algo send its ' +
+      'order to TT UAT now, as on a signal. Its TP / SL then manage it.';
     lock.title = 'Order tests page only, on TT UAT. One test position at a time.';
   } else if (algoTrades && EMBED !== null) {
     lock.className = 'ld-lock';
     lockText.textContent = word + ' — ' + ((c.position || {}).side || (c.orders || []).length
       ? 'the Algo holds this contract: CLOSE ALL or Close @ LMT, then the next test order.'
-      : ex.mode !== 'LIVE' ? 'arm Execution LIVE (taskbar) to send the Algo\'s test orders to TT UAT.'
+      : ex.mode !== 'LIVE' ? 'set the Algo to UAT to send its orders to TT UAT.'
       : 'the TT session is not up.');
     lock.title = '';
   } else if (algoTrades) {
@@ -2376,7 +2418,7 @@ function renderChrome(snap) {
   } else if (engine.execution && engine.execution.mode === 'LIVE' &&
              engine.execution.positions_waived) {
     banner.classList.remove('hidden', 'critical');
-    banner.textContent = 'LIVE — the Algo sends real orders. TT positions ' +
+    banner.textContent = sendWord() + ' — the Algo sends real orders. TT positions ' +
       'could not be read on this session: this book\'s own fills are the ' +
       'record, on your confirmation. A position opened in TT by other ' +
       'means on this account is invisible to the Algo.';
@@ -2439,15 +2481,16 @@ function renderChrome(snap) {
   const ex = engine.execution || {};
   const exBtn = document.getElementById('execution-toggle');
   exBtn.classList.toggle('hidden', !ex.can_live);
-  exBtn.textContent = 'Execution: ' + (ex.mode || DASH);
+  exBtn.textContent = 'Orders: ' + (ex.mode === 'LIVE' ? (ex.send_word || 'LIVE')
+    : ex.mode === 'PAPER' ? 'PAPER' : (ex.mode || DASH));
   exBtn.classList.toggle('live', ex.mode === 'LIVE');
   const pos = ex.positions || {};
   exBtn.title = ex.mode === 'LIVE'
-    ? 'The Algo SENDS its orders to the venue. Click for PAPER.' +
+    ? 'The Algo SENDS its orders to TT ' + (ex.send_word || 'LIVE') + '. Click for PAPER.' +
       (ex.positions_waived ? ' TT positions were NOT read — this book\'s own ' +
         'fills are the record, on your confirmation.' : '')
     : 'PAPER: the Algo fills here at the live price; nothing is sent. Click ' +
-      'to arm LIVE. TT positions: ' + (pos.why || pos.status || 'unknown') + '.';
+      'to send to TT ' + (ex.send_word || 'LIVE') + '. TT positions: ' + (pos.why || pos.status || 'unknown') + '.';
 
   const stat = document.getElementById('loop-stat');
   stat.textContent = 'loop ' + (engine.loop_ms === undefined ? DASH
@@ -2769,6 +2812,14 @@ async function tick() {
       renderContract(c);
     });
     renderPositions(snap);
+    if (EMBED !== null) {
+      // Order tests: the ladder and the Algo window first, the monitor below.
+      const desk = document.getElementById('desktop');
+      ['__positions__', '__analysis__'].forEach((k) => {
+        const w = desk.querySelector('.win[data-key="' + k + '"]');
+        if (w && w.nextElementSibling) desk.appendChild(w);
+      });
+    }
     if (!analysis.timer) {
       // History, not a market: a slow timer, off the desk's critical path.
       loadAnalysis();
@@ -2815,11 +2866,12 @@ document.getElementById('execution-toggle').onclick = async () => {
   // whether TT's positions could be read — so the screen cannot soften it.
   const asked = await command('execution', '', { mode: 'LIVE' });
   if (!asked || !asked.confirm) return;
-  const ok = await ask('Arm LIVE?', asked.text, 'Arm LIVE');
+  const ok = await ask('Send the Algo\'s orders to TT ' + sendWord() + '?', asked.text,
+    'Send to ' + sendWord());
   if (!ok) return;
   const done = await command('execution', '', { mode: 'LIVE', confirm: true });
   if (done && done.ok) {
-    toast('ORDER', 'LIVE', 'the Algo now sends its orders to the venue' +
+    toast('ORDER', sendWord(), 'the Algo now sends its orders to TT ' + sendWord() +
       (done.positions_waived ? ' — TT positions unread, on your word' : ''));
   }
 };

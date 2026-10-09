@@ -132,7 +132,9 @@ window.TradingMonitor = function (root, opts) {
     const cards = [
       ['FIX account (tag 1)', (pnl.account || {}).name || m.account || DASH, ''],
       ['Venue', e.environment || DASH, ''],
-      ['Execution', ex.mode || DASH, ex.mode === 'LIVE' ? 'live' : 'paper'],
+      ['Algo orders go to', ex.mode === 'LIVE' ? 'TT ' + (ex.send_word || 'LIVE')
+        : ex.mode === 'PAPER' ? 'PAPER (nothing sent)' : (ex.mode || DASH),
+        ex.mode === 'LIVE' ? 'live' : 'paper'],
       ['Algos trading', String(contracts().filter((c) => c.algo_state === 'PAPER' ||
         c.algo_state === 'LIVE').length) + ' of ' + contracts().length, ''],
       ['Open positions', String(algoOpen + manualOpen) +
@@ -261,7 +263,7 @@ window.TradingMonitor = function (root, opts) {
       return '<div class="mon-check warn">TT\'s positions have not been read' +
         (status.why ? ' — ' + esc(status.why) : '') + '. What is shown is this book alone; ' +
         'it is NOT confirmation that the account is flat.' +
-        (ex.positions_waived ? ' LIVE was armed on the trader\'s word that this book\'s fills are the record.' : '') +
+        (ex.positions_waived ? ' Sending to TT ' + (ex.send_word || 'LIVE') + ' was armed on the trader\'s word that this book\'s fills are the record.' : '') +
         '</div>';
     }
     const rows = (p.rows || []);
@@ -519,7 +521,7 @@ window.TradingMonitor = function (root, opts) {
     const p = portfolio(), ex = engine().execution || {}, st = ex.positions || {};
     let html = '<div class="mon-check ' + (st.status === 'complete' ? 'good' : 'warn') + '">TT positions: <b>' +
       esc(st.status || 'not asked') + '</b>' + (st.why ? ' — ' + esc(st.why) : '') +
-      (ex.positions_waived ? ' · LIVE armed on the trader\'s word that this book\'s fills are the record' : '') +
+      (ex.positions_waived ? ' · sending to TT ' + (ex.send_word || 'LIVE') + ' armed on the trader\'s word that this book\'s fills are the record' : '') +
       ' · book ' + (engine().book_complete ? 'complete' : '<span class="warn">recovering</span>') + '</div>';
     html += '<table class="mon"><thead><tr><th>Contract</th><th>This book</th><th>TT says</th>' +
       '<th>Long at TT</th><th>Short at TT</th><th>Verdict</th></tr></thead><tbody>';

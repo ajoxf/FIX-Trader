@@ -1425,8 +1425,12 @@ class Engine:
         readable = self.gateway.positions() is not None
         if readable:
             self.recover()
-        lines = [f"LIVE sends REAL orders to {venue.name} "
-                 f"({venue.environment}), account {venue.account or '—'}."]
+        # Said in the venue's own word: on UAT this is "UAT", and "LIVE" is
+        # only ever a live market.
+        word = 'UAT' if str(venue.environment).upper() == 'UAT' else 'LIVE'
+        lines = [f"{word}: the Algo sends REAL orders to {venue.name} "
+                 f"({venue.environment}), account {venue.account or '—'} — "
+                 f"for every contract whose Algo trades."]
         if readable:
             lines.append('TT positions were read: the book is reconciled.' +
                          (f" {len(self.unclaimed)} position(s) at TT this book "
@@ -1435,7 +1439,7 @@ class Engine:
         else:
             lines.append('TT positions could NOT be read (' +
                          (status.get('why') or status.get('status') or
-                          'unknown') + '). Arming LIVE is your word that this '
+                          'unknown') + f'). Sending to {word} is your word that this '
                          "book's own fills are the record: a position opened "
                          'in TT by other means on this account is invisible '
                          'to the Algo.')
@@ -2043,6 +2047,11 @@ class Engine:
                 'auto_trade_available': True,
                 'paper': self.paper,
                 'execution': {
+                    #: What SENDING to the venue is called on this screen:
+                    #: UAT on a UAT venue — "LIVE" is only a live market.
+                    'send_word': ('UAT' if str(getattr(getattr(
+                        self.gateway, 'venue', None), 'environment', '')
+                        ).upper() == 'UAT' else 'LIVE'),
                     'mode': ('LIVE' if (hasattr(self.gateway, 'venue')
                                         and not self.paper) else
                              'PAPER' if self.paper else 'SIMULATOR'),
