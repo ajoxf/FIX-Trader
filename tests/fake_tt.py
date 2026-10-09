@@ -16,12 +16,18 @@ behaves as an exchange does for the cases a desk relies on:
 - Request For Positions (AN): AO + one AP per instrument held, from the
   fills it made;
 - Security Definition Request (c): a definition (d) with TT's tick (969),
-  the exchange's tick (16552) and the DisplayFactor (9787).
+  the exchange's tick (16552) and the DisplayFactor (9787);
+- FIX Recovery (a connection to a port in `recovery_ports`): the same
+  login, News "Recovery is complete", then ONE Recovery Request (U2) —
+  18002=Y replays the reports the program never received (`drop_reports`),
+  916/917 every report in the window; both together is a Business Reject
+  (j) in TT's words; then Logout "Recovery completed ...".
 
 Prices here are TT's FIX prices — CL as 9057 for 90.57 — as TT sends them.
 
 It is a stand-in for UAT in the cloud, not a model of TT's matching.
 """
+import calendar
 import socket
 import threading
 import time
@@ -47,6 +53,17 @@ class Exchange:
         #: When set, every new order is REJECTED with these words — as CME
         #: via TT rejects an order priced outside its band.
         self.reject_text = None
+        #: Every Execution Report sent on Order Routing, in order:
+        #: (time, fields, delivered). `drop_reports` > 0 loses the next N on
+        #: the way — the program never sees them — as a line that was down.
+        self.history = []
+        self.drop_reports = 0
+        self.recovery_ports = {11508, 11708}
+        #: FIX Recovery says nothing back (a service not switched on).
+        self.recovery_silent = False
+        #: FIX Recovery refuses with these words (a Business Reject, j).
+        self.recovery_reject = None
+        self.recovery_requests = []
 
     # -- the market ----------------------------------------------------------
 
@@ -97,7 +114,7 @@ class Exchange:
         return f'{prefix}{self._exec:06d}'
 
     def or_peer(self):
-        return next(p for p in self.peers if p.kind == 'OR')
+        return [p for p in self.peers if p.kind == 'OR'][-1]
 
     def _report(self, order, **extra):
         fields = [('35', '8'), ('11', order['current']),
@@ -111,7 +128,42 @@ class Exchange:
             fields.append(('41', order['orig']))
         for tag, value in extra.items():
             fields.append((tag.lstrip('t'), str(value)))
-        self.or_peer().reply(fields)
+        fields.append(('75', time.strftime('%Y%m%d', time.gmtime())))
+        delivered = self.drop_reports <= 0
+        self.history.append([time.time(), fields, delivered])
+        if delivered:
+            self.or_peer().reply(fields)
+        else:
+            self.drop_reports -= 1
+
+    def recover(self, peer, f):
+        """A Recovery Request (U2), answered as TT does."""
+        self.recovery_requests.append(dict(f))
+        if self.recovery_silent:
+            return
+        if self.recovery_reject:
+            peer.reply([('35', 'j'), ('45', f.get('34', '')), ('372', 'U2'), ('380', '0'),
+                        ('58', self.recovery_reject)])
+            return
+        if f.get('18002') and (f.get('916') or f.get('917')):
+            peer.reply([('35', 'j'), ('45', f.get('34', '')), ('372', 'U2'), ('380', '0'),
+                        ('58', 'Provide either StartDate(916) and EndDate(917) or '
+                               'CustomMode(18002) in OutOfBandRecoveryRequest message')])
+            return
+        with self.lock:
+            if f.get('18002'):
+                replay = [h for h in self.history if not h[2]]
+            else:
+                def stamp(v):
+                    return calendar.timegm(time.strptime(v, '%Y%m%d-%H:%M:%S'))
+                start, end = stamp(f['916']), stamp(f['917']) + 1
+                replay = [h for h in self.history if start <= h[0] <= end]
+            for h in replay:
+                h[2] = True
+                peer.reply(h[1])
+        peer.reply([('35', '5'), ('58', 'Recovery completed for fix-session='
+                                       'client_comp_id=' + (peer.comp or '') + '/TT/1'),
+                    ('18000', '1')])
 
     def _fill(self, order, price):
         qty = order['qty'] - order['cum']
@@ -232,8 +284,9 @@ class Exchange:
 class Peer:
     """One FIX connection to the exchange: Order Routing or Market Data."""
 
-    def __init__(self, exchange):
+    def __init__(self, exchange, port=None):
         self.exchange = exchange
+        self.port = port
         self.received = []
         self.seq = 1
         self.comp = None
@@ -266,7 +319,8 @@ class Peer:
         self.comp = f['49']
         kind = f['35']
         if kind == 'A':
-            self.kind = 'MD' if f['49'].startswith('MARKET') else 'OR'
+            self.kind = ('REC' if self.port in self.exchange.recovery_ports else
+                         'MD' if f['49'].startswith('MARKET') else 'OR')
             with self.lock:
                 self.received.append(encode_fix_message(
                     [('35', 'A'), ('34', '1'), ('49', 'TT'), ('56', f['49']),
@@ -274,6 +328,10 @@ class Peer:
             # TT: "Recovery is complete" once the logon is done.
             self.reply([('35', 'B'), ('148', 'Recovery Complete'), ('33', '1'),
                         ('58', 'Recovery is complete')])
+            return
+        if self.kind == 'REC':
+            if kind == 'U2':
+                self.exchange.recover(self, f)
             return
         if self.kind == 'MD':
             if kind == 'V' and f.get('263') == '1':
@@ -297,8 +355,8 @@ class Peer:
 
 def install(monkeypatch, exchange):
     """Every FIX connection the program opens goes to `exchange`."""
-    def create(*a, **k):
-        peer = Peer(exchange)
+    def create(address=None, *a, **k):
+        peer = Peer(exchange, port=int(address[1]) if address else None)
         exchange.peers.append(peer)
         return peer
     monkeypatch.setattr(socket, 'create_connection', create)

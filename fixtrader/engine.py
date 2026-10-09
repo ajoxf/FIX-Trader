@@ -163,6 +163,8 @@ class Engine:
         #: Our orders recorded as working when the engine last ran: cancelled
         #: once the session is up (the startup sweep, scoped to our ids).
         self._swept_previous: bool = False
+        #: The Order Routing logon a FIX Recovery was last asked for.
+        self._recovered_logon: str = ''
         self._paper_seq: int = 0
         #: WHO trades each contract: its Algo or a person, never both on the
         #: same contract. Two hands on one book fight — the algo closes a
@@ -642,6 +644,9 @@ class Engine:
         health = None
         if rt.units_note:
             health = rt.units_note
+        elif self.recovery_running():
+            health = ('TT FIX Recovery is replaying what was missed — entries '
+                      'wait until it finishes')
         elif status['stale']:
             health = (f"price unchanged {status['age_sec']:.0f}s — entries "
                       f"wait for a move")
@@ -944,10 +949,20 @@ class Engine:
         rt = self.runtimes.get(event.contract_key)
         contract = rt.contract if rt else None
         intent = self.executor.intent_of(event.clordid)
+        # A fill already in the book — replayed by TT FIX Recovery, or
+        # resent — updates the order and is NEVER applied to a position again.
+        fill = getattr(event, 'fill', None)
+        booked = bool(fill is not None and self.db is not None
+                      and hasattr(self.db, 'has_fill')
+                      and self.db.has_fill(fill.venue, fill.exec_id))
         wo_before = self.executor.working.get(event.clordid)
         marketable = bool(getattr(wo_before, 'marketable', False))
         self.executor.apply_event(
             event, contract.tick_size if contract else None, now)
+        if booked:
+            logger.info("fill %s on %s already booked — not applied again",
+                        fill.exec_id, event.clordid)
+            return
         if rt is not None and intent is Intent.CLOSE:
             self._close_outcome(rt, event, marketable, now)
 
@@ -1416,12 +1431,47 @@ class Engine:
         if up and not self._swept_previous:
             self._swept_previous = True
             self._sweep_previous_orders()
+        if up:
+            self._recover_after_logon()
         if not self.book_complete and self.gateway.positions() is not None:
             self.recover()
             if self.book_complete:
                 logger.info("venue positions read: the book is complete%s",
                             f" — {len(self.unclaimed)} UNCLAIMED"
                             if self.unclaimed else "")
+
+    def _recover_after_logon(self) -> None:
+        """After each Order Routing logon — and after the previous run's
+        orders are adopted, so a replayed fill is applied as what it was —
+        ask TT FIX Recovery for what was missed while the line was down."""
+        logon = getattr(self.gateway, 'order_session_logon', None)
+        recover = getattr(self.gateway, 'recover_missed', None)
+        if not callable(logon) or not callable(recover):
+            return
+        stamp = logon()
+        if not stamp or stamp == self._recovered_logon:
+            return
+        self._recovered_logon = stamp
+        try:
+            recover()
+        except Exception:                                # noqa: BLE001
+            logger.exception("FIX Recovery could not be started")
+
+    def recovery_status(self) -> Optional[Dict[str, Any]]:
+        status = getattr(self.gateway, 'recovery_status', None)
+        return status() if callable(status) else None
+
+    def recovery_running(self) -> bool:
+        running = getattr(self.gateway, 'recovery_running', None)
+        return bool(running()) if callable(running) else False
+
+    def recover_now(self, window: bool = False) -> Dict[str, Any]:
+        recover = getattr(self.gateway, 'recover_missed', None)
+        if not callable(recover):
+            return {'ok': False, 'error': 'FIX Recovery is a TT service; this venue has none.'}
+        if self.gateway.state().value != 'LOGGED_ON':
+            return {'ok': False, 'error': 'Order Routing is not logged on.'}
+        return recover('window' if window else 'auto')
 
     def _sweep_previous_orders(self) -> None:
         if self.db is None or not hasattr(self.gateway, 'adopt'):
@@ -2151,6 +2201,8 @@ class Engine:
                 'simulated': self.simulated,
                 'book_complete': self.book_complete,
                 'unclaimed': self.unclaimed,
+                #: TT FIX Recovery for Order Routing: the last run, in words.
+                'fix_recovery': self.recovery_status(),
                 #: An edited configuration is in force from the pass that
                 #: picked it up. Anything the engine could not adopt while
                 #: running is named here, so a setting that looks saved and

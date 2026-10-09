@@ -358,7 +358,8 @@ class VenueConfig:
                  store_path: str = "", log_path: str = "",
                  enabled: bool = True, on_behalf_of_sub_id: str = "",
                  md_sender_comp_id: str = "", md_target_comp_id: str = "",
-                 md_password_env: str = ""):
+                 md_password_env: str = "",
+                 recovery_host: str = "", recovery_port: Optional[int] = None):
         self.name = name
         self.environment = self._environment(environment, name)
         self.broker = broker
@@ -370,6 +371,10 @@ class VenueConfig:
         self.md_password_env = md_password_env
         self.md_host = md_host
         self.md_port = int(md_port) if md_port else None
+        #: TT FIX Recovery for the Order Routing session: the SAME login on
+        #: its own address. Blank = derived from the Order Routing endpoint.
+        self.recovery_host = recovery_host
+        self.recovery_port = int(recovery_port) if recovery_port else None
         self.sender_comp_id = sender_comp_id
         self.target_comp_id = target_comp_id
         self.sender_sub_id = sender_sub_id
@@ -403,6 +408,24 @@ class VenueConfig:
                 f"venues with separate credentials and neither is a default.")
         return env
 
+    #: TT's FIX Recovery (Order Routing) beside each Order Routing endpoint:
+    #: direct TLS on 11502 -> 11508, through stunnel 11702 -> 11708.
+    RECOVERY_PORTS = {11502: 11508, 11702: 11708}
+
+    def recovery_endpoint(self):
+        """(host, port) of FIX Recovery for the Order Routing session, or
+        (None, None) when it cannot be told — said, never guessed."""
+        if self.recovery_host and self.recovery_port:
+            return self.recovery_host, self.recovery_port
+        host, port = self.host or '', self.port
+        if port not in self.RECOVERY_PORTS:
+            return None, None
+        if 'fixorderrouting-' in host:
+            host = host.replace('fixorderrouting-', 'fixrecovery-')
+        elif host not in ('127.0.0.1', 'localhost'):
+            return None, None
+        return self.recovery_host or host, self.recovery_port or self.RECOVERY_PORTS[port]
+
     @property
     def is_production(self) -> bool:
         return self.environment == "PROD"
@@ -422,6 +445,7 @@ class VenueConfig:
             'environment': self.environment, 'broker': self.broker,
             'host': self.host, 'port': self.port,
             'md_host': self.md_host, 'md_port': self.md_port,
+            'recovery_host': self.recovery_host, 'recovery_port': self.recovery_port,
             'md_sender_comp_id': self.md_sender_comp_id,
             'md_target_comp_id': self.md_target_comp_id,
             'md_password_env': self.md_password_env,

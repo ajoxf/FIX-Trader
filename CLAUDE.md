@@ -269,6 +269,22 @@ the drawing wins.
   (`NativeFixSession.ready`, a 5 s fallback if TT never says) — a CLOSE
   (77=C) never waits. ClOrdID (11) is at most 20 characters (TT): FTM- +
   16 hex for manual tickets, FT-<ms hex>-<base 36> for the Algo.
+- **What Order Routing missed is RECOVERED from TT** (`FixRecoverySession`,
+  `FixGateway.recover_missed`): after each logon — once the previous run's
+  orders are adopted — a non-persistent TT FIX Recovery connection on the
+  SAME login (its own address: 11508 / 11708 through stunnel, derived from
+  the order-entry endpoint or set on the Exchanges page) sends ONE Recovery
+  Request (U2): 18002=Y (what TT has not delivered since its weekly reset,
+  Sat 22:00 UTC), or 916/917 from when Order Routing was last heard if that
+  is before the reset — never both (TT refuses). The 8s and 9s it replays go
+  through the Order Routing handlers: a fill already booked is never booked
+  again (`Database.has_fill`, the manual fills table, the router's ids), an
+  order is never moved back from a final state, and CumQty only grows. TT
+  ends it with a Logout "Recovery completed"; a refusal (j naming U2) or no
+  answer in `RECOVERY_TIMEOUT_SEC` is said in TT's words on the Reconciler
+  tab, never read as done. Algo ENTRIES wait while it runs; exits never do.
+  Beyond TT's 720 hours, or a Trade Capture Report (AE), Recovery cannot
+  reach: said, with the statement as the remedy.
 - **What an Execution Report IS is decided before anything is booked**
   (`tt_exec.kind`, both books): an exchange-listed spread's fill comes as
   the spread (442=3 or 1) AND one report per LEG (442=2) at the leg's price

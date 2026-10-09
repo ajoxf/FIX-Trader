@@ -533,6 +533,7 @@ window.TradingMonitor = function (root, opts) {
       esc(st.status || 'not asked') + '</b>' + (st.why ? ' — ' + esc(st.why) : '') +
       (ex.positions_waived ? ' · sending to TT ' + (ex.send_word || 'LIVE') + ' armed on the trader\'s word that this book\'s fills are the record' : '') +
       ' · book ' + (engine().book_complete ? 'complete' : '<span class="warn">recovering</span>') + '</div>';
+    html += recoveryCheck();
     html += '<table class="mon"><thead><tr><th>Contract</th><th>This book</th><th>TT says</th>' +
       '<th>Long at TT</th><th>Short at TT</th><th>Verdict</th></tr></thead><tbody>';
     contracts().forEach((c) => {
@@ -554,6 +555,24 @@ window.TradingMonitor = function (root, opts) {
     return html + '</tbody></table>';
   }
 
+  /* TT FIX Recovery: what Order Routing missed while the line was down,
+   * replayed after each logon and applied once. */
+  function recoveryCheck() {
+    const r = engine().fix_recovery;
+    if (!r) return '';
+    const tone = { DONE: 'good', RUNNING: 'warn', NOT_RUN: 'warn' }[r.state] || 'bad';
+    const word = { DONE: 'done', RUNNING: 'running…', NOT_RUN: 'not run yet', OFF: 'not set up',
+                   REFUSED: 'REFUSED by TT', FAILED: 'FAILED' }[r.state] || r.state;
+    const mode = r.mode === 'WINDOW' ? 'time window' : r.mode === 'RECONCILE' ? 'missed messages' : '';
+    return '<div class="mon-check ' + tone + '">TT FIX Recovery: <b>' + esc(word) + '</b>' +
+      (mode ? ' (' + mode + ')' : '') + ' — ' + esc(r.text || '') +
+      (r.finished ? ' · ' + stamp(r.finished) : r.started ? ' · since ' + stamp(r.started) : '') +
+      (r.note ? '<br><span class="warn">' + esc(r.note) + '</span>' : '') +
+      (r.last_heard ? '<br><span class="tiny">Last heard from Order Routing ' + stamp(r.last_heard) + '</span>' : '') +
+      ' <button class="btn recover-now" type="button"' + (r.state === 'RUNNING' ? ' disabled' : '') +
+      '>Recover now</button></div>';
+  }
+
   // -- render --------------------------------------------------------------------------------------
 
   const NOTES = {
@@ -565,7 +584,8 @@ window.TradingMonitor = function (root, opts) {
     accounts: 'The account this desk trades, the FIX sessions it trades over, and the P&L by origin. A figure TT does not publish here is said, never shown as 0.',
     analysis: 'Built from what is recorded: the Algo\'s closed positions and the manual ticket\'s closed trades. Net is after the configured round trip; a figure nobody measured is a dash, never 0.',
     slippage: 'Measured against the price each decision was made at. Positive is a cost at both ends; negative an improvement.',
-    reconcile: 'TT\'s own positions against this book. A difference is SHOWN, never smoothed and never closed automatically.',
+    reconcile: 'TT\'s own positions against this book. A difference is SHOWN, never smoothed and never closed automatically. ' +
+      'After each logon TT FIX Recovery replays what Order Routing missed; a fill already booked is never booked again.',
   };
 
   function render() {
@@ -624,6 +644,13 @@ window.TradingMonitor = function (root, opts) {
   });
 
   q('.mon-pane').addEventListener('click', async (e) => {
+    if (e.target.closest('.recover-now')) {
+      try {
+        const r = await command('recover_missed', '', {});
+        say(r.text || 'FIX Recovery started.');
+      } catch (err) { say(err.message, true); }
+      return;
+    }
     const close = e.target.closest('.close-pos');
     const algo = e.target.closest('.cancel-algo');
     const man = e.target.closest('.cancel-manual');

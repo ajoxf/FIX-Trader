@@ -50,10 +50,10 @@ async function loadVenues() {
 
 function vField(name) { return document.getElementById('v-' + name); }
 
-const VENUE_TEXT = ['broker', 'host', 'md_host', 'sender_comp_id',
+const VENUE_TEXT = ['broker', 'host', 'md_host', 'recovery_host', 'sender_comp_id',
   'target_comp_id', 'sender_sub_id', 'on_behalf_of_comp_id', 'username',
   'account', 'data_dictionary', 'fix_version'];
-const VENUE_NUM = ['port', 'md_port', 'heartbeat_sec'];
+const VENUE_NUM = ['port', 'md_port', 'recovery_port', 'heartbeat_sec'];
 const VENUE_BOOL = ['reset_seq_on_logon', 'use_tls', 'enabled'];
 
 function showVenue(v) {

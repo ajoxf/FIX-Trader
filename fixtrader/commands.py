@@ -176,6 +176,8 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
             return engine.set_depth(key, args.get('on') is True)
         if action == 'refresh_feed':
             return engine.refresh_feed(key)
+        if action == 'recover_missed':
+            return engine.recover_now(bool(args.get('window')))
         if action == 'kill_all':
             return engine.kill_all(bool(args.get('close_positions', False)))
         if action == 'resume':

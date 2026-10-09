@@ -7,6 +7,7 @@ app's /api/command and /api/snapshot, the command bridge, the engine loop
 order router. Only TT is a stand-in (`tests/fake_tt.py`), quoting Crude in
 TT's FIX units (9050 for 90.50) with its DisplayFactor, so the conversion is
 tested on the same pass as the orders."""
+import contextlib
 import json
 import threading
 import time
@@ -63,6 +64,14 @@ class AppDriver(uat.HttpDriver):
 
 @pytest.fixture
 def desk(tmp_path, monkeypatch):
+    with open_desk(tmp_path, monkeypatch) as d:
+        yield d
+
+
+@contextlib.contextmanager
+def open_desk(tmp_path, monkeypatch, **venue_extra):
+    """The real runner and web app against the fake TT; `venue_extra`
+    adds to the venue (a FIX Recovery address, say)."""
     monkeypatch.chdir(tmp_path)                       # the FIX log, logs/fix
     monkeypatch.setenv('UAT_OR_PW', 'or-secret')
     monkeypatch.setenv('UAT_MD_PW', 'md-secret')
@@ -77,7 +86,7 @@ def desk(tmp_path, monkeypatch):
         fix_version='FIX.4.2', use_tls=False, sender_comp_id='ORDER',
         target_comp_id='TT', password_env='UAT_OR_PW', md_host='md.example',
         md_port=11503, md_sender_comp_id='MARKET', md_password_env='UAT_MD_PW',
-        account='ACC1')
+        account='ACC1', **venue_extra)
     cfg.contracts['clz6'] = ContractConfig(
         key='clz6', name='Crude Dec/Jan', symbol='CL', venue='TT-UAT',
         security_id='CL1', security_exchange='CME', tick_size=0.01,
@@ -107,9 +116,11 @@ def desk(tmp_path, monkeypatch):
             break
         time.sleep(0.1)
     assert (contract.get('market') or {}).get('bid') is not None, contract
-    yield SimpleDesk(tt, driver)
-    stop.set()
-    thread.join(timeout=20)
+    try:
+        yield SimpleDesk(tt, driver)
+    finally:
+        stop.set()
+        thread.join(timeout=20)
 
 
 class SimpleDesk:

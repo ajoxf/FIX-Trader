@@ -312,6 +312,13 @@ class Database:
                  fill.slippage_ticks, _iso(fill.venue_ts), _iso(fill.our_ts)))
             conn.commit()
 
+    def has_fill(self, venue: str, exec_id: str) -> bool:
+        """Is this fill already in the book? A report TT replays (FIX
+        Recovery, a resend) must never be applied to a position twice."""
+        with self._connect() as conn:
+            return conn.execute("SELECT 1 FROM fills WHERE venue = ? AND exec_id = ?",
+                                (venue, exec_id)).fetchone() is not None
+
     def fills(self, contract_key: Optional[str] = None,
               limit: int = 500) -> List[Dict[str, Any]]:
         sql = "SELECT * FROM fills"

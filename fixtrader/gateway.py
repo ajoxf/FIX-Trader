@@ -7,7 +7,7 @@ The strategy protocol still reports unknown account positions/orders as None.
 
 import copy
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterator, List, Optional, Protocol, runtime_checkable
 
 from .models import (BookTop, Fill, GatewayEvent, OrderRequest, OrderState,
@@ -26,6 +26,25 @@ CLORDID_PREFIX = "FT"
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+#: The name the FIX log gives TT FIX Recovery for Order Routing.
+RECOVERY_SESSION = 'Order Routing Recovery'
+#: How long TT has to finish a Recovery before it is reported FAILED.
+RECOVERY_TIMEOUT_SEC = 120.0
+#: TT's recovery reaches back 720 hours (fewer than 250 accounts).
+RECOVERY_MAX_HOURS = 720
+#: Order Routing's last-heard time is written at most this often.
+LAST_HEARD_EVERY_SEC = 30.0
+
+
+def last_session_reset(now: datetime) -> datetime:
+    """TT's weekly reset: Saturday 22:00 UTC, the latest one not after now."""
+    reset = now.replace(hour=22, minute=0, second=0, microsecond=0)
+    reset -= timedelta(days=(reset.weekday() - 5) % 7)
+    if reset > now:
+        reset -= timedelta(days=7)
+    return reset
 
 
 @runtime_checkable
@@ -80,6 +99,14 @@ class FixGateway:
         self.algo_feed = AlgoDataFeed()
         self.terminal = ManualTerminal(self, manual_path)
         self.algo = AlgoOrderRouter(self)
+        #: TT FIX Recovery for Order Routing: what was missed, replayed.
+        self._order_cfg = None
+        self._recovery_session = None
+        self._recovery_started = 0.0
+        self._last_heard_saved = 0.0
+        self.recovery = {'state': 'NOT_RUN', 'text': 'Not run yet in this session.',
+                         'mode': None, 'replayed': 0, 'started': None,
+                         'finished': None, 'note': None}
 
     def start(self):
         with self._lock:
@@ -114,6 +141,10 @@ class FixGateway:
                 if missing:
                     self._text = name + ': missing ' + ', '.join(missing)
                     return
+            self._order_cfg = dict(configs['Order Routing'])
+            # How far back to recover is decided by what was heard BEFORE this
+            # logon — the logon itself is heard at once.
+            self._heard_before_logon = self.last_heard()
             for name, cfg in configs.items():
                 cfg['allowed_messages'] = (('c', 'V') if name == 'Market Data'
                                            else ('D', 'F', 'G', 'H', 'AN'))
@@ -133,6 +164,8 @@ class FixGateway:
     def stop(self):
         with self._lock:
             self._reconnect_at = None
+            if self._recovery_session is not None:
+                self._recovery_session.stop()
             for session in self._sessions.values():
                 session.stop()
             for session in self._sessions.values():
@@ -146,6 +179,132 @@ class FixGateway:
         self.stop()
         self._reconnect_at = time.monotonic() + 10
         self._text = 'Reconnecting in 10 seconds'
+
+    # -- TT FIX Recovery (Order Routing) -------------------------------------
+
+    def order_session_logon(self) -> str:
+        """When Order Routing last logged on ('' if it is not up): a new
+        value is a new logon, after which what was missed is recovered."""
+        s = self._sessions.get('Order Routing')
+        if s is None or not self.order_session_ready():
+            return ''
+        return str(getattr(s.state, 'last_logon', '') or '')
+
+    def heard(self, now: Optional[datetime] = None) -> None:
+        """Order Routing delivered something: kept (at most every
+        LAST_HEARD_EVERY_SEC) so a restart knows how far back to recover."""
+        if time.monotonic() - self._last_heard_saved < LAST_HEARD_EVERY_SEC:
+            return
+        self._last_heard_saved = time.monotonic()
+        self._last_heard = now or utcnow()
+        stamp = self._last_heard.isoformat()
+        with self.terminal.lock:
+            self.terminal._save('session', 'order_routing', {'last_heard': stamp})
+
+    def last_heard(self) -> Optional[datetime]:
+        if getattr(self, '_last_heard', None) is not None:
+            return self._last_heard
+        with self.terminal.lock:
+            row = self.terminal._load('session').get('order_routing') or {}
+        try:
+            return datetime.fromisoformat(row['last_heard'])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def recover_missed(self, mode: str = 'auto',
+                       now: Optional[datetime] = None) -> Dict[str, Any]:
+        """Ask TT FIX Recovery for what Order Routing missed.
+
+        'auto': reconciliation (18002=Y — TT sends what it has not already
+        delivered since its weekly reset), unless the program last heard
+        Order Routing BEFORE that reset: then a time window from then
+        (916/917), as far back as TT keeps (RECOVERY_MAX_HOURS).
+        'window' forces the window."""
+        now = now or utcnow()
+        with self._lock:
+            if self._recovery_session is not None and self._recovery_session.is_running():
+                return {'ok': False, 'error': 'A FIX Recovery is already running.'}
+            if self._order_cfg is None:
+                return {'ok': False, 'error': 'Order Routing has not been started.'}
+            host, port = self.venue.recovery_endpoint()
+            if not host:
+                self.recovery.update(state='OFF', text=(
+                    'The FIX Recovery address is not known for this order-entry '
+                    'endpoint — set it on the Exchanges page (TT: port 11508, or '
+                    '11708 through stunnel).'), finished=now.isoformat())
+                return {'ok': False, 'error': self.recovery['text']}
+            last = getattr(self, '_heard_before_logon', None) or self.last_heard()
+            reset = last_session_reset(now)
+            note = None
+            if mode == 'window' or (last is not None and last < reset):
+                oldest = now - timedelta(hours=RECOVERY_MAX_HOURS) + timedelta(minutes=5)
+                start = (last - timedelta(minutes=1)) if last is not None else reset
+                if start < oldest:
+                    note = (f'This program last heard TT on {last:%Y-%m-%d %H:%M} UTC — '
+                            f'TT keeps {RECOVERY_MAX_HOURS} hours, so anything before '
+                            f'{oldest:%Y-%m-%d %H:%M} UTC cannot be recovered. '
+                            f'Check that period against Orient\'s statement.')
+                    start = oldest
+                end = now - timedelta(seconds=1)
+                request = [('916', start.strftime('%Y%m%d-%H:%M:%S')),
+                           ('917', end.strftime('%Y%m%d-%H:%M:%S'))]
+                label = f'every report from {start:%Y-%m-%d %H:%M} UTC to now'
+                used = 'WINDOW'
+            else:
+                request = [('18002', 'Y')]
+                label = ("what TT has not delivered since its weekly reset "
+                         f"({reset:%a %d %b %H:%M} UTC)")
+                used = 'RECONCILE'
+            cfg = dict(self._order_cfg, host=host, port=port, allowed_messages=('U2',))
+            state = SimpleNamespace(lock=threading.RLock(), status='DISCONNECTED',
+                error='', out_seq=0, in_seq=0, incoming_count=0, outgoing_count=0,
+                last_message='', last_heartbeat='', last_logon='')
+            self.recovery = {'state': 'RUNNING', 'mode': used,
+                             'text': 'Asking TT FIX Recovery for ' + label + '.',
+                             'replayed': 0, 'started': now.isoformat(),
+                             'finished': None, 'note': note,
+                             'host': host, 'port': port}
+            self._recovery_started = time.monotonic()
+            self._recovery_session = FixRecoverySession(self, state, cfg, request,
+                                                        self._recovery_done)
+            self._recovery_session.start()
+            return {'ok': True, 'text': self.recovery['text']}
+
+    def _recovery_done(self, outcome: str, text: str, replayed: int) -> None:
+        words = {'DONE': f'TT replayed {replayed} report(s); each applied once — '
+                         f'nothing already booked was booked again.',
+                 'REFUSED': f'TT refused the Recovery: {text}',
+                 'FAILED': f'FIX Recovery did not finish: {text}'}
+        self.recovery.update(state=outcome, text=words[outcome], replayed=replayed,
+                             finished=utcnow().isoformat(), tt_text=text)
+        self.audit.write(level='INFO' if outcome == 'DONE' else 'ERROR',
+                         category='FIX Session', session=RECOVERY_SESSION,
+                         direction='LOCAL', event='Recovery ' + outcome.lower(),
+                         sequence='', details={'replayed': replayed,
+                                               'text': self._redact(text)})
+
+    def _recovery_timed_out(self) -> None:
+        session = self._recovery_session
+        if (self.recovery.get('state') == 'RUNNING' and session is not None
+                and time.monotonic() - self._recovery_started > RECOVERY_TIMEOUT_SEC):
+            session._finish('FAILED', f'TT did not finish within '
+                                      f'{RECOVERY_TIMEOUT_SEC:.0f} seconds')
+            session.stop()
+
+    def recovery_status(self) -> Dict[str, Any]:
+        self._recovery_timed_out()
+        session = self._recovery_session
+        out = dict(self.recovery)
+        if session is not None:
+            out['replayed'] = session.replayed if out.get('state') == 'RUNNING' else out['replayed']
+        last = self.last_heard()
+        out['last_heard'] = last.isoformat() if last else None
+        return out
+
+    def recovery_running(self) -> bool:
+        """Read on every engine pass: no database here."""
+        self._recovery_timed_out()
+        return self.recovery.get('state') == 'RUNNING'
 
     def order_session_ready(self) -> bool:
         """Order Routing is logged on and TT's recovery is complete."""
@@ -232,6 +391,7 @@ class FixGateway:
         with self._activity_lock:
             activity = list(reversed(self._activity))
         return {'venue': self.venue.name, 'environment': self.venue.environment,
+                'recovery': self.recovery_status(),
                 'state': self.state().value, 'text': self.state_text(),
                 'sessions': sessions, 'activity': activity,
                 'reconnect_in': max(0, round(self._reconnect_at - time.monotonic())) if self._reconnect_at else 0}
@@ -621,6 +781,7 @@ class NativeFixSession:
                 except socket.timeout:
                     pass
 
+                self._tick()
                 # FIX requires the initiator to send heartbeats when it has
                 # been idle for the negotiated interval.  Without this, TT
                 # will close an otherwise valid session after logon.
@@ -653,6 +814,9 @@ class NativeFixSession:
                 pass
             if self.state.status != "ERROR":
                 self.state.status = "DISCONNECTED"
+
+    def _tick(self) -> None:
+        """Once per pass of the receive loop (about a second)."""
 
     def _incoming(self, raw: str):
         fields = parse_fix_message(raw)
@@ -769,6 +933,10 @@ class NativeFixSession:
             self.svc.log_fix(self.session_name, "OUT", "4", str(begin), payload.decode("ascii"))
 
     def _apply(self, fields, raw, msg_type, seq, logged=False):
+        if self.session_name == 'Order Routing':
+            heard = getattr(self.svc, 'heard', None)
+            if callable(heard):
+                heard()
         with self.state.lock:
             self.state.incoming_count += 1
             self.state.in_seq = int(seq) if seq.isdigit() else self.state.in_seq
@@ -832,6 +1000,79 @@ class NativeFixSession:
             self.on_market_data_reject(fields, raw)
         elif msg_type == "d" and self.on_security_definition:
             self.on_security_definition(fields, raw)
+
+
+class FixRecoverySession(NativeFixSession):
+    """TT FIX Recovery for the Order Routing session: the SAME login on its
+    own address, non-persistent — log on (34=1, no 43), wait for TT's
+    "Recovery is complete", send ONE Recovery Request (U2), apply the
+    Execution Reports (8) and Cancel Rejects (9) TT replays through the
+    Order Routing handlers, and finish when TT logs out ("Recovery
+    completed ..."). A refusal (j naming U2) is said in TT's words.
+
+    What is replayed goes through the same rules as a live report: a fill
+    already booked is never booked again, a spread leg is never booked, a
+    bust is said, a price is converted, and an order is never moved back
+    from a final state."""
+
+    def __init__(self, svc, state, cfg, request, on_done):
+        super().__init__(svc, state, RECOVERY_SESSION, cfg)
+        self.request = list(request)
+        self.on_done = on_done
+        self.requested = False
+        self.done = False
+        self.replayed = 0
+
+    def _finish(self, outcome: str, text: str) -> None:
+        if self.done:
+            return
+        self.done = True
+        self.on_done(outcome, text, self.replayed)
+        self.stop_event.set()
+
+    def _tick(self) -> None:
+        if not self.requested and self.ready():
+            self.requested = True
+            self.send('U2', self.request)
+
+    def _apply(self, fields, raw, msg_type, seq, logged=False):
+        if msg_type in ('8', '9'):
+            with self.state.lock:
+                self.state.incoming_count += 1
+                self.state.in_seq = int(seq) if seq.isdigit() else self.state.in_seq
+                self.state.last_message = datetime.now(timezone.utc).isoformat()
+            if not logged:
+                self.svc.log_fix(self.session_name, 'IN', msg_type, seq, raw)
+            self.replayed += 1
+            # Applied exactly as if it had come on Order Routing.
+            self.svc.terminal.on_message('Order Routing', fields, raw)
+            algo = getattr(self.svc, 'algo', None)
+            if algo is not None:
+                algo.on_message(msg_type, fields, raw)
+            return
+        if msg_type == '5':
+            if not logged:
+                self.svc.log_fix(self.session_name, 'IN', msg_type, seq, raw)
+            text = fields.get('58', '')
+            if text.lower().startswith('recovery completed'):
+                self._finish('DONE', text)
+            else:
+                self._finish('REFUSED', text or 'TT logged the Recovery session out')
+            return
+        if msg_type == 'j' and fields.get('372') == 'U2':
+            if not logged:
+                self.svc.log_fix(self.session_name, 'IN', msg_type, seq, raw)
+            self._finish('REFUSED', fields.get('58', '') or 'TT refused the Recovery Request')
+            return
+        super()._apply(fields, raw, msg_type, seq, logged)
+        if msg_type == 'B':
+            self._tick()                 # TT is ready: ask now, not next second
+
+    def _run(self):
+        super()._run()
+        if not self.done:
+            self._finish('FAILED', self.svc._redact(self.state.error or
+                         'the Recovery connection closed before TT finished'))
 
 
 # ---------------------------------------------------------------------------
@@ -1189,10 +1430,13 @@ class AlgoOrderRouter:
         vo.venue_id = f.get('37') or vo.venue_id
         exec_type = f.get('150', '')
         state = _ORD_STATUS.get(f.get('39', ''))
-        if state:
+        # Never moved back from a final state: a report replayed by TT FIX
+        # Recovery is older than the FILLED or CANCELLED already applied.
+        if state and not (vo.state.is_done and not OrderState(state).is_done):
             vo.state = OrderState(state)
         if f.get('14') not in (None, ''):
-            vo.filled_qty = float(f['14'])
+            # CumQty only grows; an older report replayed says less.
+            vo.filled_qty = max(float(vo.filled_qty or 0), float(f['14']))
         vo.text = self.gw._redact(f.get('58', '')) or vo.text
         vo.ts = utcnow()
         if exec_type == '5':                           # replaced
@@ -1249,7 +1493,7 @@ class AlgoOrderRouter:
             return
         rec['pending'] = None
         state = _ORD_STATUS.get(f.get('39', ''))
-        if state:
+        if state and not (rec['order'].state.is_done and not OrderState(state).is_done):
             rec['order'].state = OrderState(state)
         self._emit('CANCEL_REJECTED', rec,
                    self.gw._redact(f.get('58', 'TT refused the change')))

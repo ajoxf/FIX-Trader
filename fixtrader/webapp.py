@@ -952,6 +952,7 @@ def _csv(filename, columns, rows):
 #: quietly set.
 VENUE_FIELDS = (
     'environment', 'broker', 'host', 'port', 'md_host', 'md_port',
+    'recovery_host', 'recovery_port',
     'sender_comp_id', 'target_comp_id', 'sender_sub_id', 'target_sub_id',
     'on_behalf_of_comp_id', 'fix_version', 'username', 'account',
     'heartbeat_sec', 'reset_seq_on_logon', 'use_tls', 'data_dictionary',

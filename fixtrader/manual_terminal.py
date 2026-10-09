@@ -1129,7 +1129,9 @@ class ManualTerminal:
             return
         if fields.get('35') == '9':
             order['pending'] = None
-            order['status'] = {'0': 'NEW', '1': 'PARTIALLY_FILLED', '2': 'FILLED', '4': 'CANCELED', 'C': 'EXPIRED'}.get(fields.get('39'), 'UNKNOWN')
+            order['status'] = self._later_status(order['status'], {
+                '0': 'NEW', '1': 'PARTIALLY_FILLED', '2': 'FILLED', '4': 'CANCELED',
+                'C': 'EXPIRED'}.get(fields.get('39'), 'UNKNOWN'))
             order['text'] = self.gateway._redact(fields.get('58', 'TT rejected the order change'))
         else:
             from . import tt_exec
@@ -1149,7 +1151,9 @@ class ManualTerminal:
                 return
             states = {'0':'NEW', '1':'PARTIALLY_FILLED', '2':'FILLED', '4':'CANCELED', '5':'REPLACED',
                       '6':'PENDING_CANCEL', '8':'REJECTED', 'A':'PENDING', 'C':'EXPIRED', 'E':'PENDING_REPLACE'}
-            order['status'] = states.get(fields.get('39'), 'UNKNOWN')
+            reported = states.get(fields.get('39'), 'UNKNOWN')
+            stale = order['status'] in TERMINAL and reported not in TERMINAL
+            order['status'] = self._later_status(order['status'], reported)
             order['venue_order_id'] = fields.get('37', order['venue_order_id'])
             pending = order.get('pending')
             if pending and fields.get('11') == pending['id'] and fields.get('150') == '5':
@@ -1160,10 +1164,11 @@ class ManualTerminal:
                 order['pending'] = None
             sid = order['ticket'].get('security_id')
             for tag, key in [('14', 'filled_qty'), ('151', 'remaining_qty'), ('6', 'avg_price')]:
-                if fields.get(tag) is not None:
+                if fields.get(tag) is not None and not stale:
                     order[key] = (self.to_display(sid, number(fields[tag], key))
                                   if tag == '6' else float(number(fields[tag], key)))
-            order['text'] = self.gateway._redact(fields.get('58', ''))
+            if not stale:
+                order['text'] = self.gateway._redact(fields.get('58', ''))
             if order['status'] == 'REJECTED':
                 order['text'] = tt_exec.reject_reason(fields, order['text'])
             if fields.get('17') and what == tt_exec.FILL:
@@ -1177,6 +1182,15 @@ class ManualTerminal:
                 self.db.execute('INSERT OR IGNORE INTO manual_fills VALUES (?,?)', (key, json.dumps(fill)))
         order['updated'] = now()
         self._save('order', order['id'], order)
+
+    @staticmethod
+    def _later_status(current, new):
+        """An order is never moved back from a final state: a report
+        replayed by TT FIX Recovery (or resent) is older than the FILLED or
+        CANCELED already applied."""
+        if current in TERMINAL and new not in TERMINAL:
+            return current
+        return new
 
     def _touch(self, ticket):
         """The book when a ticket is sent: the side it would cross — the
