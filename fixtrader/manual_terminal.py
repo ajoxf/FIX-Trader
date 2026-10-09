@@ -233,7 +233,21 @@ class ManualTerminal:
             except (InvalidOperation, ValueError):
                 pass
         instrument['tick_value'] = ''
-        if instrument.get('tick_size') and instrument['point_value']:
+        if p.get('16552') and p.get('16554'):
+            # The exchange's tick (16552) and its value per unit (16554) are
+            # a PAIR in the same units — TT's FIX units on UAT (GC: 16552=1,
+            # 16554=10; a FIX price of 42219 is 4221.9). Their product is the
+            # money per tick whatever the units; read against the trader's
+            # tick (0.1) the money per POINT is 100, not 10.
+            try:
+                value = Decimal(p['16552']) * Decimal(p['16554'])
+                instrument['tick_value'] = format(value, 'f')
+                if instrument.get('tick_size') and Decimal(instrument['tick_size']):
+                    instrument['point_value'] = format(
+                        (value / Decimal(instrument['tick_size'])).normalize(), 'f')
+            except (InvalidOperation, ValueError, ZeroDivisionError):
+                instrument['tick_value'] = ''
+        if not instrument['tick_value'] and instrument.get('tick_size') and instrument['point_value']:
             instrument['tick_value'] = format(Decimal(instrument['tick_size']) * Decimal(instrument['point_value']), 'f')
         instrument['contract_code'] = instrument.get('contract_code') or p.get('455', '')
         instrument['display_name'] = instrument.get('contract_code') or (instrument.get('description', instrument.get('symbol', '')) + ' ' + instrument.get('maturity', ''))

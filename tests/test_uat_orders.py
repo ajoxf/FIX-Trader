@@ -383,3 +383,33 @@ def test_an_algo_close_written_late_to_the_fix_log_is_still_found(desk, monkeypa
     monkeypatch.setattr(FixAuditLog, '_append', late)
     assert desk.d.command('execution', '', {'mode': 'LIVE', 'confirm': True})['ok']
     passed(desk.runner().run(['A1']))
+
+
+def test_the_screen_reads_the_database_the_engine_writes(tmp_path, monkeypatch):
+    """Found on TT UAT: DATABASE_PATH is relative ('fixtrader.db'). The engine
+    put it beside its status file (runtime/), the screen read it from the
+    program folder — an empty file: no fills on the Fills tab, and the Algo
+    checks found "no closing order". Both now resolve it the same way."""
+    import os
+    from fixtrader.config import TraderConfig, database_path
+    from fixtrader.webapp import create_app
+    program = tmp_path / 'program'
+    runtime = program / 'runtime'
+    runtime.mkdir(parents=True)
+    monkeypatch.chdir(program)
+    cfg = TraderConfig(path=str(program / 'config.json'))
+    cfg.settings['DATABASE_PATH'] = 'fixtrader.db'               # relative, as shipped
+    cfg.save()
+    status = str(runtime / 'status.json')
+    assert database_path(cfg, status) == os.path.join(str(runtime), 'fixtrader.db')
+    from fixtrader.database import Database
+    Database(database_path(cfg, status)).save_order({
+        'clordid': 'FT-a-1', 'contract_key': 'gc', 'side': 'SELL', 'qty': 1,
+        'filled_qty': 1, 'order_type': 'LIMIT', 'intent': 'CLOSE',
+        'state': 'FILLED', 'sent_at': '2026-10-09T20:00:00+00:00'})
+    app = create_app(str(program / 'config.json'), status,
+                     str(runtime / 'c.jsonl'), str(runtime / 'r.json'))
+    orders = app.test_client().get('/api/journal').get_json()['orders']
+    assert [o['clordid'] for o in orders] == ['FT-a-1']
+    assert not (program / 'fixtrader.db').exists() or not Database(
+        str(program / 'fixtrader.db')).orders()

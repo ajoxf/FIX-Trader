@@ -121,10 +121,8 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
     config = TraderConfig.from_file(config_path)
     runtime_dir = os.path.dirname(os.path.abspath(status_path))
     os.makedirs(runtime_dir, exist_ok=True)
-    database_path = config.settings.get('DATABASE_PATH', 'fixtrader.db')
-    if not os.path.isabs(database_path):
-        database_path = os.path.join(runtime_dir, os.path.basename(database_path))
-    db = Database(database_path)
+    from .config import database_path as _database_path
+    db = Database(_database_path(config, status_path))
     gateway, is_sim = build_gateway(config, simulated, runtime_dir)
     engine = Engine(config, gateway, db=db, simulated=is_sim,
                     mode_path=str(status_path) + '.mode.json')

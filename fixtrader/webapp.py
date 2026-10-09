@@ -256,7 +256,8 @@ def create_app(config_path: str = "config.json",
 
     def _db(config):
         from .database import Database
-        return Database(config.settings.get('DATABASE_PATH', 'fixtrader.db'))
+        from .config import database_path
+        return Database(database_path(config, status_path))
 
     def _filters():
         """Period and mode, applied identically by every analysis route. A

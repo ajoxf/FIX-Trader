@@ -337,6 +337,18 @@ def _blank_to_none_any(value: Any) -> Any:
     return value
 
 
+def database_path(config, status_path: str) -> str:
+    """The ONE database file of a desk. A relative DATABASE_PATH lives beside
+    the status file (the runtime folder), for the engine that writes it and
+    the screen that reads it alike — resolved apart, the screen read an empty
+    file in the program folder while the engine wrote runtime/fixtrader.db."""
+    path = config.settings.get('DATABASE_PATH', 'fixtrader.db')
+    if os.path.isabs(path):
+        return path
+    return os.path.join(os.path.dirname(os.path.abspath(status_path)),
+                        os.path.basename(path))
+
+
 class VenueConfig:
     """One FIX session: one endpoint, one set of comp ids, one environment.
 

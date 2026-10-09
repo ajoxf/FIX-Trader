@@ -48,7 +48,9 @@ def terminal(tmp_path):
     define(t, rid, 'ES1', **{'969': '0.25', '16552': '0.25', '16554': '50'})
     # E-mini as TT UAT defines it: tick 25 in FIX units, 16552 ALSO 25.
     define(t, rid, 'ESZ6', **{'969': '25', '16552': '25', '9787': '0.01'})
-    for key in ('CL1', 'GC1', 'ES1', 'ESZ6'):
+    # Gold as TT UAT defines it: everything in FIX units (42219 = 4221.9).
+    define(t, rid, 'GCZ6', **{'969': '1', '16552': '1', '16554': '10', '9787': '0.1'})
+    for key in ('CL1', 'GC1', 'ES1', 'ESZ6', 'GCZ6'):
         t.add({'security_id': key})
     return t
 
@@ -205,3 +207,15 @@ def test_the_tick_is_tts_tick_times_the_factor_even_when_16552_is_in_fix_units(t
         terminal.preview({'security_id': 'ESZ6', 'side': 'BUY', 'order_type': 'LIMIT',
                           'quantity': '1', 'price': '7919.30', 'tif': 'DAY',
                           'account': 'ACC', 'open_close': 'O'})
+
+
+def test_tick_and_point_value_from_tts_fix_units(terminal):
+    """GC on TT UAT: 969=1, 16552=1, 16554=10, 9787=0.1. The trader's tick is
+    0.10 worth $10, so $100 a point — read raw it was a tick of 1 and $10 a
+    point: every money figure, target and stop ten times too small."""
+    gc = terminal.watch['GCZ6']
+    assert gc['tick_size'] == '0.1'
+    assert float(gc['tick_value']) == 10.0
+    assert float(gc['point_value']) == 100.0
+    cl = terminal.watch['CL1']                    # 16552 in trader prices: unchanged
+    assert (cl['tick_size'], float(cl['tick_value']), float(cl['point_value'])) == ('0.01', 10.0, 1000.0)
