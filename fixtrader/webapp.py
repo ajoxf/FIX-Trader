@@ -95,6 +95,61 @@ def create_app(config_path: str = "config.json",
     def account_page():
         return render_template('account.html', asset_version=ASSET_VERSION)
 
+    # -- order tests: every order path, run on TT UAT from the screen --------
+
+    from . import uat as uat_mod
+    order_tests = uat_mod.OrderTestRun(str(status_path) + '.order-tests.json')
+    app.extensions['order_tests'] = order_tests
+
+    @app.get('/order-tests')
+    def order_tests_page():
+        return render_template('order_tests.html', asset_version=ASSET_VERSION)
+
+    @app.get('/api/order-tests')
+    def api_order_tests():
+        engine = read_status().get('engine') or {}
+        return jsonify({
+            'scenarios': [{'id': sid, 'title': title, 'steps': uat_mod.STEPS.get(sid, ''),
+                           'kind': 'algo' if sid.startswith('A') else 'manual',
+                           'waits': sid in uat_mod.HIT_SCENARIOS}
+                          for sid, title in uat_mod.SCENARIOS],
+            'environment': engine.get('environment'),
+            'run': order_tests.status(), 'last': order_tests.last()})
+
+    @app.post('/api/order-tests/run')
+    def api_order_tests_run():
+        data = request.get_json(silent=True) or {}
+        engine = read_status().get('engine') or {}
+        env = str(engine.get('environment') or '')
+        if env.upper() != 'UAT':
+            return jsonify({'ok': False, 'error': (
+                f'the venue is {env or "not known"} — order tests send real '
+                f'orders and run on TT UAT only. On a live venue, test by hand '
+                f'with the steps shown, at the size you mean.')}), 409
+        if data.get('confirm') is not True:
+            return jsonify({'ok': False, 'error': 'not confirmed'}), 400
+        known = {sid for sid, _ in uat_mod.SCENARIOS}
+        ids = [str(i).upper() for i in data.get('ids') or [] if str(i).upper() in known]
+        if not ids:
+            return jsonify({'ok': False, 'error': 'choose at least one test'}), 400
+        contract = str(data.get('contract') or '')
+        try:
+            qty = float(data.get('qty') or 1)
+            away = int(data.get('away') or 20)
+            hit_wait = float(data.get('hit_wait') or 120)
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'quantity, ticks away and wait must be numbers'}), 400
+        if qty <= 0 or away < 2 or hit_wait <= 0:
+            return jsonify({'ok': False, 'error': 'quantity must be above 0, ticks away at least 2'}), 400
+        out = order_tests.start(uat_mod.ClientDriver(app.test_client()), contract,
+                                ids, qty=qty, away=away, hit_wait=hit_wait,
+                                environment=env)
+        return jsonify(out), (200 if out.get('ok') else 409)
+
+    @app.post('/api/order-tests/stop')
+    def api_order_tests_stop():
+        return jsonify(order_tests.stop())
+
     @app.get('/logs')
     def logs_page():
         return render_template('logs.html', asset_version=ASSET_VERSION)

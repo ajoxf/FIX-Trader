@@ -1,0 +1,242 @@
+"""The UAT order tests (`python -m fixtrader.uat`), proven here end to end
+before anyone runs them on TT UAT.
+
+Everything between the runner and the wire is the production code: the web
+app's /api/command and /api/snapshot, the command bridge, the engine loop
+(`runner.run`), the real FIX sessions, the manual terminal and the Algo's
+order router. Only TT is a stand-in (`tests/fake_tt.py`), quoting Crude in
+TT's FIX units (9050 for 90.50) with its DisplayFactor, so the conversion is
+tested on the same pass as the orders."""
+import json
+import threading
+import time
+import urllib.parse
+
+import pytest
+
+from fixtrader import uat
+from fixtrader.config import ContractConfig, TraderConfig, VenueConfig
+from tests.fake_tt import Exchange, install
+
+
+class AppDriver(uat.HttpDriver):
+    """`HttpDriver`, over the Flask test client instead of a socket."""
+
+    def __init__(self, client, timeout=10.0):
+        super().__init__('http://test', timeout)
+        self.client = client
+
+    def _get(self, path):
+        return self.client.get(path).get_json()
+
+    def command(self, action, contract='', args=None):
+        queued = self.client.post('/api/command', json={
+            'action': action, 'contract': contract, 'args': args or {}}).get_json()
+        if not queued.get('ok'):
+            return queued
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            res = self._get('/api/result/' + queued['id'])
+            if not res.get('pending'):
+                return res
+            time.sleep(0.02)
+        return {'ok': False, 'error': f'the engine did not answer {action}'}
+
+    def sent(self, clordid):
+        rows = self._get('/api/fix-logs?limit=500&search=' +
+                         urllib.parse.quote(clordid)).get('rows', [])
+        out = []
+        for row in reversed(rows):
+            if row.get('direction') != 'OUT':
+                continue
+            fields = {}
+            for part in str(row.get('raw', '')).split('|'):
+                tag, _, value = part.partition('=')
+                fields.setdefault(tag, value)
+            if clordid in (fields.get('11'), fields.get('41')):
+                out.append(fields)
+        return out
+
+    def sleep(self, seconds):
+        time.sleep(min(seconds, 0.05))
+
+
+@pytest.fixture
+def desk(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)                       # the FIX log, logs/fix
+    monkeypatch.setenv('UAT_OR_PW', 'or-secret')
+    monkeypatch.setenv('UAT_MD_PW', 'md-secret')
+    tt = Exchange(accounts=('ACC1',))
+    # Crude spread: 90.50 / 90.52 on the screen, 9050 / 9052 on the wire.
+    tt.list('CL1', 9050, 9052, tick=1, factor=0.01, symbol='CL')
+    install(monkeypatch, tt)
+    cfg = TraderConfig(path=str(tmp_path / 'config.json'))
+    cfg.settings['DATABASE_PATH'] = str(tmp_path / 'desk.db')
+    cfg.venues['TT-UAT'] = VenueConfig(
+        name='TT-UAT', environment='UAT', host='or.example', port=11502,
+        fix_version='FIX.4.2', use_tls=False, sender_comp_id='ORDER',
+        target_comp_id='TT', password_env='UAT_OR_PW', md_host='md.example',
+        md_port=11503, md_sender_comp_id='MARKET', md_password_env='UAT_MD_PW',
+        account='ACC1')
+    cfg.contracts['clz6'] = ContractConfig(
+        key='clz6', name='Crude Dec/Jan', symbol='CL', venue='TT-UAT',
+        security_id='CL1', security_exchange='CME', tick_size=0.01,
+        tick_value=10.0, enabled=True, algo_on=False,
+        margin_per_contract=1000.0)
+    cfg.save()
+    paths = {k: str(tmp_path / v) for k, v in (
+        ('config', 'config.json'), ('status', 'status.json'),
+        ('commands', 'commands.jsonl'), ('results', 'results.json'))}
+    from fixtrader import runner
+    stop = threading.Event()
+    thread = threading.Thread(target=runner.run, kwargs=dict(
+        config_path=paths['config'], status_path=paths['status'],
+        command_path=paths['commands'], result_path=paths['results'],
+        should_stop=stop.is_set), daemon=True)
+    thread.start()
+    from fixtrader.webapp import create_app
+    app = create_app(paths['config'], paths['status'], paths['commands'],
+                     paths['results'])
+    driver = AppDriver(app.test_client())
+    deadline = time.monotonic() + 15
+    contract = {}
+    while time.monotonic() < deadline:
+        snap = driver.snapshot()
+        contract = next(iter(snap.get('contracts') or []), {})
+        if (contract.get('market') or {}).get('bid') is not None:
+            break
+        time.sleep(0.1)
+    assert (contract.get('market') or {}).get('bid') is not None, contract
+    yield SimpleDesk(tt, driver)
+    stop.set()
+    thread.join(timeout=20)
+
+
+class SimpleDesk:
+    def __init__(self, tt, driver):
+        self.tt = tt
+        self.d = driver
+
+    def runner(self, **kw):
+        return uat.Runner(self.d, 'clz6', wait=10.0, hit_wait=10.0,
+                          log=lambda s: None, **kw)
+
+
+def passed(results):
+    bad = [r for r in results if r['status'] != 'PASS']
+    assert not bad, json.dumps(results, indent=1)
+
+
+def test_prices_reach_the_screen_in_trader_units(desk):
+    c = desk.runner().contract()
+    assert c['market']['bid'] == pytest.approx(90.50)
+    assert c['market']['ask'] == pytest.approx(90.52)
+
+
+def test_the_manual_scenarios_pass(desk):
+    passed(desk.runner().run(['M1', 'M2', 'M3', 'M4', 'M6']))
+    # Every order went out in TT's FIX units, never the screen's.
+    prices = [float(o['44']) for o in desk.tt.orders_in if o.get('44')]
+    assert prices and all(p > 1000 for p in prices), prices
+
+
+def test_the_algo_scenarios_need_live_and_say_so(desk):
+    results = desk.runner().run(['A1'])
+    assert results[0]['status'] == 'FAIL' and 'LIVE' in results[0]['detail']
+    assert not desk.tt.orders_in                    # nothing sent
+
+
+def test_the_algo_scenarios_pass_on_live(desk):
+    armed = desk.d.command('execution', '', {'mode': 'LIVE', 'confirm': True})
+    assert armed.get('ok'), armed
+    passed(desk.runner().run(['A1', 'A2', 'A3']))
+    algo = [o for o in desk.tt.orders_in if o['11'].startswith('FT-')]
+    assert algo and all(o.get('1028') == 'N' for o in algo if o['35'] == 'D')
+
+
+def test_a_resting_limit_fills_when_the_market_reaches_it(desk):
+    """M5 / A4: a LIMIT at the bid, filled when the market trades down to it."""
+    r = desk.runner()
+
+    def trade_down():
+        time.sleep(1.5)
+        desk.tt.move('CL1', 9049, 9050)             # the offer reaches our bid
+        time.sleep(1.5)
+        desk.tt.move('CL1', 9050, 9052)
+    threading.Thread(target=trade_down, daemon=True).start()
+    results = r.run(['M5'])
+    passed(results)
+    assert results[0]['detail'].startswith('hit at')
+
+
+def test_an_algo_resting_limit_fills_when_the_market_reaches_it(desk):
+    assert desk.d.command('execution', '', {'mode': 'LIVE', 'confirm': True})['ok']
+
+    def trade_down():
+        time.sleep(1.5)
+        desk.tt.move('CL1', 9049, 9050)
+        time.sleep(1.5)
+        desk.tt.move('CL1', 9050, 9052)
+    threading.Thread(target=trade_down, daemon=True).start()
+    results = desk.runner().run(['A4'])
+    passed(results)
+    assert results[0]['detail'].startswith('hit at')
+
+
+def test_a_market_that_never_trades_there_is_a_skip_not_a_pass(desk):
+    """The control: nobody trades at our bid — M5 says so and cleans up."""
+    results = desk.runner().run(['M5'])
+    assert results[0]['status'] == 'SKIP'
+    assert not desk.tt.resting                      # cancelled, nothing left
+
+
+# -- from the screen: the Order tests page --------------------------------------
+
+def wait_run(client, timeout=60):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        body = client.get('/api/order-tests').get_json()
+        if not body['run'].get('running'):
+            return body
+        time.sleep(0.1)
+    raise AssertionError('the run did not finish')
+
+
+def test_the_page_runs_the_tests_and_keeps_the_run(desk):
+    c = desk.d.client
+    page = c.get('/order-tests').data
+    assert b'Order tests' in page and b'order_tests.js' in page
+    body = c.get('/api/order-tests').get_json()
+    assert body['environment'] == 'UAT'
+    assert [s['id'] for s in body['scenarios']][:2] == ['M1', 'M2']
+    assert all(s['steps'] for s in body['scenarios'])       # each says how by hand
+    # Not without the trader's word.
+    refused = c.post('/api/order-tests/run', json={'ids': ['M1'], 'contract': 'clz6'})
+    assert refused.status_code == 400 and not desk.tt.orders_in
+    ok = c.post('/api/order-tests/run', json={'ids': ['M1', 'M3'], 'contract': 'clz6',
+                                              'qty': 1, 'confirm': True}).get_json()
+    assert ok['ok'], ok
+    again = c.post('/api/order-tests/run', json={'ids': ['M1'], 'contract': 'clz6',
+                                                 'confirm': True})
+    assert again.status_code == 409                          # one run at a time
+    body = wait_run(c)
+    assert [r['status'] for r in body['last']['results']] == ['PASS', 'PASS'], body['last']
+    assert body['last']['log']
+
+
+def test_the_page_refuses_a_live_venue(desk, monkeypatch):
+    """On PROD nothing is sent: the steps are for doing it by hand."""
+    import fixtrader.webapp as webapp
+    from fixtrader import atomicfile
+    real = atomicfile.read_json
+
+    def as_prod(path, default=None):
+        snap = real(path, default)
+        if snap and str(path).endswith('status.json'):
+            snap = dict(snap, engine=dict(snap.get('engine') or {}, environment='PROD'))
+        return snap
+    monkeypatch.setattr(webapp.atomicfile, 'read_json', as_prod)
+    r = desk.d.client.post('/api/order-tests/run', json={
+        'ids': ['M1'], 'contract': 'clz6', 'confirm': True})
+    assert r.status_code == 409 and 'UAT only' in r.get_json()['error']
+    assert not desk.tt.orders_in

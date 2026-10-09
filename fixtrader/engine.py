@@ -102,6 +102,10 @@ class ContractRuntime:
         #: Touches raised but not yet written; the engine drains these.
         self.pending_touches: List[Any] = []
         self.halted_reason: Optional[str] = None
+        #: TT's display factor this contract's prices are read in, as last
+        #: seen; and why entries wait when TT has not said it.
+        self.units_seen: Optional[float] = None
+        self.units_note: Optional[str] = None
         self.proposal: Optional[Dict[str, Any]] = None
 
     def roll_day(self, now: datetime) -> None:
@@ -381,8 +385,9 @@ class Engine:
         rt.book = book
         rt.guard.observe(book, now)
 
+        record = self._price_units(rt, now)
         armed = bool(contract.algo_on and self.master_algo and not self.killed)
-        if market_updated and book is not None and book.usable:
+        if record and market_updated and book is not None and book.usable:
             before = rt.window.samples_ts[-1][0] if rt.window.samples_ts else None
             touches = rt.window.add(book.mid, now, algo_armed=armed)
             if touches and self.db is not None:
@@ -398,6 +403,7 @@ class Engine:
         if book is not None and book.mid is not None:
             rt.note_mid(book.mid, now)
         self._paper_close_limit(rt, book, now)
+        self.executor.note(contract, book)
         said = (self.executor.manage(contract, settings, book, now)
                 if self.auto_trade_enabled else [])
         for line in said:
@@ -405,6 +411,67 @@ class Engine:
 
         self._run_algo(rt, contract, settings, book, now, armed,
                        market_updated)
+
+    def _price_units(self, rt: ContractRuntime, now: datetime) -> bool:
+        """Keep this contract's recorded prices in the units the screen
+        shows. TT sends FIX prices; the terminal turns them into trader
+        prices with TT's display factor (9787: CL 9057 x 0.01 = 90.57). The
+        recording the band is rebuilt from was made before that conversion,
+        in FIX units — read beside today's prices it is a 100x "move" and a
+        z of thousands. So when the factor is seen (or changes) the
+        recording is rescaled ONCE, the factor recorded beside it, and the
+        band, the touch study and the day's strip rebuilt from it.
+
+        Returns False while TT has not said the factor: nothing is recorded
+        then, and entries wait (`units_note`)."""
+        terminal = getattr(self.gateway, 'terminal', None)
+        if terminal is None or not hasattr(terminal, 'price_factor'):
+            rt.units_note = None                     # the simulator: one unit
+            return True
+        key = rt.contract.key
+        factor = terminal.price_factor(str(getattr(rt.contract, 'security_id',
+                                                   '') or ''))
+        if factor is None:
+            rt.units_note = ("TT has not sent this contract's display factor "
+                             "(9787) — prices may be in TT's FIX units, so "
+                             "nothing is recorded and entries wait")
+            rt.units_seen = None
+            return False
+        factor = float(factor)
+        rt.units_note = None
+        if rt.units_seen == factor:
+            return True
+        stored = self.db.price_unit(key) if self.db is not None else None
+        ratio = factor / (stored if stored else 1.0)
+        if self.db is not None and (stored is None or abs(ratio - 1.0) > 1e-12):
+            n = self.db.rescale_prices(key, ratio, factor)
+            if abs(ratio - 1.0) > 1e-12:
+                logger.warning("%s recorded prices rescaled x%g to TT's "
+                               "display factor %g (%d samples)", key, ratio,
+                               factor, n)
+                self._say(rt, "UNITS", f"recorded prices brought to trader "
+                          f"units (x{ratio:g}, TT display factor {factor:g})")
+        pos = rt.position
+        if pos is not None and abs(ratio - 1.0) > 1e-12:
+            # Opened on FIX-unit fills: its prices and frozen levels too.
+            for field in ('avg_price', 'break_even', 'target_price',
+                          'stop_price', 'entry_mean', 'entry_std'):
+                if getattr(pos, field, None) is not None:
+                    setattr(pos, field, getattr(pos, field) * ratio)
+            if rt.entry_atr is not None:
+                rt.entry_atr *= ratio
+            if self.db is not None:
+                self.db.save_position(pos)
+        # Rebuilt from the recording, now in one unit throughout — the
+        # band, the touch study and the day's strip.
+        rt.window = ContractRuntime(rt.contract, self.config.settings).window
+        self._resume_window(rt, now)
+        rt.algo = AlgoRun(key, algo_mod.params_from_settings(
+            self._settings(rt.contract)), store=self.db)
+        rt.hlo = None
+        rt.manual_watch = None
+        rt.units_seen = factor
+        return True
 
     #: The Algo's exit reasons, as the journal records them.
     _EXIT_REASONS = {'STOP_LOSS': ExitReason.STOP_LOSS,
@@ -565,7 +632,9 @@ class Engine:
         md = ({'bid': book.bid, 'ask': book.ask, 'mid': book.mid,
                'quote_id': rt.quote_seq} if usable else None)
         health = None
-        if status['stale']:
+        if rt.units_note:
+            health = rt.units_note
+        elif status['stale']:
             health = (f"price unchanged {status['age_sec']:.0f}s — entries "
                       f"wait for a move")
         elif status['settling']:
@@ -1519,6 +1588,72 @@ class Engine:
         self._say(rt, "FEED", "prices re-requested from TT")
         return {'ok': True}
 
+    def uat_order(self, key: str, side: str, order_type: str,
+                  price=None, qty=None) -> Dict[str, Any]:
+        """UAT ONLY: have the Algo send ONE opening order now, through its
+        own order path — the executor, an `FT-` ClOrdID, 77=O, 1028=N, the
+        venue's account — exactly as a signal would, so the path can be
+        tested on TT UAT without waiting for one. A LIMIT is pinned at the
+        price given (never re-pegged or timed out). The fill becomes the
+        Algo's position like any other, and closes like any other (CLOSE
+        NOW, Close @ LMT).
+
+        Refused on any venue that is not UAT, unless LIVE is armed, while the
+        Algo trades the contract, and while anything is open or working on
+        it — algo or hand."""
+        rt = self.runtimes.get(key)
+        if rt is None:
+            return {'ok': False, 'error': f"no contract {key}"}
+        venue = getattr(self.gateway, 'venue', None)
+        env = str(getattr(venue, 'environment', '') or '').upper()
+        if venue is None or 'UAT' not in env:
+            return {'ok': False, 'error': 'test orders are for a UAT venue only '
+                    f'— this one is {env or "not a venue"}'}
+        if self.paper:
+            return {'ok': False, 'error': 'Execution is PAPER — arm LIVE on '
+                    'the taskbar first: a test order goes to TT UAT'}
+        if self.killed:
+            return {'ok': False, 'error': 'KILL ALL is on'}
+        if self.algo_state(key) in ('PAPER', 'LIVE'):
+            return {'ok': False, 'error': 'the Algo is trading this contract — '
+                    'set it to Off or Signals for a test order'}
+        held = self.algo_business(key) + self.manual_business(key)
+        if held:
+            return {'ok': False, 'error': 'something is open on this contract: '
+                    + '; '.join(held)}
+        try:
+            side_v = Side(str(side).upper())
+        except ValueError:
+            return {'ok': False, 'error': f"side must be BUY or SELL, not {side!r}"}
+        order_type = str(order_type or '').upper()
+        if order_type not in ('MARKET', 'LIMIT'):
+            return {'ok': False, 'error': 'order type must be MARKET or LIMIT'}
+        book = rt.book
+        if book is None or not book.usable:
+            return {'ok': False, 'error': 'no usable book for this contract'}
+        limit = None
+        if order_type == 'LIMIT':
+            try:
+                limit = float(price)
+            except (TypeError, ValueError):
+                return {'ok': False, 'error': 'a LIMIT test order needs a price'}
+        settings = dict(self.config.effective(key), entry_order_type=order_type)
+        size = float(qty or settings.get('quantity') or 1)
+        now = utcnow()
+        touch = book.executable(side_v)
+        wo = self.executor.place(
+            rt.contract, settings, side_v, size, Intent.OPEN, book, now,
+            reason='UAT test order',
+            decision={'z': None, 'price': touch, 'order_type': order_type,
+                      'mean': None, 'std': None, 'half_life': None},
+            limit_price_at=limit)
+        if wo is None:
+            return {'ok': False, 'error': 'nothing could be sent'}
+        rt.entry_atr = rt.algo.atr() if rt.algo is not None else None
+        self._say(rt, "ORDER", f"UAT test: {side_v.value} {size:g} "
+                  f"{order_type}{'' if limit is None else f' @ {limit:g}'}")
+        return {'ok': True, 'clordid': wo.clordid}
+
     def set_depth(self, key: str, on: bool) -> Dict[str, Any]:
         """The ladder's Depth button: ask TT for the FULL book on this
         contract (Market Data Request 264=0) or only its top (264=1). Prices
@@ -1721,6 +1856,8 @@ class Engine:
             return "KILL ALL is on — new entries are stopped desk-wide"
         if rt.halted_reason:
             return rt.halted_reason
+        if rt.units_note:
+            return rt.units_note
         if rt.guard.is_stale(now):
             age = rt.guard.age(now) or 0.0
             return (f"price unchanged {age:.0f}s (limit "
@@ -1750,7 +1887,7 @@ class Engine:
         return None
 
     def state_of(self, rt: ContractRuntime, now: datetime) -> ContractState:
-        if self.killed or rt.halted_reason:
+        if self.killed or rt.halted_reason or rt.units_note:
             return ContractState.HALTED
         if rt.guard.is_stale(now):
             return ContractState.HALTED

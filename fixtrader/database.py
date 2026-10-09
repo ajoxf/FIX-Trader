@@ -93,6 +93,12 @@ CREATE INDEX IF NOT EXISTS ix_tt_fills_received ON tt_fills(received);
 CREATE TABLE IF NOT EXISTS algo_warmup (
     contract_key TEXT PRIMARY KEY, live_sec REAL NOT NULL, at REAL NOT NULL
 );
+
+-- The TT display factor (9787) the recorded prices of a contract are in.
+-- No row: recorded before prices were converted, i.e. in TT's FIX units.
+CREATE TABLE IF NOT EXISTS price_units (
+    contract_key TEXT PRIMARY KEY, factor REAL NOT NULL, at TEXT
+);
 """
 
 
@@ -443,6 +449,29 @@ class Database:
             conn.execute("DELETE FROM algo_warmup WHERE contract_key = ?",
                          (key,))
             conn.commit()
+
+    def price_unit(self, key: str) -> Optional[float]:
+        """The display factor this contract's recorded prices are in, or
+        None: recorded in TT's FIX units, before prices were converted."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT factor FROM price_units WHERE "
+                               "contract_key = ?", (key,)).fetchone()
+        return float(row['factor']) if row else None
+
+    def rescale_prices(self, key: str, ratio: float, factor: float) -> int:
+        """Bring one contract's recorded prices to a new unit — the samples
+        the band is rebuilt from and the touch study's readings — and record
+        the factor they are now in. One transaction: all or nothing."""
+        with self._lock, self._connect() as conn:
+            n = conn.execute("UPDATE samples SET price = price * ? WHERE "
+                             "contract_key = ?", (ratio, key)).rowcount
+            conn.execute("UPDATE sd_touches SET price = price * ?, mean = "
+                         "mean * ?, std = std * ? WHERE contract_key = ?",
+                         (ratio, ratio, ratio, key))
+            conn.execute("INSERT OR REPLACE INTO price_units VALUES (?,?,?)",
+                         (key, factor, datetime.now(timezone.utc).isoformat()))
+            conn.commit()
+        return n
 
     def save_samples(self, key: str, rows: List[tuple]) -> None:
         if not rows:

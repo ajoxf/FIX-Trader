@@ -1,0 +1,778 @@
+"""UAT order tests: every order path the desk will use in a live market,
+placed for real on TT UAT and checked against what TT answers.
+
+Run it from the screen — the ORDER TESTS page (/order-tests) — or against
+the running program from a terminal:
+
+    python -m fixtrader.uat --contract esz6            (or run_uat_tests.bat)
+
+It drives the program the way the screen does — the same commands the ladder
+and the Algo window send — so what is tested is the path a trader uses, not a
+side door. Each scenario places its orders, waits for TT's answer, checks the
+working order, the fill, the position and the close on this program's book,
+and reads back the FIX tags it actually sent (the FIX log). It cleans up after
+itself: anything of its own still working is cancelled and anything it opened
+is closed, by ticket.
+
+Manual (the ladder / manual ticket, FTM- orders):
+  M1  LIMIT away from the market rests, shows as working, cancels
+  M2  a resting LIMIT is replaced to a new price, then cancelled
+  M3  MARKET opens; the position shows; a MARKET close by ticket (77=C) flattens
+  M4  a marketable LIMIT fills; Close @ LMT rests (77=C); cancelled; market close
+  M5  a LIMIT at the touch fills when the price is hit (waits; may not trade)
+  M6  an order TT refuses is shown in TT's own words (tag 58)
+Algo (its own path, FT- orders, 1028=N):
+  A1  MARKET opens; the Algo's position shows with TT's tickets; CLOSE NOW
+      closes it by ticket (77=C)
+  A2  LIMIT away from the market rests, shows as working, cancels
+  A3  a marketable LIMIT fills; Close @ LMT rests pinned (77=C); CLOSE ALL
+      escalates it — cancel, then market — never two closes at once
+  A4  a LIMIT at the touch fills when the price is hit (waits; may not trade)
+
+Refused anywhere but a UAT venue. Quantity 1 unless told otherwise.
+"""
+import argparse
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+from typing import Any, Callable, Dict, List, Optional
+
+WORKING = ('PENDING', 'NEW', 'PARTIALLY_FILLED', 'REPLACED')
+DONE = ('FILLED', 'CANCELED', 'REJECTED', 'EXPIRED')
+
+SCENARIOS = [
+    ('M1', 'Manual LIMIT away from the market rests, is working, cancels'),
+    ('M2', 'Manual resting LIMIT is replaced to a new price, then cancelled'),
+    ('M3', 'Manual MARKET opens, position shows, MARKET close by ticket flattens'),
+    ('M4', 'Manual marketable LIMIT fills; Close @ LMT rests; cancelled; market close'),
+    ('M5', 'Manual LIMIT at the touch fills when the price is hit'),
+    ('M6', "Manual order refused by TT is shown in TT's words"),
+    ('A1', 'Algo MARKET opens, position with TT tickets; CLOSE NOW closes by ticket'),
+    ('A2', 'Algo LIMIT away from the market rests, is working, cancels'),
+    ('A3', 'Algo marketable LIMIT fills; Close @ LMT pinned; CLOSE ALL escalates'),
+    ('A4', 'Algo LIMIT at the touch fills when the price is hit'),
+]
+#: The two that wait on the market to trade at a price: run with --with-hits.
+HIT_SCENARIOS = ('M5', 'A4')
+
+#: Each scenario as a trader does it BY HAND on the screen — the same checks,
+#: for the live market, where nothing runs them for you.
+STEPS = {
+    'M1': 'Ladder (Algo Off or Signals): click a Bids price well below the market → review → Send. '
+          'It shows in Work and in Trading Monitor › Working Orders (TT order id). Cancel it there; it goes.',
+    'M2': 'Instruments & orders: send a LIMIT well below the market; when acknowledged, Modify its price. '
+          'TT answers REPLACED at the new price (35=G, tag 44 in FIX logs). Cancel it.',
+    'M3': 'Ladder: BUY (market) → review → Send. The fill and the position show (Trading Monitor › Positions). '
+          'CLOSE ALL → review: a SELL flagged CLOSE (77=C) for that ticket only. Flat.',
+    'M4': 'Ladder: BUY LIMIT at the offer — fills at once. Close @ LMT at a price above the market: it RESTS (77=C). '
+          'Cancel it; then CLOSE ALL closes at market.',
+    'M5': 'Ladder: BUY LIMIT at the bid. It rests until the market trades there, then fills and the position shows. '
+          'Close it. If the market never trades there, cancel it.',
+    'M6': 'Instruments & orders: send to an account TT does not know. The order shows REJECTED in TT\'s own words (tag 58).',
+    'A1': 'Execution LIVE (confirmed). The Algo opens at MARKET (FT- id, 77=O, 1028=N); its position shows with TT tickets, '
+          'not PAPER-. CLOSE ALL closes it by ticket (77=C, "Close P<id>" in 58).',
+    'A2': 'Execution LIVE. An Algo LIMIT away from the market rests (Working Orders, FT- id); Cancel all pulls it.',
+    'A3': 'Execution LIVE. An Algo position; Close @ LMT rests PINNED (77=C) above the market; CLOSE ALL cancels it, '
+          'and only on TT\'s CANCELLED sends ONE market close — never two closes at once.',
+    'A4': 'Execution LIVE. An Algo LIMIT at the bid fills when the market trades there; CLOSE ALL closes it.',
+}
+
+
+class Failed(Exception):
+    """A check that did not hold — said in words, with the evidence."""
+
+
+# -- talking to the running program ------------------------------------------------
+
+class HttpDriver:
+    """The running program's web process, as the screen talks to it."""
+
+    def __init__(self, base='http://127.0.0.1:8000', timeout=25.0):
+        self.base = base.rstrip('/')
+        self.timeout = timeout
+
+    def _get(self, path):
+        with urllib.request.urlopen(self.base + path, timeout=10) as r:
+            return json.loads(r.read().decode('utf-8'))
+
+    def command(self, action, contract='', args=None):
+        body = json.dumps({'action': action, 'contract': contract,
+                           'args': args or {}}).encode('utf-8')
+        req = urllib.request.Request(self.base + '/api/command', data=body,
+                                     headers={'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                queued = json.loads(r.read().decode('utf-8'))
+        except urllib.error.HTTPError as e:
+            return json.loads(e.read().decode('utf-8') or '{}') or {
+                'ok': False, 'error': f'HTTP {e.code}'}
+        if not queued.get('ok'):
+            return queued
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            res = self._get('/api/result/' + queued['id'])
+            if not res.get('pending'):
+                return res
+            time.sleep(0.05)
+        return {'ok': False, 'error': f'the engine did not answer {action}'}
+
+    def snapshot(self):
+        return self._get('/api/snapshot')
+
+    def journal(self):
+        return self._get('/api/journal')
+
+    def sent(self, clordid):
+        """The messages this program SENT carrying `clordid` (11 or 41),
+        oldest first, as tag -> value (the FIX log, passwords redacted)."""
+        rows = self._get('/api/fix-logs?limit=200&search=' +
+                         urllib.request.quote(clordid)).get('rows', [])
+        out = []
+        for row in reversed(rows):
+            if row.get('direction') != 'OUT':
+                continue
+            fields = {}
+            for part in str(row.get('raw', '')).split('|'):
+                tag, _, value = part.partition('=')
+                fields.setdefault(tag, value)
+            if clordid in (fields.get('11'), fields.get('41')):
+                out.append(fields)
+        return out
+
+    def sleep(self, seconds):
+        time.sleep(seconds)
+
+
+class ClientDriver(HttpDriver):
+    """`HttpDriver` over a Flask test client — the web process running the
+    tests on itself (the Order tests page), through its own /api routes."""
+
+    def __init__(self, client, timeout=25.0, nap=None):
+        super().__init__('http://local', timeout)
+        self.client = client
+        self.nap = nap
+
+    def _get(self, path):
+        return self.client.get(path).get_json()
+
+    def command(self, action, contract='', args=None):
+        queued = self.client.post('/api/command', json={
+            'action': action, 'contract': contract, 'args': args or {}}).get_json() or {}
+        if not queued.get('ok'):
+            return queued
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            res = self._get('/api/result/' + queued['id'])
+            if not res.get('pending'):
+                return res
+            time.sleep(0.03)
+        return {'ok': False, 'error': f'the engine did not answer {action}'}
+
+    def sleep(self, seconds):
+        time.sleep(seconds if self.nap is None else min(seconds, self.nap))
+
+
+class OrderTestRun:
+    """One run of the tests from the screen, on a thread of the web
+    process: what is running, what has passed, and the last run kept on disk
+    so it is still there after a restart — and on a live venue, where these
+    tests are refused, as the record of what was proven in UAT."""
+
+    def __init__(self, results_path: str):
+        self.results_path = results_path
+        self.lock = __import__('threading').Lock()
+        self.thread = None
+        self.stop_requested = False
+        self.state: Dict[str, Any] = {'running': False}
+
+    def last(self) -> Optional[Dict[str, Any]]:
+        try:
+            with open(self.results_path, encoding='utf-8') as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return None
+
+    def status(self) -> Dict[str, Any]:
+        with self.lock:
+            return json.loads(json.dumps(self.state))
+
+    def stop(self) -> Dict[str, Any]:
+        with self.lock:
+            if not self.state.get('running'):
+                return {'ok': False, 'error': 'no test run is going'}
+            self.stop_requested = True
+        return {'ok': True, 'text': 'stopping after the test that is running — '
+                'it cleans up what it sent first'}
+
+    def start(self, driver, contract: str, ids: List[str], qty: float = 1,
+              away: int = 20, hit_wait: float = 120.0,
+              environment: str = '') -> Dict[str, Any]:
+        import threading
+        with self.lock:
+            if self.state.get('running'):
+                return {'ok': False, 'error': 'a test run is already going'}
+            self.stop_requested = False
+            self.state = {'running': True, 'contract': contract, 'ids': ids,
+                          'qty': qty, 'environment': environment,
+                          'started': time.strftime('%Y-%m-%d %H:%M:%S'),
+                          'current': None, 'results': [], 'log': []}
+
+        def log(line):
+            with self.lock:
+                self.state['log'] = (self.state['log'] + [line])[-200:]
+
+        def got(row):
+            with self.lock:
+                self.state['results'].append(row)
+
+        runner = Runner(driver, contract, qty=qty, away_ticks=away,
+                        hit_wait=hit_wait, log=log,
+                        should_stop=lambda: self.stop_requested, on_result=got)
+
+        def go():
+            try:
+                runner.run(ids)
+            except Exception as e:                   # noqa: BLE001
+                got({'id': 'RUN', 'title': 'The run', 'status': 'FAIL',
+                     'detail': f'{type(e).__name__}: {e}'})
+            finally:
+                with self.lock:
+                    self.state['running'] = False
+                    self.state['current'] = None
+                    self.state['finished'] = time.strftime('%Y-%m-%d %H:%M:%S')
+                    record = dict(self.state)
+                try:
+                    with open(self.results_path, 'w', encoding='utf-8') as f:
+                        json.dump(record, f, indent=1)
+                except OSError:
+                    pass
+
+        def watch_current():
+            while self.thread is not None and self.thread.is_alive():
+                with self.lock:
+                    self.state['current'] = runner.current
+                time.sleep(0.2)
+
+        self.thread = threading.Thread(target=go, name='uat-tests', daemon=True)
+        self.thread.start()
+        threading.Thread(target=watch_current, daemon=True).start()
+        return {'ok': True}
+
+
+# -- the runner --------------------------------------------------------------------------
+
+class Runner:
+    def __init__(self, driver, contract: str, qty: float = 1, away_ticks: int = 20,
+                 wait: float = 20.0, hit_wait: float = 120.0,
+                 log: Callable[[str], None] = print,
+                 should_stop: Callable[[], bool] = lambda: False,
+                 on_result: Callable[[Dict[str, Any]], None] = lambda r: None):
+        self.d = driver
+        self.key = contract
+        self.qty = qty
+        self.away = away_ticks
+        self.wait = wait
+        self.hit_wait = hit_wait
+        self.log = log
+        self.results: List[Dict[str, Any]] = []
+        self.mine: List[str] = []          # manual order ids this run sent
+        self.should_stop = should_stop
+        self.on_result = on_result
+        self.current: Optional[str] = None
+
+    # -- reading the program ---------------------------------------------------
+
+    def snap(self):
+        return self.d.snapshot()
+
+    def contract(self, snap=None):
+        snap = snap or self.snap()
+        c = next((x for x in snap.get('contracts', []) if x['key'] == self.key), None)
+        if c is None:
+            raise Failed(f'no contract {self.key!r} on the desk')
+        return c
+
+    def terminal(self, snap=None):
+        return ((snap or self.snap()).get('engine') or {}).get('manual_terminal') or {}
+
+    def sid(self):
+        return str(self.contract().get('security_id') or '')
+
+    def manual_order(self, oid, snap=None):
+        return next((o for o in self.terminal(snap).get('orders', [])
+                     if o.get('id') == oid), None)
+
+    def manual_open(self, snap=None):
+        sid = self.sid()
+        return [p for p in (self.terminal(snap).get('pnl') or {}).get('positions', [])
+                if str(p.get('security_id')) == sid]
+
+    def until(self, what: str, test, timeout=None):
+        """Poll the program until `test(snapshot)` is truthy; its value, or
+        Failed naming what never happened."""
+        deadline = time.monotonic() + (timeout or self.wait)
+        last = None
+        while time.monotonic() < deadline:
+            last = self.snap()
+            value = test(last)
+            if value:
+                return value
+            self.d.sleep(0.25)
+        raise Failed(f'{what} — not seen in {timeout or self.wait:.0f}s')
+
+    def ok(self, result, what):
+        if not result or not result.get('ok'):
+            raise Failed(f"{what}: {(result or {}).get('error') or 'refused'}")
+        return result
+
+    def tags(self, clordid, msg='D', **expect):
+        """The FIX message this program sent for `clordid`, checked tag by
+        tag. `expect` maps tag ('t77') to value, or to a callable."""
+        msgs = [m for m in self.d.sent(clordid) if m.get('35') == msg]
+        if not msgs:
+            raise Failed(f'no {msg} sent for {clordid} in the FIX log')
+        m = msgs[-1]
+        for tag, want in expect.items():
+            tag = tag.lstrip('t')
+            have = m.get(tag)
+            good = want(have) if callable(want) else str(have) == str(want)
+            if not good:
+                said = (getattr(want, 'said', None) or 'something else') if callable(want) else repr(str(want))
+                raise Failed(f'{msg} for {clordid}: tag {tag} is {have!r}, '
+                             f'expected {said}')
+        return m
+
+    # -- prices ---------------------------------------------------------------
+
+    def book(self):
+        c = self.contract()
+        m = c.get('market') or {}
+        if m.get('bid') is None or m.get('ask') is None:
+            raise Failed('no bid/offer on the contract — is TT publishing it?')
+        tick = float(c.get('tick_size') or 0.01)
+        return float(m['bid']), float(m['ask']), tick, int(c.get('decimals') or 4)
+
+    def factor(self):
+        """TT's DisplayFactor (9787) for this contract: screen price = FIX
+        price x factor. 1 where TT gave none."""
+        sid = self.sid()
+        for row in self.terminal().get('watchlist') or []:
+            inst = row.get('instrument') or {}
+            if str(inst.get('security_id')) == sid:
+                try:
+                    return float(inst.get('display_factor') or 1)
+                except (TypeError, ValueError):
+                    return 1.0
+        return 1.0
+
+    def wire(self, price):
+        """Tag 44 must carry `price` in TT's FIX units — a check, named."""
+        want = float(price) / self.factor()
+
+        def check(have):
+            try:
+                return abs(float(have) - want) < 1e-6 * max(1.0, abs(want))
+            except (TypeError, ValueError):
+                return False
+        check.said = f'{want:g} (screen {price} / factor {self.factor():g})'
+        return check
+
+    def px(self, price, tick, decimals):
+        return f'{round(round(price / tick) * tick, 10):.{decimals}f}'
+
+    # -- the manual ticket, as the ladder sends it --------------------------------
+
+    def manual(self, side, order_type, price=None, account=None, tif='DAY'):
+        term = self.terminal()
+        args = {'security_id': self.sid(), 'account': account or term.get('account', ''),
+                'side': side, 'order_type': order_type, 'quantity': str(self.qty),
+                'price': '' if price is None else str(price), 'tif': tif,
+                'open_close': 'O'}
+        review = self.d.command('terminal_preview', '', args)
+        self.ok(review, f'review of {side} {order_type}')
+        sent = self.ok(self.d.command('terminal_submit', '', {
+            'token': review['token'], 'confirmed': True}), 'send')
+        self.mine.append(sent['order_id'])
+        return sent['order_id']
+
+    def manual_status(self, oid, statuses, what=None, timeout=None):
+        return self.until(what or f'{oid} {"/".join(statuses)}', lambda s: (
+            (self.manual_order(oid, s) or {}).get('status') in statuses
+            and self.manual_order(oid, s)), timeout)
+
+    def manual_close(self, entry_oid, price=None):
+        args = {'order_id': entry_oid}
+        if price is not None:
+            args['price'] = str(price)
+        review = self.ok(self.d.command('terminal_preview_close', '', args),
+                         'review of the close')
+        sent = self.ok(self.d.command('terminal_submit', '', {
+            'token': review['token'], 'confirmed': True}), 'send of the close')
+        self.mine.append(sent['order_id'])
+        return sent['order_id']
+
+    def manual_cancel(self, oid):
+        self.ok(self.d.command('terminal_cancel', '', {'order_id': oid}),
+                f'cancel of {oid}')
+        return self.manual_status(oid, ('CANCELED',), f'{oid} cancelled by TT')
+
+    # -- the Algo's path --------------------------------------------------------
+
+    def algo_open(self, side, order_type, price=None):
+        args = {'side': side, 'order_type': order_type, 'qty': self.qty}
+        if price is not None:
+            args['price'] = price
+        return self.ok(self.d.command('uat_order', self.key, args),
+                       f'Algo {side} {order_type}')['clordid']
+
+    def algo_order(self, clordid, snap=None):
+        return next((o for o in self.contract(snap).get('orders') or []
+                     if o.get('clordid') == clordid), None)
+
+    def algo_position(self, snap=None):
+        return self.contract(snap).get('position')
+
+    def algo_flat(self, what):
+        try:
+            return self.until(what, lambda s: self.contract(s).get('position') is None
+                              and not self.contract(s).get('orders'))
+        except Failed as e:
+            c = self.contract()
+            pos = c.get('position') or {}
+            orders = [f"{o.get('clordid')} {o.get('side')} {o.get('order_type')} "
+                      f"{o.get('state')} {o.get('text') or ''}".strip()
+                      for o in c.get('orders') or []]
+            raise Failed(f"{e}. Still open: position {pos.get('side')} "
+                         f"{pos.get('qty')}; orders {orders or 'none'}; last: "
+                         f"{c.get('last_event') or '—'}") from None
+
+    # -- the scenarios ----------------------------------------------------------
+
+    def preflight(self, need_live: bool):
+        snap = self.snap()
+        engine = snap.get('engine') or {}
+        env = str(engine.get('environment') or '')
+        if 'UAT' not in env.upper():
+            raise Failed(f'the venue is {env or "unknown"} — these tests run on UAT only')
+        if (engine.get('session') or {}).get('state') != 'LOGGED_ON':
+            raise Failed('the TT sessions are not logged on (Exchanges → Connect)')
+        c = self.contract(snap)
+        if not c.get('security_id'):
+            raise Failed(f'{self.key} has no TT Security ID')
+        if (c.get('feed') or {}).get('stale'):
+            raise Failed(f'{self.key}: the price is stale — TT is not publishing it')
+        if c.get('algo_state') in ('PAPER', 'LIVE'):
+            raise Failed(f'the Algo is trading {self.key} — set it to Off or Signals')
+        if c.get('position') or c.get('orders') or self.manual_open(snap) or [
+                o for o in self.terminal(snap).get('orders', [])
+                if str((o.get('ticket') or {}).get('security_id')) == c['security_id']
+                and o.get('status') in WORKING]:
+            raise Failed(f'something is already open or working on {self.key} — '
+                         f'flatten it first; these tests start from flat')
+        if need_live and (engine.get('execution') or {}).get('mode') != 'LIVE':
+            raise Failed('Execution is PAPER — the Algo scenarios need LIVE armed '
+                         '(Execution on the taskbar), so its orders go to TT UAT')
+        self.book()
+        return c
+
+    def m1(self):
+        bid, ask, tick, dec = self.book()
+        price = self.px(bid - self.away * tick, tick, dec)
+        oid = self.manual('BUY', 'LIMIT', price)
+        o = self.manual_status(oid, ('NEW',), f'{oid} acknowledged by TT')
+        if not o.get('venue_order_id'):
+            raise Failed('acknowledged without a TT order id (37)')
+        self.tags(oid, t40='2', t44=self.wire(price), t54='1', t77='O', t1=lambda v: bool(v),
+                  t48=self.sid())
+        self.manual_cancel(oid)
+        self.tags(oid, msg='F')
+        return f'rested at {price} (TT {o["venue_order_id"]}), cancelled'
+
+    def m2(self):
+        bid, ask, tick, dec = self.book()
+        price = self.px(bid - self.away * tick, tick, dec)
+        new_price = self.px(bid - (self.away + 2) * tick, tick, dec)
+        oid = self.manual('BUY', 'LIMIT', price)
+        self.manual_status(oid, ('NEW',), f'{oid} acknowledged')
+        self.ok(self.d.command('terminal_replace', '', {
+            'order_id': oid, 'price': new_price, 'quantity': str(self.qty)}),
+            'replace')
+        self.until(f'{oid} replaced to {new_price}', lambda s: (
+            (self.manual_order(oid, s) or {}).get('status') in ('REPLACED', 'NEW')
+            and not (self.manual_order(oid, s) or {}).get('pending')
+            and abs(float((self.manual_order(oid, s) or {}).get('ticket', {}).get('price') or 0)
+                    - float(new_price)) < 1e-9))
+        self.tags(oid, msg='G', t44=self.wire(new_price))
+        self.manual_cancel(oid)
+        return f'{price} → {new_price}, then cancelled'
+
+    def _manual_round_trip(self, oid, close_with_limit=False):
+        """An opening manual order that filled: its position shows, and it
+        closes by its own ticket — flagged CLOSE, never a second open."""
+        fill = self.manual_status(oid, ('FILLED',), f'{oid} filled')
+        pos = self.until('the manual position on the book', lambda s: self.manual_open(s))
+        if abs(sum(p['quantity'] for p in pos) - self.qty) > 1e-9:
+            raise Failed(f'position shows {pos}, expected {self.qty}')
+        note = ''
+        if close_with_limit:
+            bid, ask, tick, dec = self.book()
+            far = self.px(ask + self.away * tick, tick, dec)    # a SELL far above
+            cl = self.manual_close(oid, far)
+            self.manual_status(cl, ('NEW',), 'the Close @ LMT resting at TT')
+            self.tags(cl, t77='C', t40='2', t44=self.wire(far), t54='2')
+            self.manual_cancel(cl)
+            note = f'Close @ LMT rested at {far} (77=C), cancelled; '
+        cl = self.manual_close(oid)
+        self.manual_status(cl, ('FILLED',), 'the close filled')
+        self.tags(cl, t77='C', t40='1', t54='2')
+        self.until('flat again — no manual position left', lambda s: not self.manual_open(s))
+        return note + f'filled @ {fill.get("avg_price")}, closed by ticket'
+
+    def m3(self):
+        oid = self.manual('BUY', 'MARKET')
+        self.tags(oid, t40='1', t77='O', t54='1')
+        return self._manual_round_trip(oid)
+
+    def m4(self):
+        bid, ask, tick, dec = self.book()
+        oid = self.manual('BUY', 'LIMIT', self.px(ask, tick, dec))
+        o = self.manual_status(oid, ('FILLED', 'NEW'), f'{oid} answered')
+        if o['status'] == 'NEW':
+            self.manual_cancel(oid)
+            raise Failed('the offer moved before it filled — rerun M4')
+        return self._manual_round_trip(oid, close_with_limit=True)
+
+    def m5(self):
+        bid, ask, tick, dec = self.book()
+        price = self.px(bid, tick, dec)
+        oid = self.manual('BUY', 'LIMIT', price)
+        self.manual_status(oid, ('NEW', 'FILLED'), f'{oid} acknowledged')
+        try:
+            self.manual_status(oid, ('FILLED',), f'the market trading at {price}',
+                               timeout=self.hit_wait)
+        except Failed:
+            self.manual_cancel(oid)
+            return (f'SKIP: the market did not trade at {price} in '
+                    f'{self.hit_wait:.0f}s — rested and cancelled')
+        return f'hit at {price}: ' + self._manual_round_trip(oid)
+
+    def m6(self):
+        bid, ask, tick, dec = self.book()
+        price = self.px(bid - self.away * tick, tick, dec)
+        oid = self.manual('BUY', 'LIMIT', price, account='NO_SUCH_ACCOUNT_UAT')
+        o = self.manual_status(oid, ('REJECTED',), f'{oid} rejected by TT')
+        text = o.get('text') or ''
+        if not text or 'check the log' in text.lower():
+            raise Failed(f'rejected without TT\'s own words: {text!r}')
+        return f'TT said: {text}'
+
+    def a1(self):
+        cid = self.algo_open('BUY', 'MARKET')
+        self.tags(cid, t11=lambda v: str(v).startswith('FT-'), t77='O', t1028='N',
+                  t40='1', t54='1', t1=lambda v: bool(v))
+        pos = self.until('the Algo position on the book', lambda s: self.algo_position(s))
+        tickets = pos.get('tickets') or []
+        if not tickets or any(str(t).startswith('PAPER-') for t in tickets):
+            raise Failed(f'the position carries {tickets} — not TT tickets')
+        self.ok(self.d.command('close_now', self.key), 'CLOSE NOW')
+        self.algo_flat('flat again after CLOSE NOW')
+        closes = [m for m in self._algo_sent() if m.get('77') == 'C']
+        if not closes:
+            raise Failed('no closing order (77=C) found in the FIX log')
+        close = closes[-1]
+        if close.get('54') != '2' or 'Close P' not in close.get('58', ''):
+            raise Failed(f'the close went as 54={close.get("54")} 58={close.get("58")!r}')
+        return f'opened with tickets {tickets}; closed by ticket ({close.get("11")})'
+
+    def _algo_sent(self):
+        """Every D the Algo sent during this run (FT- ids), via the journal."""
+        out = []
+        for o in (self.d.journal().get('orders') or []):
+            cid = o.get('clordid') or ''
+            if cid.startswith('FT-') and cid not in [x.get('11') for x in out]:
+                out += [m for m in self.d.sent(cid) if m.get('35') == 'D']
+        return out
+
+    def a2(self):
+        bid, ask, tick, dec = self.book()
+        price = float(self.px(bid - self.away * tick, tick, dec))
+        cid = self.algo_open('BUY', 'LIMIT', price)
+        self.until(f'{cid} working at TT', lambda s: (self.algo_order(cid, s) or {}).get('state') == 'WORKING')
+        self.tags(cid, t40='2', t77='O', t1028='N', t44=self.wire(price))
+        self.ok(self.d.command('cancel_all', self.key), 'cancel')
+        self.algo_flat(f'{cid} cancelled, nothing open')
+        return f'rested at {price}, cancelled'
+
+    def a3(self):
+        bid, ask, tick, dec = self.book()
+        cid = self.algo_open('BUY', 'LIMIT', float(self.px(ask, tick, dec)))
+        pos = self.until('the marketable LIMIT filled', lambda s: self.algo_position(s)
+                         or ((self.algo_order(cid, s) or {}).get('state') == 'WORKING' and 'rest'))
+        if pos == 'rest':
+            self.ok(self.d.command('cancel_all', self.key), 'cancel')
+            self.algo_flat('cancelled')
+            raise Failed('the offer moved before it filled — rerun A3')
+        bid, ask, tick, dec = self.book()
+        far = float(self.px(ask + self.away * tick, tick, dec))
+        self.ok(self.d.command('close_limit', self.key, {'price': far}), 'Close @ LMT')
+        pinned = self.until('the Close @ LMT working', lambda s: next(
+            (o for o in self.contract(s).get('orders') or []
+             if o.get('pinned') and o.get('state') == 'WORKING'), None))
+        first = self.tags(pinned['clordid'], t77='C', t40='2',
+                  t44=self.wire(far))
+        self.ok(self.d.command('close_now', self.key), 'CLOSE ALL')
+        self.algo_flat('flat after CLOSE ALL escalated the resting close')
+        self.tags(pinned['clordid'], msg='F')
+        # The closes of THIS position: they name it in 58 ("Close P<id> ...").
+        ref = (first.get('58') or '').split(' ')[:2]
+        closes = [m for m in self._algo_sent() if m.get('77') == 'C'
+                  and (m.get('58') or '').split(' ')[:2] == ref]
+        closes.sort(key=lambda m: int(str(m.get('11', '0')).rsplit('-', 1)[-1] or 0))
+        if len(closes) != 2 or closes[-1].get('40') != '1':
+            raise Failed(f'expected the resting close then ONE market close, '
+                         f'saw {[(m.get("11"), m.get("40")) for m in closes]}')
+        return f'Close @ LMT at {far} cancelled, then one market close'
+
+    def a4(self):
+        bid, ask, tick, dec = self.book()
+        price = float(self.px(bid, tick, dec))
+        cid = self.algo_open('BUY', 'LIMIT', price)
+        deadline = time.monotonic() + self.hit_wait
+        while time.monotonic() < deadline:
+            if self.algo_position():
+                break
+            self.d.sleep(0.5)
+        if not self.algo_position():
+            self.ok(self.d.command('cancel_all', self.key), 'cancel')
+            self.algo_flat('cancelled')
+            return f'SKIP: the market did not trade at {price} in {self.hit_wait:.0f}s'
+        self.ok(self.d.command('close_now', self.key), 'CLOSE NOW')
+        self.algo_flat('flat after CLOSE NOW')
+        return f'hit at {price}; closed by ticket'
+
+    # -- running them ------------------------------------------------------------
+
+    def cleanup(self):
+        """Leave nothing of this run behind: cancel what is working, close
+        what is open — by ticket, flagged CLOSE."""
+        try:
+            snap = self.snap()
+            for oid in self.mine:
+                o = self.manual_order(oid, snap)
+                if o and o.get('status') in ('NEW', 'PARTIALLY_FILLED', 'REPLACED') \
+                        and not o.get('pending'):
+                    self.d.command('terminal_cancel', '', {'order_id': oid})
+            c = self.contract(snap)
+            if c.get('orders'):
+                self.d.command('cancel_all', self.key)
+            if c.get('position'):
+                self.d.command('close_now', self.key)
+            for p in self.manual_open(snap):
+                review = self.d.command('terminal_preview_close', '',
+                                        {'order_id': p['entry_order_id']})
+                if review.get('ok'):
+                    self.d.command('terminal_submit', '', {
+                        'token': review['token'], 'confirmed': True})
+        except Exception as e:                              # noqa: BLE001
+            self.log(f'  cleanup: {e}')
+
+    def run(self, ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        ids = [i.upper() for i in (ids or [s for s, _ in SCENARIOS
+                                            if s not in HIT_SCENARIOS])]
+        need_live = any(i.startswith('A') for i in ids)
+        try:
+            self.preflight(need_live)
+        except Failed as e:
+            row = {'id': 'PRE', 'title': 'Preflight', 'status': 'FAIL',
+                   'detail': str(e)}
+            self.results.append(row)
+            self.on_result(row)
+            self.log(f'PRE   FAIL  {e}')
+            return self.results
+        titles = dict(SCENARIOS)
+        for sid in ids:
+            title = titles.get(sid, sid)
+            if self.should_stop():
+                row = {'id': sid, 'title': title, 'status': 'SKIP',
+                       'detail': 'SKIP: stopped by the trader before it ran'}
+                self.results.append(row)
+                self.on_result(row)
+                continue
+            self.current = sid
+            started = time.monotonic()
+            try:
+                detail = getattr(self, sid.lower())()
+                status = 'SKIP' if str(detail).startswith('SKIP') else 'PASS'
+            except Failed as e:
+                status, detail = 'FAIL', str(e)
+            except Exception as e:                          # noqa: BLE001
+                status, detail = 'FAIL', f'{type(e).__name__}: {e}'
+            if status == 'FAIL':
+                self.cleanup()
+            secs = time.monotonic() - started
+            row = {'id': sid, 'title': title, 'status': status,
+                   'detail': detail, 'seconds': round(secs, 1)}
+            self.results.append(row)
+            self.on_result(row)
+            self.log(f'{sid:<5} {status:<5} {title}\n        {detail}')
+        self.current = None
+        self.cleanup()
+        return self.results
+
+
+def report_html(results, contract, path):
+    rows = ''.join(
+        f"<tr class='{r['status']}'><td>{r['id']}</td><td>{r['status']}</td>"
+        f"<td>{r['title']}</td><td>{r.get('detail', '')}</td>"
+        f"<td>{r.get('seconds', '')}</td></tr>" for r in results)
+    html = (f"<!doctype html><meta charset='utf-8'><title>UAT order tests</title>"
+            f"<style>body{{font:13px Segoe UI,Arial}}td,th{{padding:4px 8px;border-bottom:1px solid #ddd;text-align:left}}"
+            f".PASS td:nth-child(2){{color:#177349;font-weight:700}}.FAIL td:nth-child(2){{color:#b03030;font-weight:700}}"
+            f".SKIP td:nth-child(2){{color:#9a6b00}}</style><h2>UAT order tests — {contract} — "
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')}</h2><table><tr><th>Test</th><th>Result</th>"
+            f"<th>What</th><th>Evidence</th><th>s</th></tr>{rows}</table>")
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(html)
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description='UAT order tests against the running program')
+    ap.add_argument('--contract', required=True, help='the contract key on the desk, e.g. esz6')
+    ap.add_argument('--url', default='http://127.0.0.1:8000')
+    ap.add_argument('--qty', type=float, default=1)
+    ap.add_argument('--away', type=int, default=20,
+                    help='ticks away from the market for orders that must NOT fill')
+    ap.add_argument('--only', default='', help='comma list, e.g. M1,M3,A1')
+    ap.add_argument('--with-hits', action='store_true',
+                    help='also run M5 / A4, which wait for the market to trade at the touch')
+    ap.add_argument('--hit-wait', type=float, default=120.0)
+    ap.add_argument('--yes', action='store_true', help='do not ask before sending')
+    args = ap.parse_args(argv)
+    ids = [x.strip() for x in args.only.split(',') if x.strip()] or [
+        s for s, _ in SCENARIOS if args.with_hits or s not in HIT_SCENARIOS]
+    print(f'UAT order tests on {args.contract}: {", ".join(ids)} — qty {args.qty:g}')
+    if not args.yes:
+        answer = input('These send REAL orders to TT UAT and close them again. '
+                       'Type yes to go: ')
+        if answer.strip().lower() != 'yes':
+            print('Nothing sent.')
+            return 1
+    runner = Runner(HttpDriver(args.url), args.contract, qty=args.qty,
+                    away_ticks=args.away, hit_wait=args.hit_wait)
+    results = runner.run(ids)
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    with open(f'uat-results-{stamp}.json', 'w', encoding='utf-8') as f:
+        json.dump(results, f, indent=2)
+    report_html(results, args.contract, f'uat-results-{stamp}.html')
+    passed = sum(r['status'] == 'PASS' for r in results)
+    failed = sum(r['status'] == 'FAIL' for r in results)
+    print(f'\n{passed} passed, {failed} failed, '
+          f'{sum(r["status"] == "SKIP" for r in results)} skipped — '
+          f'uat-results-{stamp}.html')
+    return 1 if failed else 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

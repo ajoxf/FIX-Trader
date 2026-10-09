@@ -162,6 +162,10 @@ class ManualTerminal:
         self._md_session = None
         self._or_session = None
         self._search_count = 0
+        #: Instruments whose definition was asked for by Security ID this
+        #: Market Data session — once each.
+        self._definition_asked = set()
+        self._units_known = frozenset()
         # A local record after a restart cannot establish the venue's order state.
         for order in self.orders.values():
             if order['status'] not in TERMINAL:
@@ -178,7 +182,35 @@ class ManualTerminal:
         # TT commonly supplies point value in 16554; standard FIX contract
         # multiplier (231) is the equivalent fallback when 16554 is absent.
         instrument['point_value'] = p.get('16554') or instrument.get('multiplier') or p.get('231', '')
-        instrument['display_factor'] = p.get('9787', '')
+        # TT's DisplayFactor (9787): FIX price x factor = the price a trader
+        # knows (CL 9057 x 0.01 = 90.57). Where TT gives no 9787 but gives
+        # both its tick in FIX units (969) and the exchange's tick (16552),
+        # their ratio is the same factor — taken only when it is a power of
+        # ten other than 1, the one case it cannot be a coincidence.
+        instrument['display_factor'] = p.get('9787', '') or instrument.get('display_factor', '')
+        instrument['display_factor_source'] = '9787' if p.get('9787') else ''
+        if not instrument['display_factor'] and p.get('969') and p.get('16552'):
+            try:
+                ratio = Decimal(p['16552']) / Decimal(p['969'])
+                exp = ratio.log10()
+                if ratio != 1 and exp == exp.to_integral_value():
+                    instrument['display_factor'] = format(ratio.normalize(), 'f')
+                    instrument['display_factor_source'] = '16552/969'
+            except (InvalidOperation, ValueError, ZeroDivisionError):
+                pass
+        if not instrument['display_factor'] and p:
+            # A definition that says nothing of a factor: TT's prices for it
+            # are already the prices a trader knows.
+            instrument['display_factor'] = '1'
+            instrument['display_factor_source'] = 'none given by TT'
+        if not p.get('16552') and p.get('969') and instrument['display_factor']:
+            # TT's own tick (969) is in FIX units; the ticket is in trader
+            # prices, so its tick is 969 x the factor.
+            try:
+                instrument['tick_size'] = format((Decimal(p['969']) * Decimal(
+                    instrument['display_factor'])).normalize(), 'f')
+            except (InvalidOperation, ValueError):
+                pass
         instrument['tick_value'] = ''
         if instrument.get('tick_size') and instrument['point_value']:
             instrument['tick_value'] = format(Decimal(instrument['tick_size']) * Decimal(instrument['point_value']), 'f')
@@ -193,6 +225,93 @@ class ManualTerminal:
         #: Every leg's month in leg order, so `Nov26:Dec26` sorts before
         #: `Nov26:Jan27` by date rather than by the month's spelling.
         instrument['leg_months'] = ','.join(months) or instrument.get('maturity', '')
+
+    # -- price units: TT's FIX prices <-> the prices a trader knows ----------
+
+    def price_factor(self, key):
+        """This instrument's display factor as a Decimal, or None where TT has
+        not said — then prices stay in TT's FIX units, and the screen says so."""
+        instrument = self.watch.get(key) or self.catalogue.get(key) or {}
+        try:
+            factor = Decimal(str(instrument.get('display_factor') or ''))
+        except (InvalidOperation, ValueError):
+            return None
+        return factor if factor.is_finite() and factor > 0 else None
+
+    def to_display(self, key, raw):
+        """A price as TT sent it (FIX units) -> the price a trader knows."""
+        factor = self.price_factor(key) or Decimal(1)
+        return float(Decimal(str(raw)) * factor)
+
+    def to_fix(self, key, price):
+        """A price a trader typed -> TT's FIX units, exact (tags 44 / 99)."""
+        factor = self.price_factor(key) or Decimal(1)
+        value = (Decimal(str(price)) / factor).normalize()
+        text = format(value, 'f')
+        return '0' if text in ('-0', '') else text
+
+    def _migrate_units(self):
+        """Orders recorded before prices were converted carry TT's FIX
+        units: once the factor is known, bring them to trader prices — once."""
+        known = frozenset(k for k in {o['ticket'].get('security_id') for o in self.orders.values()}
+                          if self.price_factor(k) is not None)
+        if known <= self._units_known:
+            return                       # nothing new to bring over since last pass
+        self._units_known = known
+        for order in self.orders.values():
+            if order.get('units') == 'display':
+                continue
+            key = order['ticket'].get('security_id')
+            factor = self.price_factor(key)
+            if factor is None:
+                continue
+            f = float(factor)
+            for holder, field in ((order, 'avg_price'), (order['ticket'], 'price'),
+                                  (order['ticket'], 'stop_price'),
+                                  (order.get('decision') or {}, 'price'),
+                                  (order.get('decision') or {}, 'bid'),
+                                  (order.get('decision') or {}, 'ask')):
+                if holder.get(field) not in (None, ''):
+                    try:
+                        value = float(holder[field]) * f
+                    except (TypeError, ValueError):
+                        continue
+                    holder[field] = (format(Decimal(str(holder[field])) * factor, 'f')
+                                     if isinstance(holder[field], str) else value)
+            order['units'] = 'display'
+            self._save('order', order['id'], order)
+        for exec_id, data in self.db.execute('SELECT id, data FROM manual_fills').fetchall():
+            fill = json.loads(data)
+            order = self.orders.get(fill.get('order_id'))
+            factor = order and self.price_factor(order['ticket'].get('security_id'))
+            if fill.get('units') == 'display' or not factor:
+                continue
+            if fill.get('price') not in (None, ''):
+                fill['price'] = float(Decimal(str(fill['price'])) * factor)
+                fill.update(self._fill_slippage(order, fill['price'], fill.get('quantity')))
+            fill['units'] = 'display'
+            self.db.execute('UPDATE manual_fills SET data=? WHERE id=?', (json.dumps(fill), exec_id))
+        self.db.commit()
+
+    def _request_definition(self, key):
+        """Ask TT for one instrument's definition by its Security ID — for a
+        configured contract whose display factor was never received."""
+        if key in self._definition_asked:
+            return
+        self._definition_asked.add(key)
+        instrument = self.watch.get(key) or {}
+        request_id = 'DEF-' + uuid.uuid4().hex[:16]
+        self._search_ids.add(request_id)
+        fields = [('320', request_id), ('321', '3'), ('48', key), ('22', '96'),
+                  ('17000', 'Y')]
+        if instrument.get('exchange'):
+            fields.append(('207', instrument['exchange']))
+        if instrument.get('symbol'):
+            fields.append(('55', instrument['symbol']))
+        try:
+            self._send('Market Data', 'c', fields)
+        except Exception as error:                          # noqa: BLE001
+            self.errors = (self.errors + [str(error)])[-10:]
 
     def _save(self, kind, key, value):
         self.db.execute('INSERT OR REPLACE INTO manual_state VALUES (?,?,?)', (kind, key, json.dumps(value)))
@@ -373,6 +492,7 @@ class ManualTerminal:
                 if session is not self._md_session:
                     self._md_session = session
                     self._search_count = 0
+                    self._definition_asked = set()
                     self.subscriptions.clear()
                     self.books.clear()
                     feed = getattr(self.gateway, 'algo_feed', None)
@@ -385,6 +505,9 @@ class ManualTerminal:
                         except Exception as error:
                             self.errors = [str(error)]
                             break
+                    if self.price_factor(key) is None:
+                        self._request_definition(key)
+                self._migrate_units()
             elif self._md_session is not None:
                 self._md_session = None
                 self.subscriptions.clear()
@@ -447,10 +570,24 @@ class ManualTerminal:
                     self.instruments[key] = instrument
                     if len(self.catalogue) < 5000 or key in self.catalogue:
                         self.catalogue[key] = copy.deepcopy(instrument)
+                    stale_subscription = False
                     if key in self.watch:
                         instrument['full_depth'] = self.watch[key].get('full_depth', False)
+                        if (instrument.get('display_factor') or '') != (
+                                self.watch[key].get('display_factor') or ''):
+                            # Prices read before the factor was known are in
+                            # TT's FIX units: drop them and ask for a fresh
+                            # snapshot, never show 9050 for 90.50.
+                            stale_subscription = key in self.subscriptions
+                            self.books.pop(key, None)
                         self.watch[key] = copy.deepcopy(instrument)
                         self._save('watch', key, instrument)
+                        if stale_subscription:
+                            try:
+                                self._subscribe(key, '2')
+                                self._subscribe(key)
+                            except Exception as error:      # noqa: BLE001
+                                self.errors = (self.errors + [str(error)])[-10:]
                     self.search['status'] = 'Receiving results'
                 elif fields.get('58'):
                     self.search['error'] = self.gateway._redact(fields['58'])
@@ -541,7 +678,10 @@ class ManualTerminal:
                     for tag, attribute in [('270', side), ('271', side + '_size')]:
                         if tag in merged:
                             try:
-                                book[attribute] = float(number(merged[tag], attribute))
+                                value = number(merged[tag], attribute)
+                                # Prices in the trader's units; sizes as sent.
+                                book[attribute] = (self.to_display(key, value)
+                                                   if tag == '270' else float(value))
                             except ValueError:
                                 book[attribute] = None
             book['timestamp'] = now()
@@ -571,7 +711,7 @@ class ManualTerminal:
                 for stored in book['entries'].values():
                     if stored.get('269') == kind and stored.get('270') is not None:
                         try:
-                            levels.append({'price': float(number(stored['270'], 'price')),
+                            levels.append({'price': self.to_display(key, number(stored['270'], 'price')),
                                            'size': float(number(stored['271'], 'size')) if stored.get('271') else None})
                         except ValueError:
                             continue
@@ -653,7 +793,10 @@ class ManualTerminal:
         for key, tag in [('price', '44'), ('stop_price', '99'), ('min_qty', '110'), ('display_qty', '1138'),
                          ('open_close', '77'), ('capacity', '528'), ('customer_capacity', '582'), ('text', '58')]:
             if ticket.get(key) not in (None, ''):
-                fields.append((tag, ticket[key]))
+                # The trader's price goes to TT in TT's FIX units.
+                value = (self.to_fix(ticket['security_id'], ticket[key])
+                         if key in ('price', 'stop_price') else ticket[key])
+                fields.append((tag, value))
         if ticket['tif'] == 'GTD':
             fields.append(('432', ticket['expire_date']))
         if ticket['tif'] == 'FOK' and ticket['instrument'].get('exchange') == 'CME':
@@ -767,6 +910,10 @@ class ManualTerminal:
             order = {'id': order_id, 'current_id': order_id, 'ids': [order_id], 'ticket': ticket,
                      'status': 'PENDING', 'text': 'Awaiting TT acknowledgement', 'updated': now(),
                      'filled_qty': 0, 'remaining_qty': float(ticket['quantity']), 'avg_price': None, 'venue_order_id': '', 'pending': None}
+            # Prices in trader units once TT's factor is known; an order sent
+            # before it was is brought over by `_migrate_units` when it is.
+            if self.price_factor(ticket['security_id']) is not None:
+                order['units'] = 'display'
             if close_of:
                 order['close_of'] = close_of
             # The price the trader could have crossed at when the ticket was
@@ -846,15 +993,20 @@ class ManualTerminal:
                 order['pending'] = None
             if order['status'] in TERMINAL:
                 order['pending'] = None
+            sid = order['ticket'].get('security_id')
             for tag, key in [('14', 'filled_qty'), ('151', 'remaining_qty'), ('6', 'avg_price')]:
                 if fields.get(tag) is not None:
-                    order[key] = float(number(fields[tag], key))
+                    order[key] = (self.to_display(sid, number(fields[tag], key))
+                                  if tag == '6' else float(number(fields[tag], key)))
             order['text'] = self.gateway._redact(fields.get('58', ''))
             if fields.get('17') and fields.get('150') in ('1', '2', 'F'):
                 fill = {'exec_id': fields['17'], 'order_id': order['id'], 'symbol': order['ticket']['instrument']['description'],
-                        'side': order['ticket']['side'], 'quantity': fields.get('32'), 'price': fields.get('31'), 'time': now(),
+                        'side': order['ticket']['side'], 'quantity': fields.get('32'),
+                        'price': (self.to_display(sid, fields['31']) if fields.get('31') else None), 'time': now(),
                         'order_type': order['ticket']['order_type'], 'close': bool(order.get('close_of'))}
-                fill.update(self._fill_slippage(order, fields.get('31'), fields.get('32')))
+                fill.update(self._fill_slippage(order, fill['price'], fields.get('32')))
+                if self.price_factor(sid) is not None:
+                    fill['units'] = 'display'
                 self.db.execute('INSERT OR IGNORE INTO manual_fills VALUES (?,?)', (fields['17'], json.dumps(fill)))
         order['updated'] = now()
         self._save('order', order['id'], order)

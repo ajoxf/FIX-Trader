@@ -756,6 +756,22 @@ class AlgoOrderRouter:
         return (terminal.watch.get(security_id)
                 or terminal.catalogue.get(security_id))
 
+    # -- price units: TT's FIX prices <-> trader prices -------------------------
+
+    def _to_display(self, security_id, raw) -> float:
+        """A price as TT sent it -> the price a trader knows (x 9787)."""
+        terminal = getattr(self.gw, 'terminal', None)
+        if terminal is None or not hasattr(terminal, 'to_display'):
+            return float(raw)
+        return terminal.to_display(security_id, raw)
+
+    def _to_fix(self, security_id, price) -> str:
+        """A trader price -> TT's FIX units for tag 44, exact."""
+        terminal = getattr(self.gw, 'terminal', None)
+        if terminal is None or not hasattr(terminal, 'to_fix'):
+            return _fix_number(price)
+        return terminal.to_fix(security_id, price)
+
     def _emit(self, kind, rec, text='', fill=None):
         from dataclasses import replace
         vo = rec['order']
@@ -820,7 +836,7 @@ class AlgoOrderRouter:
                    # close — never an open.
                    ('77', 'O' if not order.position_effect.is_close else 'C')]
         if order.order_type.value == 'LIMIT' and price is not None:
-            fields.append(('44', _fix_number(price)))
+            fields.append(('44', self._to_fix(rec.get('security_id'), price)))
         if str(tif) != 'GTC':
             # TT cancels it if this session drops: a dead engine leaves no
             # Algo order working.
@@ -952,8 +968,8 @@ class AlgoOrderRouter:
         exec_id = f.get('17')
         try:
             qty = float(f.get('32') or 0)
-            price = float(f.get('31'))
-        except (TypeError, ValueError):
+            price = self._to_display(f.get('48') or '', f.get('31'))
+        except (TypeError, ValueError, ArithmeticError):
             return
         if not exec_id or qty <= 0 or exec_id in self.tape_ids:
             return
@@ -1012,7 +1028,7 @@ class AlgoOrderRouter:
         if exec_type == '5':                           # replaced
             rec['current'] = f.get('11') or rec['current']
             if f.get('44'):
-                vo.price = float(f['44'])
+                vo.price = self._to_display(rec.get('security_id'), f['44'])
             if f.get('38'):
                 vo.qty = float(f['38'])
         if exec_type in ('4', '5', '8') and rec['pending']:
@@ -1035,7 +1051,8 @@ class AlgoOrderRouter:
             fill = Fill(venue=getattr(self.gw.venue, 'name', 'TT'),
                         exec_id=exec_id, clordid=vo.clordid,
                         contract_key=vo.contract_key, side=vo.side, qty=qty,
-                        price=float(f.get('31')), our_ts=utcnow(),
+                        price=self._to_display(rec.get('security_id'), f.get('31')),
+                        our_ts=utcnow(),
                         venue_ts=venue_ts)
             self._emit('FILL' if vo.state is OrderState.FILLED else 'PARTIAL',
                        rec, f"filled {qty:g} @ {fill.price:g}", fill)

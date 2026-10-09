@@ -83,7 +83,7 @@
     selected=instrument;
     $('instrument-description').textContent=instrument.description || instrument.symbol;
     const dl=document.createElement('dl');
-    for (const [name,key] of [['TT Security ID','security_id'],['Product symbol','symbol'],['Exchange','exchange'],['Type','security_type'],['Expiry month','maturity'],['Expiry date','expiry_date'],['Currency','currency'],['Tick size (FIX units)','tick_size'],['Tick value','tick_value'],['Point value','point_value'],['Display factor (metadata)','display_factor'],['Contract code','contract_code'],['Contract multiplier','multiplier'],['Minimum trade volume','min_qty'],['Strike','strike'],['Put / call (0 put, 1 call)','put_call'],['Strategy subtype','subtype']]) {
+    for (const [name,key] of [['TT Security ID','security_id'],['Product symbol','symbol'],['Exchange','exchange'],['Type','security_type'],['Expiry month','maturity'],['Expiry date','expiry_date'],['Currency','currency'],['Tick size','tick_size'],['Tick value','tick_value'],['Point value','point_value'],['Display factor (9787: screen = FIX x factor)','display_factor'],['Display factor from','display_factor_source'],['Contract code','contract_code'],['Contract multiplier','multiplier'],['Minimum trade volume','min_qty'],['Strike','strike'],['Put / call (0 put, 1 call)','put_call'],['Strategy subtype','subtype']]) {
       const wrap=document.createElement('div');wrap.append(text('dt',name),text('dd',fmt(instrument[key])));dl.append(wrap);
     }
     $('instrument-details').replaceChildren(dl);

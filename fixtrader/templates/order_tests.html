@@ -1,0 +1,90 @@
+{% extends "_page.html" %}
+{% block title %}Order tests · Nexus FIX{% endblock %}
+{% block heading %}Order tests{% endblock %}
+{% block crumb %}<span id="ot-crumb">every order path, on TT UAT, before a live market</span>{% endblock %}
+{% block actions %}
+  <span id="ot-exec" class="pill">&mdash;</span>
+{% endblock %}
+
+{% block content %}
+<p id="ot-banner" class="ot-banner"></p>
+<div class="cols ot">
+
+  <section class="card">
+    <h5>Run <span class="note">real orders, closed again</span></h5>
+    <div class="cb">
+      <label class="f"><span>Contract<small>flat, with a live bid and offer</small></span>
+        <select id="ot-contract"></select></label>
+      <label class="f"><span>Quantity<small>per order</small></span>
+        <input type="number" id="ot-qty" min="1" step="1" value="1"></label>
+      <label class="f"><span>Ticks away<small>for orders that must NOT fill</small></span>
+        <input type="number" id="ot-away" min="2" step="1" value="20"></label>
+      <label class="f"><span>Wait for a hit (s)<small>M5 / A4: the market trading at our price</small></span>
+        <input type="number" id="ot-wait" min="10" step="10" value="120"></label>
+      <div class="ot-live">
+        <span id="ot-live-text">&mdash;</span>
+        <button id="ot-arm" class="btn" type="button">Arm LIVE</button>
+      </div>
+      <div class="rowactions">
+        <button id="ot-pick-manual" class="btn" type="button">Manual</button>
+        <button id="ot-pick-algo" class="btn" type="button">Algo</button>
+        <button id="ot-pick-all" class="btn" type="button">All</button>
+        <span class="grow"></span>
+        <button id="ot-stop" class="btn" type="button" disabled>Stop</button>
+        <button id="ot-run" class="btn danger" type="button">Run selected</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card wide">
+    <h5>Tests <span class="note" id="ot-summary">&mdash;</span></h5>
+    <div class="cb">
+      <table class="grid ot-table">
+        <thead><tr><th></th><th>Test</th><th>What it proves</th><th>Result</th><th>Evidence</th><th class="r">s</th></tr></thead>
+        <tbody id="ot-rows"></tbody>
+      </table>
+      <p class="ot-foot">Each test places its orders through the same commands as the ladder and the Algo window, waits for
+        TT's answer, checks the working order, the fill, the position and the close on this program's book, and reads
+        back the FIX tags it actually sent (FIX logs). Whatever it opened is closed by ticket and whatever is still
+        working is cancelled, pass or fail. <b>By hand</b> under each test is the same check done on the screen — the
+        way to prove a path on a live market, where nothing here runs.</p>
+    </div>
+  </section>
+
+  <section class="card wide">
+    <h5>Log <span class="note" id="ot-when">&mdash;</span></h5>
+    <div class="cb"><pre id="ot-log" class="ot-log"></pre></div>
+  </section>
+</div>
+<style>
+  .ot-banner { margin: 0 0 8px; padding: 7px 10px; border: 1px solid var(--line-soft); background: #fff;
+               font-size: calc(11.5px * var(--fs)); }
+  .ot-banner.uat { border-color: #c9a227; background: #fff8e0; }
+  .ot-banner.prod { border-color: #8d3a3a; background: #f6e2e2; color: #6b1d1d; font-weight: 600; }
+  .ot-banner.off { background: #f1f1f1; }
+  .ot-live { display: flex; align-items: center; gap: 8px; font-size: calc(11px * var(--fs)); }
+  .ot-live span { flex: 1; }
+  .rowactions { display: flex; gap: 6px; align-items: center; }
+  .rowactions .grow { flex: 1; }
+  .ot-table td { vertical-align: top; }
+  .ot-table td.res { font-weight: 700; white-space: nowrap; }
+  .ot-table tr.PASS td.res { color: #177349; }
+  .ot-table tr.FAIL td.res { color: #b03030; }
+  .ot-table tr.SKIP td.res { color: #9a6b00; }
+  .ot-table tr.RUNNING td.res { color: #1f5fa8; }
+  .ot-table .kind { display: inline-block; min-width: 46px; font: 600 calc(9px * var(--fs))/1 var(--mono);
+                    padding: 2px 4px; border: 1px solid var(--line-soft); margin-right: 5px; text-align: center; }
+  .ot-table details { margin-top: 3px; color: #4a4f57; font-size: calc(10.5px * var(--fs)); }
+  .ot-table details summary { cursor: pointer; color: #1f5fa8; }
+  .ot-table td.txt, .ot-table td.ev { white-space: normal; }
+  .ot-table td.ev { font-family: var(--mono); font-size: calc(10px * var(--fs)); max-width: 460px;
+                    word-break: break-word; }
+  .ot-foot { color: #4a4f57; font-size: calc(10.5px * var(--fs)); margin: 4px 0 0; }
+  .ot-log { margin: 0; max-height: 260px; overflow: auto; font: calc(10.5px * var(--fs))/1.4 var(--mono);
+            background: #fafafa; border: 1px solid var(--line-soft); padding: 6px; white-space: pre-wrap; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='order_tests.js') }}?v={{ asset_version }}"></script>
+{% endblock %}

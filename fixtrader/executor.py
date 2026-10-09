@@ -185,6 +185,7 @@ class Executor:
         venue tickets — because an opposite order that does not SAY it is
         closing is an order to open the other way.
         """
+        self.note(contract, book)
         prefix = 'exit' if intent is Intent.CLOSE else 'entry'
         order_type = OrderType(settings.get(f'{prefix}_order_type',
                                             OrderType.MARKET.value))
@@ -242,6 +243,15 @@ class Executor:
         return wo
 
     # -- managing a resting limit ------------------------------------------
+
+    def note(self, contract, book) -> None:
+        """The contract and its latest book, for an escalation to send on.
+        Kept on EVERY pass, whatever Auto trade says: the market close that
+        follows a cancelled close limit (CLOSE ALL over Close @ LMT) needs
+        them, and a close is never withheld for want of them."""
+        self.contracts[contract.key] = contract
+        if book is not None:
+            self.books[contract.key] = book
 
     def manage(self, contract, settings: Dict[str, Any], book,
                now: datetime) -> List[str]:

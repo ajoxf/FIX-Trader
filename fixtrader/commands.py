@@ -168,6 +168,10 @@ def apply_command(engine, command: Dict[str, Any]) -> Dict[str, Any]:
             return {'ok': True,
                     'cancelled': engine.executor.cancel_all(
                         key or None, side=args.get('side') or None)}
+        if action == 'uat_order':
+            return engine.uat_order(key, args.get('side', ''),
+                                    args.get('order_type', ''),
+                                    args.get('price'), args.get('qty'))
         if action == 'depth':
             return engine.set_depth(key, args.get('on') is True)
         if action == 'refresh_feed':

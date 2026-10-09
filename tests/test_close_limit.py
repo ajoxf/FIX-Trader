@@ -245,3 +245,22 @@ def test_the_account_page_and_its_journal(tmp_path):
     assert body['closed'][0]['net_pnl'] == 8.0
     csv = c.get('/api/tt_fills.csv').data.decode()
     assert 'exec_id' in csv.splitlines()[0] and 'E9' in csv
+
+
+def test_close_all_escalates_with_auto_trade_off(tmp_path):
+    """Found by the UAT order tests: the executor learned a contract only
+    inside `manage`, which runs only with Auto trade on — so with it off
+    (trading by hand) CLOSE ALL cancelled the resting Close @ LMT and then
+    sent nothing, leaving the position open."""
+    engine, gw, db, rt = live_long(tmp_path)
+    engine.auto_trade_enabled = False
+    engine.executor.contracts.clear()
+    engine.executor.books.clear()
+    engine.poll(now=gw.now)
+    r = engine.close_at_limit('fef', round(rt.book.bid + 0.20, 2))
+    sent = len(gw.sent_ids)
+    assert engine.close_now('fef')['escalated'] == 1
+    for _ in range(3):
+        engine.poll(now=gw.now)
+    assert rt.position is None                          # the market close went
+    assert len(gw.sent_ids) == sent + 1

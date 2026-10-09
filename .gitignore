@@ -50,3 +50,8 @@ runtime/
 .DS_Store
 Thumbs.db
 legacy/_ttfix_repo_review/
+
+# Order test runs (Order tests page / python -m fixtrader.uat)
+*.order-tests.json
+uat-results-*.json
+uat-results-*.html

@@ -49,12 +49,25 @@ elsewhere must be checked in TT before confirming. Opening a review does not sen
 
 ## Price units
 
-**Quotes, ticket prices, stops and fills use the raw TT FIX price units.**
-No display-factor conversion is applied. For example, a received price of
-`771125` remains `771125` in both the watchlist and FIX tag 44. The instrument
-panel shows the exchange tick size, tick value, point value and display factor
-separately. Do not enter a scaled screen price from another terminal without
-checking its units.
+**Every price on the screen is the price a trader knows** — Crude ~90, Gold
+~4170 — never TT's FIX price (Crude `9057`, Gold `41998`). TT sends prices in
+its FIX units; the instrument's **DisplayFactor (tag 9787)** turns one into the
+other: `screen price = FIX price x 9787` (CL `9057 x 0.01 = 90.57`). The
+conversion is made once, at the FIX boundary (`ManualTerminal.to_display` /
+`to_fix`), in both directions: quotes (270), fills (31, 6) and a replace's
+price (44) coming in; ticket prices (44) and stops (99) going out — for the
+manual ticket and the Algo's orders alike.
+
+Where TT sends no 9787 the factor is the ratio of the exchange's tick (16552,
+in screen prices) to TT's tick (969, in FIX units) when that is a power of ten;
+a definition that gives neither is in screen prices already (factor 1). The
+exchange tick (16552) is in screen prices, which is why `money = points x
+tick_value / tick_size x qty` was wrong by the factor while prices were raw.
+
+A contract whose factor TT has not sent is not traded by the Algo: nothing is
+recorded for it and entries wait, saying why. Recordings and orders made by an
+earlier version (in FIX units) are rescaled once when the factor is first seen,
+and the factor is kept beside them (`price_units`).
 
 Use the exact TT Security ID (48, source 22=96). A product name such as ES can
 represent many different expiries. It is not a unique tradable instrument.

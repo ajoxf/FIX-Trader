@@ -14,6 +14,12 @@ the drawing wins.
 - **Price is the spread's own price, from the MID OF THE BOOK.** Never the last
   trade. A trigger reads the executable side for its own direction; an open
   position reads the **opposite** side to close.
+- **Prices are the prices a trader knows, never TT's FIX units.** TT sends
+  Crude as 9057; its DisplayFactor (9787) makes it 90.57. The conversion is
+  made ONCE, at the FIX boundary (`ManualTerminal.to_display` / `to_fix`):
+  270/31/6/44 in, 44/99 out, manual and Algo alike. A contract whose factor
+  is unknown records nothing and enters nothing; a recording in the old
+  units is rescaled once (`price_units`), never mixed with the new.
 - **One conversion, in `sizing.py`**: `money = points × tick_value / tick_size
   × qty`. Every money figure on the screen goes through it.
 - **`gateway.py` is the only module that may import a FIX library.**
@@ -111,6 +117,14 @@ the drawing wins.
 - **CLOSE NOW stands that contract's algo down.** The z that put the position
   on has not moved, so an algo left armed re-enters on the next pass — a
   tenth of a second after the trader pressed the button to get out.
+- **Order tests run on TT UAT from the screen** (`/order-tests`,
+  `fixtrader/uat.py`): every manual and Algo order path — rest, replace,
+  cancel, MARKET, marketable LIMIT, hit at the touch, Close @ LMT, CLOSE ALL
+  escalation, a refusal in TT's words — through the SAME commands the ladder
+  and the Algo window send, never a side door. Refused on any venue but UAT;
+  each test cleans up by ticket, pass or fail. `tests/test_uat_orders.py`
+  proves them against `tests/fake_tt.py` (real web app, engine loop and FIX
+  sessions). A new order path gets a scenario here.
 - **UAT and PROD are separate venues** and the screen always says which.
 
 ## Conventions that are easy to lose in a refactor
