@@ -367,9 +367,13 @@ def create_app(config_path: str = "config.json",
             if (order and order.get('intent') == 'CLOSE' and pos and contract
                     and pos.get('entry_price') is not None):
                 sign = 1 if pos['side'] == 'BUY' else -1
-                f['pnl'] = round(sizing.to_money(
-                    (f['price'] - pos['entry_price']) * sign, contract.tick_size,
-                    contract.tick_value, f['qty']), 2)
+                # No tick value (or price) is an UNKNOWN P&L — a dash — never
+                # a journal that fails and empties the Fills tab with it.
+                money = (sizing.to_money((f['price'] - pos['entry_price']) * sign,
+                                         contract.tick_size, contract.tick_value,
+                                         f['qty'])
+                         if f.get('price') is not None else None)
+                f['pnl'] = round(money, 2) if money is not None else None
             if order and order.get('sent_at') and f['clordid'] not in first_fill:
                 first_fill.add(f['clordid'])
                 try:

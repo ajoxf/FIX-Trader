@@ -787,7 +787,11 @@ class Runner:
         waited for: the log is written in the background, so the newest line
         can land a moment after the position is already flat."""
         def closing_orders():
-            orders = self.d.journal().get('orders') or []
+            journal = self.d.journal() or {}
+            if journal.get('ok') is False or 'orders' not in journal:
+                raise Failed('the journal could not be read: '
+                             + str(journal.get('error') or 'no answer'))
+            orders = journal.get('orders') or []
             opened = next((o.get('sent_at') or '' for o in orders
                            if o.get('clordid') == open_cid), '')
             return [o for o in orders if o.get('contract_key') == self.key

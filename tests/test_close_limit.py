@@ -198,7 +198,7 @@ def test_the_tape_is_kept_and_served(tmp_path):
 
 # -- the Account page --------------------------------------------------------------
 
-def test_the_account_page_and_its_journal(tmp_path):
+def test_the_account_page_and_its_journal(tmp_path, tick_value=1.0):
     """/account renders the Trading Monitor tabs; /api/journal serves the TT
     fills tape, with the P&L of a CLOSING fill of ours against the position
     it closed — and none on a fill that is not ours."""
@@ -211,7 +211,7 @@ def test_the_account_page_and_its_journal(tmp_path):
     cfg = TraderConfig(path=str(tmp_path / 'config.json'))
     cfg.settings['DATABASE_PATH'] = str(tmp_path / 'j.db')
     cfg.contracts['fef'] = ContractConfig(key='fef', name='Iron ore', symbol='FEF',
-                                          tick_size=0.01, tick_value=1.0,
+                                          tick_size=0.01, tick_value=tick_value,
                                           security_id='777')
     cfg.save()
     db = Database(str(tmp_path / 'j.db'))
@@ -239,12 +239,23 @@ def test_the_account_page_and_its_journal(tmp_path):
         assert tab in page
     body = c.get('/api/journal').get_json()
     fills = {f['exec_id']: f for f in body['tt_fills']}
+    if tick_value is None:
+        # No tick value: the P&L is unknown — a dash, never a page that fails.
+        assert fills['E9']['pnl'] is None and body['orders']
+        return
     assert fills['E9']['pnl'] == 10.0          # 5 ticks x $1 x 2 contracts
     assert fills['E9']['intent'] == 'CLOSE' and fills['E9']['name'] == 'Iron ore'
     assert fills['E10']['pnl'] is None and fills['E10']['ours'] == ''
     assert body['closed'][0]['net_pnl'] == 8.0
     csv = c.get('/api/tt_fills.csv').data.decode()
     assert 'exec_id' in csv.splitlines()[0] and 'E9' in csv
+
+
+def test_the_journal_survives_a_contract_with_no_tick_value(tmp_path):
+    """Found on TT UAT: a closing Algo fill on a contract added without a
+    tick value made /api/journal fail (round(None)), and with it the Fills
+    tab went empty and the order tests found no closing order."""
+    test_the_account_page_and_its_journal(tmp_path, tick_value=None)
 
 
 def test_close_all_escalates_with_auto_trade_off(tmp_path):

@@ -395,7 +395,9 @@ window.TradingMonitor = function (root, opts) {
         '<td>' + (r.ours ? origin(r.ours) : '<span class="tiny">no</span>') + '</td>' +
         '<td class="wrap">' + esc(r.text || '') + (r.position_id ? ' <span class="tiny">P' + esc(r.position_id) + '</span>' : '') + '</td></tr>';
     });
-    if (!rows.length) html += '<tr><td colspan="15" class="empty">No fills from TT yet.' +
+    if (state.journalError) html += '<tr><td colspan="15" class="empty dn">The fills could not be read: ' +
+      esc(state.journalError) + ' — this is not "no fills".</td></tr>';
+    else if (!rows.length) html += '<tr><td colspan="15" class="empty">No fills from TT yet.' +
       (engine().paper ? ' The Algo is on PAPER, so it has sent nothing — tick “include PAPER” to see its paper fills.' : '') + '</td></tr>';
     return html + '</tbody></table>';
   }
@@ -604,7 +606,8 @@ window.TradingMonitor = function (root, opts) {
   async function loadJournal(force) {
     if (!force && Date.now() - state.journalAt < 5000) return;
     state.journalAt = Date.now();
-    try { state.journal = await getJSON('/api/journal'); } catch (e) { /* kept */ }
+    try { state.journal = await getJSON('/api/journal'); state.journalError = null; }
+    catch (e) { state.journalError = e.message; }      // said on the tab, never "no fills"
   }
   async function loadSlippage(force) {
     if (!force && Date.now() - state.slipAt < 15000) return;
