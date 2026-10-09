@@ -271,6 +271,9 @@ class Peer:
                 self.received.append(encode_fix_message(
                     [('35', 'A'), ('34', '1'), ('49', 'TT'), ('56', f['49']),
                      ('98', '0'), ('108', '30')]))
+            # TT: "Recovery is complete" once the logon is done.
+            self.reply([('35', 'B'), ('148', 'Recovery Complete'), ('33', '1'),
+                        ('58', 'Recovery is complete')])
             return
         if self.kind == 'MD':
             if kind == 'V' and f.get('263') == '1':

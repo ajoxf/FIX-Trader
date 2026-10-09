@@ -44,6 +44,8 @@ class TT:
                                       ('56', f['49']), ('98', '0'),
                                       ('108', '30')])
             self.received.append(msg)
+            self.reply([('35', 'B'), ('148', 'Recovery Complete'), ('33', '1'),
+                        ('58', 'Recovery is complete')])
         elif kind == 'D':
             self.reply([('35', '8'), ('11', f['11']), ('37', 'TT-' + f['11']),
                         ('17', 'A-' + f['11']), ('150', '0'), ('39', '0'),

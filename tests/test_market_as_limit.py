@@ -129,3 +129,23 @@ def test_the_algos_close_goes_through_the_touch_and_a_refusal_is_loud(desk):
     assert d.command('close_now', 'clz6')['ok']
     run.until('flat', lambda s: run.algo_position(s) is None)
     assert run.contract().get('close_alert') is None
+
+
+def test_every_clordid_we_send_fits_tts_20_characters(terminal):
+    """TT FIX: "Maximum length of the tag 11 is (20) characters." Manual
+    tickets were FTM- + 32 hex = 36."""
+    from types import SimpleNamespace
+    from fixtrader.gateway import AlgoOrderRouter
+    quote(terminal, 9050, 9052)
+    p = terminal.preview(dict(market_ticket(), order_type='LIMIT', price='90.40'))
+    oid = terminal.submit({'token': p['token'], 'confirmed': True})['order_id']
+    order = terminal.orders[oid]
+    terminal.on_message('Order Routing', {'35': '8', '11': order['current_id'], '37': 'T9',
+                                          '150': '0', '39': '0', '17': 'A9', '14': '0',
+                                          '151': '1'}, '')
+    terminal.manage({'order_id': oid, 'price': '90.30', 'quantity': '1'}, replace=True)
+    sent = [dict(f) for k, f in terminal.gateway._sessions['Order Routing'].sent if k in 'DFG']
+    assert sent and all(len(f['11']) <= 20 for f in sent), [f['11'] for f in sent]
+    r = AlgoOrderRouter(SimpleNamespace(venue=None, contracts=[], _redact=lambda t: t))
+    r.seq = 99999
+    assert len(r._next_id()) <= 20

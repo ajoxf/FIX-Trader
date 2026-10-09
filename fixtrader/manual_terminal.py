@@ -24,6 +24,14 @@ MD_REJECT_REASONS = {'0': 'unknown symbol', '1': 'duplicate request id',
                      '4': 'unsupported subscription type', '5': 'unsupported market depth',
                      '6': 'unsupported update type', '7': 'unsupported aggregated book',
                      '8': 'unsupported entry type'}
+#: SessionRejectReason (373) on a Session-Level Reject (3), in words.
+SESSION_REJECT_REASONS = {'0': 'invalid tag number', '1': 'required tag missing',
+                          '2': 'tag not defined for this message type', '3': 'undefined tag',
+                          '4': 'tag specified without a value', '5': 'incorrect value',
+                          '6': 'incorrect data format', '7': 'decryption problem',
+                          '8': 'signature problem', '9': 'CompID problem',
+                          '10': 'sending time accuracy problem', '11': 'invalid message type',
+                          '99': 'other'}
 LIMIT_TYPES = {'LIMIT', 'STOP_LIMIT', 'LIMIT_ON_CLOSE', 'POST_ONLY'}
 TERMINAL = {'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'}
 DEFAULT_RISK = {'trading_enabled': True, 'max_order_qty': 0.0,
@@ -510,7 +518,11 @@ class ManualTerminal:
                     feed = getattr(self.gateway, 'algo_feed', None)
                     if feed is not None:
                         feed.clear()
-                for key in self.watch:
+                # TT: wait for News "Recovery is complete" before sending
+                # any request on Market Data (a short fallback if it never
+                # comes).
+                ready = getattr(session, 'ready', lambda: True)()
+                for key in (self.watch if ready else ()):
                     if key not in self.subscriptions:
                         try:
                             self._subscribe(key)
@@ -608,7 +620,10 @@ class ManualTerminal:
                 self.quote_changed.set()
             elif msg in ('Y', 'j', '3'):
                 reason = self.gateway._redact(fields.get('58', '') or '')
-                code = MD_REJECT_REASONS.get(fields.get('281', ''))
+                code = (SESSION_REJECT_REASONS.get(fields.get('373', '')) if msg == '3'
+                        else MD_REJECT_REASONS.get(fields.get('281', '')))
+                if code and msg == '3' and fields.get('371'):
+                    code += f" (tag {fields['371']})"
                 if code:
                     reason = f"{code}" + (f" — {reason}" if reason else '')
                 reason = reason or 'TT rejected the request'
@@ -1023,7 +1038,8 @@ class ManualTerminal:
     def submit(self, args):
         with self.lock:
             token = str(args.get('token', ''))
-            order_id = 'FTM-' + token
+            # TT: ClOrdID (11) is at most 20 characters — FTM- and 16 hex.
+            order_id = 'FTM-' + token[:16]
             if order_id in self.orders:
                 return {'ok': True, 'order_id': order_id, 'status': self.orders[order_id]['status']}
             preview = self.previews.get(token)
@@ -1071,7 +1087,7 @@ class ManualTerminal:
             if order['status'] not in ('NEW', 'PARTIALLY_FILLED', 'REPLACED') or order.get('pending'):
                 raise ValueError('Order must be acknowledged and have no pending change')
             self.session('Order Routing')
-            new_id = 'FTM-' + uuid.uuid4().hex
+            new_id = 'FTM-' + uuid.uuid4().hex[:16]    # TT: 20 characters at most
             ticket = copy.deepcopy(order['ticket'])
             if replace:
                 self._refuse_if_blocked(ticket)

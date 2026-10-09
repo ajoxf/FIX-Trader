@@ -586,6 +586,15 @@ class Runner:
             raise Failed(f'something is already open or working on {self.key} — '
                          f'flatten it first; these tests start from flat')
         if need_live and (engine.get('execution') or {}).get('mode') != 'LIVE':
+            # Just armed? The engine publishes its state a moment after it
+            # answers: wait for it before calling it PAPER.
+            try:
+                self.until('orders going to TT', lambda s: ((s.get('engine') or {})
+                           .get('execution') or {}).get('mode') == 'LIVE', 3)
+                engine = (self.snap().get('engine') or {})
+            except Failed:
+                pass
+        if need_live and (engine.get('execution') or {}).get('mode') != 'LIVE':
             raise Failed("the Algo's orders are on PAPER (filled here) — they must go "
                          "to TT UAT for these checks: press Check Algo orders, which "
                          "asks to send them there")
@@ -709,7 +718,7 @@ class Runner:
         closes = [m for m in self._algo_sent() if m.get('77') == 'C']
         if not closes:
             raise Failed('no closing order (77=C) found in the FIX log')
-        closes.sort(key=lambda m: int(str(m.get('11', '0')).rsplit('-', 1)[-1] or 0))
+        closes.sort(key=lambda m: int(str(m.get('11', '0')).rsplit('-', 1)[-1] or '0', 36))
         close = closes[-1]
         want = '2' if side == 'BUY' else '1'
         if close.get('54') != want or 'Close P' not in close.get('58', ''):
@@ -769,7 +778,7 @@ class Runner:
         ref = (first.get('58') or '').split(' ')[:2]
         closes = [m for m in self._algo_sent() if m.get('77') == 'C'
                   and (m.get('58') or '').split(' ')[:2] == ref]
-        closes.sort(key=lambda m: int(str(m.get('11', '0')).rsplit('-', 1)[-1] or 0))
+        closes.sort(key=lambda m: int(str(m.get('11', '0')).rsplit('-', 1)[-1] or '0', 36))
         last = closes[-1] if closes else {}
         crossed = last.get('40') == '1' or (last.get('40') == '2' and last.get('59') == '3')
         if len(closes) != 2 or not crossed:

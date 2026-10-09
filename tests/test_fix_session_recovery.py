@@ -149,3 +149,36 @@ def test_tts_recovery_complete_is_recorded(session):
     tt.push(2, [('35', 'B'), ('148', 'Recovery complete')])
     settle()
     assert getattr(s.state, 'recovered_at', None)
+
+
+# -- TT: wait for "Recovery is complete" before sending requests ---------------
+
+def test_requests_wait_for_tts_recovery_complete_but_a_close_never_does(session):
+    gw, tt, s = session
+    assert not s.ready()                               # logged on, not recovered
+    with pytest.raises(ConnectionError, match='Recovery is complete'):
+        s.send('D', [('11', 'FTM-0123456789abcdef'), ('77', 'O'), ('54', '1')])
+    # The control: a close goes whatever — a close is never held back.
+    s.send('D', [('11', 'FTM-fedcba9876543210'), ('77', 'C'), ('54', '2')])
+    assert [m for m in tt.sent if m['35'] == 'D' and m['77'] == 'C']
+    tt.push(2, [('35', 'B'), ('148', 'Recovery Complete'), ('33', '1'),
+                ('58', 'Recovery is complete')])
+    settle()
+    assert s.ready()
+    s.send('D', [('11', 'FTM-0123456789abcdee'), ('77', 'O'), ('54', '1')])
+
+
+def test_without_tts_news_the_session_goes_ahead_after_a_short_wait(session, monkeypatch):
+    gw, tt, s = session
+    monkeypatch.setattr(type(s), 'READY_FALLBACK_SEC', 0.05)
+    time.sleep(0.1)
+    assert s.ready()
+
+
+def test_a_session_reject_is_logged_with_its_reason_in_words(session):
+    gw, tt, s = session
+    tt.push(2, [('35', '3'), ('45', '5'), ('371', '1028'), ('372', 'D'), ('373', '5'),
+                ('58', 'Bad value')])
+    settle()
+    rows = gw.audit.read(50, '', 'Reject')
+    assert any('incorrect value' in str(r.get('details')) for r in rows)

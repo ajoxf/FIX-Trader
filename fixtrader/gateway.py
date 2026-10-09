@@ -147,6 +147,11 @@ class FixGateway:
         self._reconnect_at = time.monotonic() + 10
         self._text = 'Reconnecting in 10 seconds'
 
+    def order_session_ready(self) -> bool:
+        """Order Routing is logged on and TT's recovery is complete."""
+        s = self._sessions.get('Order Routing')
+        return bool(s is not None and getattr(s, 'ready', lambda: True)())
+
     def state(self):
         if self._reconnect_at is not None:
             return SessionState.CONNECTING
@@ -471,6 +476,10 @@ def parse_fix_message(raw: str) -> dict[str, str]:
 class NativeFixSession:
     """Small threaded FIX 4.2 initiator for TT UAT; no native extension needed."""
     native_fix = True
+    #: TT sends News (B) "Recovery is complete" after logon and asks clients
+    #: to wait for it before sending requests. If it never comes, the
+    #: session goes ahead after this long — said in the FIX log.
+    READY_FALLBACK_SEC = 5.0
 
     def __init__(self, svc, state, session_name, cfg, on_execution_report=None, on_market_data=None,
                  on_security_definition=None, on_market_data_reject=None):
@@ -488,7 +497,27 @@ class NativeFixSession:
         self.pending: dict = {}
         self.resend_from: int = 0
         self.test_request_id = None
+        self.logon_monotonic = None
+        self._fallback_said = False
         self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def ready(self) -> bool:
+        """Logged on AND TT's recovery is complete (News B) — or, if TT
+        never says so, READY_FALLBACK_SEC after the logon."""
+        if self.state.status != 'CONNECTED':
+            return False
+        if getattr(self.state, 'ready', False):
+            return True
+        if (self.logon_monotonic is not None
+                and time.monotonic() - self.logon_monotonic >= self.READY_FALLBACK_SEC):
+            if not self._fallback_said:
+                self._fallback_said = True
+                self.svc.audit.write(level='WARNING', category='FIX Session',
+                                     session=self.session_name, direction='LOCAL',
+                                     event='No Recovery Complete from TT', sequence='',
+                                     details={'waited_sec': self.READY_FALLBACK_SEC})
+            return True
+        return False
 
     def start(self):
         with self.state.lock:
@@ -524,6 +553,13 @@ class NativeFixSession:
                 raise NotImplementedError('Use a reviewed manual order ticket')
             if self.state.status != 'CONNECTED':
                 raise ConnectionError('FIX session is not logged on')
+            # TT: nothing but a close until its recovery is complete — a
+            # close is never held back.
+            opening = msg_type == 'D' and dict(fields).get('77') != 'C'
+            if (opening or msg_type in ('V', 'c', 'AN', 'H')) and not self.ready():
+                raise ConnectionError('TT is still recovering after the logon '
+                                      '(waiting for its "Recovery is complete") — '
+                                      'try again in a moment')
         with self.send_lock:
             with self.state.lock:
                 self.state.out_seq += 1
@@ -753,6 +789,9 @@ class NativeFixSession:
             with self.state.lock:
                 self.state.status, self.state.error = "CONNECTED", ""
                 self.state.last_logon = datetime.now(timezone.utc).isoformat()
+                self.state.ready = False
+            self.logon_monotonic = time.monotonic()
+            self._fallback_said = False
         elif msg_type == "5":
             with self.state.lock:
                 self.state.status = "ERROR"
@@ -766,18 +805,22 @@ class NativeFixSession:
             # A session-level Reject names one message of ours that TT
             # refused; the session itself is fine (FIX: never disconnect on a
             # Reject). Its reason reaches the page that sent it.
+            from .manual_terminal import SESSION_REJECT_REASONS
             self.svc.audit.write(level='WARNING', category='FIX Session', session=self.session_name,
                                  direction='IN', event='Reject', sequence=seq,
                                  details={'ref_seq': fields.get('45', ''),
                                           'ref_msg': fields.get('372', ''),
+                                          'ref_tag': fields.get('371', ''),
+                                          'why': SESSION_REJECT_REASONS.get(fields.get('373', ''), ''),
                                           'reason': self.svc._redact(fields.get('58', ''))})
         elif msg_type == "2":
             self._gap_fill(fields)
-        elif msg_type == "B" and self.session_name == "Order Routing":
-            # TT's News: its recovery after a (re)connect is complete — every
-            # execution report we missed has been delivered.
+        elif msg_type == "B":
+            # TT's News "Recovery is complete": the order book download (and
+            # on Market Data, the session) is ready — requests may go now.
             with self.state.lock:
                 self.state.recovered_at = datetime.now(timezone.utc).isoformat()
+                self.state.ready = True
             self.svc.audit.write(level='INFO', category='FIX Session', session=self.session_name,
                                  direction='IN', event='TT recovery complete', sequence=seq,
                                  details={'text': self.svc._redact(fields.get('148', '') or fields.get('58', ''))})
@@ -853,8 +896,14 @@ class AlgoOrderRouter:
     # -- ids -----------------------------------------------------------------
 
     def _next_id(self) -> str:
+        """FT-<ms in hex>-<count in base 36>: TT allows a ClOrdID of 20
+        characters at most, and a decimal count passed it at 100,000."""
         self.seq += 1
-        return f"{self.prefix}-{self.seq}"
+        n, digits = self.seq, ''
+        while n:
+            n, r = divmod(n, 36)
+            digits = '0123456789abcdefghijklmnopqrstuvwxyz'[r] + digits
+        return f"{self.prefix}-{digits or '0'}"
 
     def owns(self, clordid: Optional[str]) -> bool:
         return bool(clordid) and clordid in self.ids
@@ -1212,7 +1261,7 @@ class AlgoOrderRouter:
     def request_positions(self, now_monotonic: float) -> None:
         """Ask TT for the account's positions, once per logon."""
         session = self._session()
-        if session is None:
+        if session is None or not getattr(session, 'ready', lambda: True)():
             return
         logon = session.state.last_logon
         with self.lock:

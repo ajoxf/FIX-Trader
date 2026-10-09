@@ -19,6 +19,9 @@ def test_review_send_and_execution_use_native_fix_wire(monkeypatch):
             if fields['35']=='D':
                 reply += [('11',fields['11']),('37','TT-ORDER'),('39','2'),('150','2'),('17','FILL1'),('14','1'),('151','0'),('31',fields['44']),('32','1'),('6',fields['44'])]
             self.frames.append(encode_fix_message(reply))
+            if fields['35']=='A':      # TT: "Recovery is complete" after the logon
+                self.seq+=1
+                self.frames.append(encode_fix_message([('35','B'),('34',str(self.seq)),('49','TT'),('56',fields['49']),('148','Recovery Complete'),('33','1'),('58','Recovery is complete')]))
         def recv(self, _):
             if self.frames:return self.frames.pop(0)
             time.sleep(.005);raise socket.timeout()

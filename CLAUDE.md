@@ -263,6 +263,12 @@ the drawing wins.
   not applied twice; TT's News (B) records that its recovery is complete;
   a quiet line gets a TestRequest before it is given up. Only a number
   already used and not marked as a resend stops it.
+  TT sends News (B) "Recovery is complete" after every logon and asks
+  clients to wait for it: price requests, definition requests, the
+  positions request, the startup sweep and NEW orders wait for it
+  (`NativeFixSession.ready`, a 5 s fallback if TT never says) — a CLOSE
+  (77=C) never waits. ClOrdID (11) is at most 20 characters (TT): FTM- +
+  16 hex for manual tickets, FT-<ms hex>-<base 36> for the Algo.
 - **TT positions: asked for, never assumed.** A Request For Positions (AN)
   goes at each logon. Answered (AO/AP), `positions()` is the account and the
   book reconciles; refused (j, or a 35=3 naming AN — which must NOT stop the

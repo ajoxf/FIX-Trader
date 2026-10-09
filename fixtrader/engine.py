@@ -1402,6 +1402,10 @@ class Engine:
             return
         try:
             up = self.gateway.state().value == 'LOGGED_ON'
+            # TT: wait for its "Recovery is complete" — the replay of what we
+            # missed — before cancelling a previous run's orders.
+            ready = getattr(self.gateway, 'order_session_ready', None)
+            up = up and (ready() if callable(ready) else True)
         except Exception:                                # noqa: BLE001
             up = False
         if up and not self._swept_previous:
