@@ -10,7 +10,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 
 from . import slippage as slippage_mod
 
@@ -147,6 +147,10 @@ class ManualTerminal:
         #: here, in the terminal, so no page or command can go round it.
         #: Closes and cancels never ask.
         self.mode_block = lambda ticket=None: None
+        #: Ticks THROUGH the touch a MARKET ticket goes as a limit (IOC), by
+        #: Security ID — set by the engine from the contract's settings. 0 is
+        #: a true market order.
+        self.market_ticks = lambda security_id: 0.0
         self.watch = self._load('watch')
         for instrument in self.watch.values():
             self._enrich(instrument)
@@ -806,9 +810,37 @@ class ManualTerminal:
             fields.append(('18', 'o 2'))
         return fields
 
+    def _marketable(self, ticket):
+        """A MARKET ticket as an exchange takes it: a LIMIT N ticks THROUGH
+        the touch, immediate-or-cancel — it fills now or not at all, like a
+        market order, at a price the exchange's band accepts. CME via TT
+        prices a bare market order itself and REJECTS it outside the band;
+        on a close, that is a position that stays open. With no fresh quote
+        or no tick it stays a true market order: a close is never withheld
+        for want of a price."""
+        if ticket.get('order_type') != 'MARKET':
+            return ticket
+        try:
+            ticks = Decimal(str(self.market_ticks(ticket['security_id']) or 0))
+            tick = Decimal(str(ticket['instrument'].get('tick_size') or 0))
+        except (InvalidOperation, ValueError, TypeError):
+            return ticket
+        touch = self._touch(ticket)['price']
+        if ticks <= 0 or tick <= 0 or touch is None:
+            return ticket
+        buy = ticket['side'] == 'BUY'
+        raw = Decimal(str(touch)) + (ticks * tick if buy else -ticks * tick)
+        steps = (raw / tick).to_integral_value(rounding=ROUND_CEILING if buy else ROUND_FLOOR)
+        price = (steps * tick).normalize()
+        ticket['order_type'] = 'LIMIT'
+        ticket['price'] = format(price, 'f')
+        ticket['tif'] = 'IOC'
+        ticket['market_as_limit'] = {'ticks': float(ticks), 'touch': touch}
+        return ticket
+
     def _preview(self, args, risk_reducing=False):
         with self.lock:
-            ticket = self._validate(args, risk_reducing)
+            ticket = self._marketable(self._validate(args, risk_reducing))
             token = uuid.uuid4().hex
             self.previews = {k: v for k, v in self.previews.items() if v['expires'] > time.time()}
             self.previews[token] = {'ticket': ticket, 'expires': time.time() + 60}
@@ -841,6 +873,37 @@ class ManualTerminal:
                     out.append(f"{name}: working manual order {order['id']}")
                 elif self.closeable(order) > 0:
                     out.append(f"{name}: {self.closeable(order)} filled on {order['id']} not yet closed")
+            return out
+
+    def close_alerts(self):
+        """Manual positions whose LAST close did not happen — TT refused it,
+        or a fill-or-cancel close found nothing — and that are still open.
+        Said on the ladder and the Trading Monitor, in TT's words, until a
+        later close fills or the position is flat."""
+        with self.lock:
+            out = []
+            for source in self.orders.values():
+                open_qty = self.closeable(source)
+                if open_qty <= 0:
+                    continue
+                children = [c for c in self.orders.values() if c.get('close_of') == source['id']]
+                if not children:
+                    continue
+                last = max(children, key=lambda c: c.get('updated') or '')
+                ticket = source['ticket']
+                name = ticket['instrument'].get('display_name') or ticket.get('security_id')
+                held = f"still {'long' if ticket['side'] == 'BUY' else 'short'} {open_qty:g} {name}"
+                if last['status'] == 'REJECTED':
+                    text = f"Your close was REJECTED — {held}. TT: {last.get('text') or 'no reason given'}"
+                elif (last['status'] in ('CANCELED', 'EXPIRED') and not last.get('filled_qty')
+                      and last['ticket'].get('tif') == 'IOC'):
+                    text = (f"Your close did not fill — the price moved before it got there; "
+                            f"{held}. Press CLOSE ALL again, or Close @ LMT.")
+                else:
+                    continue
+                out.append({'security_id': str(ticket.get('security_id')),
+                            'order_id': source['id'], 'close_id': last['id'],
+                            'text': text, 'at': last.get('updated')})
             return out
 
     def closeable(self, order):
@@ -1182,6 +1245,7 @@ class ManualTerminal:
                     for o in list(self.orders.values())[-200:][::-1]],
                 'fills': [json.loads(row[0]) for row in self.db.execute('SELECT data FROM manual_fills ORDER BY rowid DESC LIMIT 100')],
                 'errors': self.errors, 'account': self.gateway.venue.account, 'pnl': pnl,
+                'close_alerts': self.close_alerts(),
                 'slippage': slippage_mod.manual_summary(self.slippage_rows()),
                 'risk': copy.deepcopy(self.risk),
                 'order_types': list(ORDER_TYPES), 'tifs': list(TIFS)})

@@ -588,7 +588,12 @@ def test_an_escalation_waits_for_the_cancel_to_land(tmp_path):
     slow.let_the_cancel_through()
     engine.poll(now=later)                   # the CANCELLED event is drained
     assert len(sent) == 1                    # NOW it crosses
-    assert sent[0].order_type is OrderType.MARKET
+    # "At market" as an exchange takes it: a limit THROUGH the touch, IOC.
+    from fixtrader.models import TimeInForce
+    req = sent[0]
+    assert req.order_type is OrderType.LIMIT and req.tif is TimeInForce.IOC
+    touch = gw.top_of_book('fef').executable(req.side)
+    assert (req.price >= touch) if req.side.value == 'BUY' else (req.price <= touch)
 
 
 def test_a_limit_that_fills_while_the_cancel_is_in_flight_is_not_replaced(tmp_path):

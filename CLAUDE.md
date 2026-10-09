@@ -157,6 +157,21 @@ the drawing wins.
 - **Unmeasured is not zero.** Return `None` and render `—`. A target of 0.00
   reads as "get out at break-even", which is a different instruction; a
   net P&L that quietly means gross makes a losing system look profitable.
+- **"At market" goes as a LIMIT through the touch, immediate-or-cancel**
+  (`market_limit_ticks`, default 2; 0 = a true market order): a buy at the
+  offer + N ticks, a sell at the bid - N, 59=3 — manual tickets
+  (`ManualTerminal._marketable`) and the Algo (`Executor.place`,
+  `through_price`) alike. CME via TT gives a bare market order its own
+  protection price and REJECTS it outside the price band ("Bid of 7941.25
+  violates High Band 7872.00") — a close that never happens. With no fresh
+  quote or no tick it stays a true market order: a close is never withheld
+  for want of a price. The IOC is never re-pegged.
+- **A close that did not happen is said loudly** — refused by TT, or an IOC
+  close that found nothing — while the position is still open: the Algo's
+  in `close_alert` (engine), a manual ticket's in `close_alerts`
+  (ManualTerminal, computed from the orders, never stale), in red on the
+  ladder and first on the Trading Monitor's Positions tab, in TT's words,
+  until a later close fills or the position is flat.
 - **A guard may withhold an ORDER. A guard must never prevent a close** — and
   nothing withholds the escalation to market on an exit.
 - **A refusal carries the venue's own words** (`tag 58: "Instrument not open

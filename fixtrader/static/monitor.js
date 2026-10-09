@@ -180,6 +180,16 @@ window.TradingMonitor = function (root, opts) {
       : ' <span class="dn">≠ book</span>');
   }
 
+  /* A close that did NOT happen — refused by TT, or a fill-or-cancel close
+   * that found nothing — while the position is still open. First thing on
+   * the Positions tab, in red, in TT's words. */
+  function closeAlerts() {
+    const out = [];
+    contracts().forEach((c) => { if (c.close_alert) out.push(c.close_alert.text); });
+    (manual().close_alerts || []).forEach((a) => out.push(a.text));
+    return out.map((t) => '<div class="mon-check bad mon-closealert">' + esc(t) + '</div>').join('');
+  }
+
   function positionsPane() {
     const p = portfolio(), rows = p.rows || [], pnl = manual().pnl || {};
     const head = '<table class="mon"><thead><tr><th>Contract</th><th>Origin</th><th>Side</th>' +
@@ -188,7 +198,7 @@ window.TradingMonitor = function (root, opts) {
       '<th class="r">Slip</th><th class="r">Entry z</th><th class="r">z now</th>' +
       '<th class="r">Break-even</th><th class="r">Target</th><th class="r">Stop</th>' +
       '<th class="r">Held</th><th>TT says</th><th></th></tr></thead><tbody>';
-    let html = head, any = false;
+    let html = closeAlerts() + head, any = false;
     rows.forEach((r) => {
       any = true;
       const d = has(r.decimals) ? r.decimals : 4;

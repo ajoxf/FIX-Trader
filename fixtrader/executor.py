@@ -62,6 +62,8 @@ class WorkingOrder:
         #: re-pegged and never timed out — it waits there until it fills,
         #: is cancelled, or CLOSE ALL escalates it to market.
         self.pinned = False
+        #: A MARKET order sent as a LIMIT through the touch, IOC.
+        self.marketable = False
 
     @property
     def remaining(self) -> float:
@@ -129,6 +131,22 @@ def limit_price(book, side: Side, offset_ticks: float,
         else anchor + offset_ticks * tick_size
     return sizing.round_to_tick(raw, tick_size,
                                 'down' if side is Side.BUY else 'up')
+
+
+def through_price(book, side: Side, ticks: float,
+                  tick_size: Optional[float]) -> Optional[float]:
+    """A MARKET order's price as a LIMIT: `ticks` THROUGH its own touch — a
+    BUY at the offer + N ticks, a SELL at the bid - N. Rounded through the
+    market, so it still crosses. None where there is no touch or no tick (a
+    true market order then goes: a close is never withheld for want of a
+    price), or where ticks is 0 (asked for a true market order)."""
+    if book is None or not tick_size or not ticks or ticks <= 0:
+        return None
+    touch = book.executable(side)
+    if touch is None:
+        return None
+    raw = touch + ticks * tick_size if side is Side.BUY else touch - ticks * tick_size
+    return sizing.round_to_tick(raw, tick_size, 'up' if side is Side.BUY else 'down')
 
 
 class Executor:
@@ -199,10 +217,23 @@ class Executor:
             return None
 
         price = None
+        tif = TimeInForce(settings.get('time_in_force', 'DAY'))
+        marketable = False
+        if limit_price_at is None and order_type is OrderType.MARKET:
+            # "Market" as an exchange takes it: a LIMIT N ticks through the
+            # touch, fill-or-cancel. A bare market order is priced by the
+            # exchange itself and REJECTED outside its price band — on a
+            # close, that is a position that stays open.
+            through = through_price(book, side,
+                                    float(settings.get('market_limit_ticks') or 0),
+                                    contract.tick_size)
+            if through is not None:
+                order_type, price, tif, marketable = (OrderType.LIMIT, through,
+                                                      TimeInForce.IOC, True)
         if limit_price_at is not None:
             # The trader's own price: a LIMIT at exactly that level.
             order_type, price = OrderType.LIMIT, float(limit_price_at)
-        elif order_type is OrderType.LIMIT:
+        elif order_type is OrderType.LIMIT and not marketable:
             price = limit_price(book, side,
                                 float(settings.get(f'{prefix}_limit_offset_ticks',
                                                    1.0) or 0.0),
@@ -217,7 +248,7 @@ class Executor:
         req = OrderRequest(
             contract_key=contract.key, side=side, qty=qty,
             order_type=order_type, intent=intent, price=price,
-            tif=TimeInForce(settings.get('time_in_force', 'DAY')),
+            tif=tif,
             # reduce_only is a CAP, not an instruction. It is sent as well as
             # the effect, never instead of it.
             reduce_only=(intent is Intent.CLOSE), reason=reason,
@@ -232,7 +263,9 @@ class Executor:
                           price, now, touch, reason,
                           position_id or getattr(position, 'id', None))
         wo.position_effect = effect
-        wo.pinned = limit_price_at is not None
+        # A marketable IOC is never re-pegged: it fills or is gone at once.
+        wo.pinned = limit_price_at is not None or marketable
+        wo.marketable = marketable
         self.working[clordid] = wo
         self.intents[clordid] = intent
         if decision is not None:

@@ -1412,6 +1412,22 @@ function renderLadder(c, engine) {
   }
   el.classList.toggle('algo-locked', !manualOn);
 
+  // A close that did NOT happen, said loudly on the ladder: the Algo's (in
+  // the engine's words) or a manual ticket's (in TT's), until a close fills.
+  const alerts = [];
+  if (c.close_alert) alerts.push(c.close_alert.text);
+  ((term || {}).close_alerts || []).forEach((a) => {
+    if (String(a.security_id) === String(c.security_id)) alerts.push(a.text);
+  });
+  let ca = el.querySelector('.ld-closealert');
+  if (!ca) {
+    ca = document.createElement('div');
+    ca.className = 'ld-closealert';
+    lock.insertAdjacentElement('afterend', ca);
+  }
+  ca.hidden = !alerts.length;
+  ca.textContent = alerts.join(' · ');
+
   // The rail.
   el.querySelector('.ld-rb-sym').innerHTML = 'Contract <b>' + esc(c.symbol || c.name) + '</b>';
   el.querySelector('.ld-rb-id').innerHTML = 'TT ID <b>' + esc(c.security_id || DASH) + '</b>';
@@ -2423,10 +2439,18 @@ function renderChrome(snap) {
       'record, on your confirmation. A position opened in TT by other ' +
       'means on this account is invisible to the Algo.';
   } else if (engine.book_complete === false) {
-    banner.classList.remove('hidden');
-    banner.classList.add('critical');
-    banner.textContent = 'The venue could not be read, so this book is ' +
-      'INCOMPLETE. Nothing will be closed automatically.';
+    // Not an error in trading: TT has not told us the account's positions,
+    // so this book cannot be checked against TT's. Said with the reason and
+    // with what still works — "nothing will be closed" read as "my closes
+    // will not work", which is not what it meant.
+    const why = ((engine.execution || {}).positions || {}).why;
+    banner.classList.remove('hidden', 'critical');
+    banner.classList.add('warn');
+    banner.textContent = 'TT has not sent this account\'s positions' +
+      (why ? ' (' + why + ')' : '') + ', so this program cannot check its own ' +
+      'book against TT\'s. Your orders and closes work normally — CLOSE ALL, ' +
+      'Close @ LMT, the Algo\'s take-profit and stop loss. Only the Reconciler ' +
+      'waits: it closes nothing on its own until TT\'s positions are known.';
   } else {
     banner.classList.add('hidden');
   }
@@ -2597,6 +2621,7 @@ const CFG_GROUPS = [
     ['exit_order_type', 'Exit', '', 'select', { options: [['MARKET', 'Market'], ['LIMIT', 'Limit']] }],
     ['entry_limit_offset_ticks', 'Entry priced behind its touch', 'ticks', 'number', { step: 1, min: 0 }],
     ['exit_limit_offset_ticks', 'Exit priced behind its touch', 'ticks &mdash; patience going in and coming out are different decisions', 'number', { step: 1, min: 0 }],
+    ['market_limit_ticks', 'Market orders as a limit', 'ticks through the best price, fill-or-cancel &mdash; an exchange rejects a bare market order outside its price band; 0 = true market', 'number', { step: 1, min: 0 }],
     ['entry_limit_timeout_sec', 'Entry unfilled after', 'seconds', 'number', { step: 1, min: 0 }],
     ['exit_limit_timeout_sec', 'Exit unfilled after', 'seconds', 'number', { step: 1, min: 0 }],
     ['entry_on_timeout', 'then the entry', '', 'select', { options: [['CANCEL', 'Cancel'], ['CROSS_AT_MARKET', 'Cross at market']] }],

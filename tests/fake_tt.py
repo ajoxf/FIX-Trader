@@ -44,6 +44,9 @@ class Exchange:
         #: Every message the program SENT, by ClOrdID — the tags it put on
         #: the wire, for a test to read back.
         self.orders_in = []
+        #: When set, every new order is REJECTED with these words — as CME
+        #: via TT rejects an order priced outside its band.
+        self.reject_text = None
 
     # -- the market ----------------------------------------------------------
 
@@ -150,6 +153,10 @@ class Exchange:
                          t14=0, t151=0,
                          t58=f"Account {order['account']} is not found")
             return
+        if self.reject_text:
+            self._report(order, t17=self.next_exec('J'), t150='8', t39='8',
+                         t14=0, t151=0, t58=self.reject_text)
+            return
         book = self.books.get(sid)
         if book is None:
             self._report(order, t17=self.next_exec('J'), t150='8', t39='8',
@@ -169,6 +176,9 @@ class Exchange:
             self._fill(order, touch)
         elif (buy and order['price'] >= touch) or (not buy and order['price'] <= touch):
             self._fill(order, touch)                     # marketable LIMIT
+        elif f.get('59') == '3':                         # IOC: fill now or never
+            self._report(order, t17=self.next_exec('C'), t150='4', t39='4',
+                         t14=0, t151=0)
         else:
             self.resting[order['current']] = order       # rests in the book
 

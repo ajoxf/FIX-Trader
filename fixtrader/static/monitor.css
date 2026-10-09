@@ -76,3 +76,5 @@
 .tmonwin .tmon table.mon tr.detail td{background:#cdc9c1}
 .tmonwin .tmon .mon-note{background:#ecebe8;border-top-color:#a0a0a0}
 .tmon .pad{padding:6px 10px}
+
+.tmon .mon-check.mon-closealert{font-weight:700;font-size:13px;border-width:2px;border-color:#b03030}

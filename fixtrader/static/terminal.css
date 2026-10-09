@@ -1031,3 +1031,8 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 .ladderwin .ld-lock.algo-test { background: #5b3a8c; }
 /* Embedded in the Order tests page: the page has its own navigation. */
 html.embed-uat .app-nav { display: none; }
+
+/* A close that did not happen: on the ladder, under the lock banner. */
+.ladderwin .ld-closealert { background: #fff0f0; color: #8d1f1f; border: 2px solid #b03030;
+  font: 700 calc(11px * var(--fs))/1.35 var(--ui); padding: 5px 8px; }
+.ladderwin .ld-closealert[hidden] { display: none; }

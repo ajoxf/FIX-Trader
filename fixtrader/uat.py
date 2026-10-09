@@ -455,6 +455,17 @@ class Runner:
         tick = float(c.get('tick_size') or 0.01)
         return float(m['bid']), float(m['ask']), tick, int(c.get('decimals') or 4)
 
+    def at_market(self, v):
+        """An order "at market": a true market order (40=1), or — as the
+        desk sends it, so an exchange's price band accepts it — a limit
+        through the touch (40=2) that is immediate-or-cancel."""
+        return v in ('1', '2')
+    at_market.said = '1 (market) or 2 (a limit through the touch, IOC)'
+
+    def at_market_tif(self, v):
+        return v in ('3', '0', None, '')
+    at_market_tif.said = '3 (IOC) for a limit sent at market'
+
     def factor(self):
         """TT's DisplayFactor (9787) for this contract: screen price = FIX
         price x factor. 1 where TT gave none."""
@@ -636,19 +647,19 @@ class Runner:
             note = f'take-profit waited at {far}, cancelled; '
         cl = self.manual_close(oid)
         self.manual_status(cl, ('FILLED',), 'the close filled')
-        self.tags(cl, t77='C', t40='1', t54=close_side)
+        self.tags(cl, t77='C', t54=close_side, t40=self.at_market, t59=self.at_market_tif)
         self.until('flat again — no manual position left', lambda s: not self.manual_open(s))
         verb = 'bought' if side == 'BUY' else 'sold'
         return note + f'{verb} at {fill.get("avg_price")}, closed — flat'
 
     def m3(self):
         oid = self.manual('BUY', 'MARKET')
-        self.tags(oid, t40='1', t77='O', t54='1')
+        self.tags(oid, t77='O', t54='1', t40=self.at_market, t59=self.at_market_tif)
         return self._manual_round_trip(oid)
 
     def m7(self):
         oid = self.manual('SELL', 'MARKET')
-        self.tags(oid, t40='1', t77='O', t54='2')
+        self.tags(oid, t77='O', t54='2', t40=self.at_market, t59=self.at_market_tif)
         return self._manual_round_trip(oid, side='SELL')
 
     def m4(self):
@@ -687,7 +698,8 @@ class Runner:
     def a1(self, side='BUY'):
         cid = self.algo_open(side, 'MARKET')
         self.tags(cid, t11=lambda v: str(v).startswith('FT-'), t77='O', t1028='N',
-                  t40='1', t54='1' if side == 'BUY' else '2', t1=lambda v: bool(v))
+                  t54='1' if side == 'BUY' else '2', t1=lambda v: bool(v),
+                  t40=self.at_market, t59=self.at_market_tif)
         pos = self.until('the Algo position on the book', lambda s: self.algo_position(s))
         tickets = pos.get('tickets') or []
         if not tickets or any(str(t).startswith('PAPER-') for t in tickets):
@@ -758,7 +770,9 @@ class Runner:
         closes = [m for m in self._algo_sent() if m.get('77') == 'C'
                   and (m.get('58') or '').split(' ')[:2] == ref]
         closes.sort(key=lambda m: int(str(m.get('11', '0')).rsplit('-', 1)[-1] or 0))
-        if len(closes) != 2 or closes[-1].get('40') != '1':
+        last = closes[-1] if closes else {}
+        crossed = last.get('40') == '1' or (last.get('40') == '2' and last.get('59') == '3')
+        if len(closes) != 2 or not crossed:
             raise Failed(f'expected the resting close then ONE market close, '
                          f'saw {[(m.get("11"), m.get("40")) for m in closes]}')
         return f'take-profit at {far} cancelled, then closed at market once — flat'

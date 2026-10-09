@@ -174,6 +174,14 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     'DEFAULT_EXIT_ORDER_TYPE': OrderType.MARKET.value,
     'DEFAULT_ENTRY_LIMIT_OFFSET_TICKS': 1.0,
     'DEFAULT_EXIT_LIMIT_OFFSET_TICKS': 1.0,
+    #: A MARKET order goes to the exchange as a LIMIT this many ticks
+    #: THROUGH the touch (a buy at the offer + N, a sell at the bid - N),
+    #: immediate-or-cancel: it fills now or not at all, like a market order,
+    #: but with a price an exchange's price band accepts. CME (via TT) gives
+    #: a bare market order its own protection price and REJECTS it when that
+    #: is outside the band — a close that never happens. 0 sends a true
+    #: market order.
+    'DEFAULT_MARKET_LIMIT_TICKS': 2.0,
     'DEFAULT_ENTRY_LIMIT_TIMEOUT_SEC': 30.0,
     'DEFAULT_EXIT_LIMIT_TIMEOUT_SEC': 30.0,
     #: A missed ENTRY is a trade not taken; a missed EXIT is a position you
@@ -250,6 +258,7 @@ CONTRACT_DEFAULTS: Dict[str, str] = {
     'exit_order_type': 'DEFAULT_EXIT_ORDER_TYPE',
     'entry_limit_offset_ticks': 'DEFAULT_ENTRY_LIMIT_OFFSET_TICKS',
     'exit_limit_offset_ticks': 'DEFAULT_EXIT_LIMIT_OFFSET_TICKS',
+    'market_limit_ticks': 'DEFAULT_MARKET_LIMIT_TICKS',
     'entry_limit_timeout_sec': 'DEFAULT_ENTRY_LIMIT_TIMEOUT_SEC',
     'exit_limit_timeout_sec': 'DEFAULT_EXIT_LIMIT_TIMEOUT_SEC',
     'entry_on_timeout': 'DEFAULT_ENTRY_ON_TIMEOUT',
@@ -530,6 +539,7 @@ class ContractConfig:
                         'entry_cooldown_seconds', 'entry_limit_offset_ticks',
                         'exit_limit_offset_ticks', 'entry_limit_timeout_sec',
                         'exit_limit_timeout_sec', 'repeg_dead_band_ticks',
+                        'market_limit_ticks',
                         'commission_per_contract', 'exchange_fee_per_contract',
                         'clearing_fee_per_contract', 'slippage_budget_ticks',
                         'profit_target_pct',

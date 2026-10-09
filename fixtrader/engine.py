@@ -104,6 +104,11 @@ class ContractRuntime:
         self.halted_reason: Optional[str] = None
         #: TT's display factor this contract's prices are read in, as last
         #: seen; and why entries wait when TT has not said it.
+        #: A close that did NOT happen — refused by the venue, or a
+        #: fill-or-cancel close that found nothing — while the position is
+        #: still open. Said loudly on the ladder and the Trading Monitor
+        #: until the position is flat or a later close fills.
+        self.close_alert: Optional[Dict[str, Any]] = None
         self.units_seen: Optional[float] = None
         self.units_note: Optional[str] = None
         self.proposal: Optional[Dict[str, Any]] = None
@@ -172,6 +177,7 @@ class Engine:
         terminal = getattr(gateway, 'terminal', None)
         if terminal is not None:
             terminal.mode_block = self._manual_block
+            terminal.market_ticks = self._market_ticks
         #: Asked for from the screen, after a change only a restart takes on.
         #: The runner stops cleanly and the launcher starts it again.
         self.restart_requested: bool = False
@@ -385,6 +391,8 @@ class Engine:
         rt.book = book
         rt.guard.observe(book, now)
 
+        if rt.position is None or not rt.position.is_open:
+            rt.close_alert = None                # flat: nothing left to close
         record = self._price_units(rt, now)
         armed = bool(contract.algo_on and self.master_algo and not self.killed)
         if record and market_updated and book is not None and book.usable:
@@ -936,8 +944,12 @@ class Engine:
         rt = self.runtimes.get(event.contract_key)
         contract = rt.contract if rt else None
         intent = self.executor.intent_of(event.clordid)
+        wo_before = self.executor.working.get(event.clordid)
+        marketable = bool(getattr(wo_before, 'marketable', False))
         self.executor.apply_event(
             event, contract.tick_size if contract else None, now)
+        if rt is not None and intent is Intent.CLOSE:
+            self._close_outcome(rt, event, marketable, now)
 
         if rt is None:
             return
@@ -960,6 +972,35 @@ class Engine:
             self._say(rt, "REJECT", f"cancel/replace refused: {event.text}")
             if self.executor.is_adopted(event.clordid):
                 self.executor.release(event.clordid)
+
+    def _close_outcome(self, rt: ContractRuntime, event, marketable: bool,
+                       now: datetime) -> None:
+        """A close that did not happen is said loudly, in the venue's words —
+        never left as one line in an orders table while the money sits there."""
+        pos = rt.position
+        vo = event.order
+        filled = float(getattr(vo, 'filled_qty', 0) or 0) if vo is not None else 0.0
+        if event.kind in ('FILL', 'PARTIAL'):
+            rt.close_alert = None
+            return
+        if pos is None or not pos.is_open:
+            return
+        held = (f"still {'long' if pos.side is Side.BUY else 'short'} "
+                f"{pos.qty:g} {rt.contract.name}")
+        if event.kind == 'REJECTED':
+            why = event.text or 'no reason given'
+            text = f"Your close was REJECTED — {held}. TT: {why}"
+        elif event.kind in ('CANCELLED', 'EXPIRED') and marketable and filled <= 0:
+            text = (f"Your close did not fill — the price moved before it got "
+                    f"there; {held}. Press CLOSE ALL again, or Close @ LMT.")
+        else:
+            return
+        seq = ((rt.close_alert or {}).get('seq') or 0) + 1
+        rt.close_alert = {'seq': seq, 'text': text, 'at': now.isoformat(),
+                          'clordid': event.clordid}
+        if event.kind != 'REJECTED':          # a reject is said by the caller
+            self._say(rt, "REJECT", text)
+            self.notify("REJECT", rt.contract.key, text)
 
     def _apply_fill(self, rt: ContractRuntime, event, intent: Intent,
                     now: datetime, simulated: Optional[bool] = None) -> None:
@@ -1225,6 +1266,22 @@ class Engine:
         if key in self.dry_run or not self.auto_trade_enabled:
             return 'DRY'
         return 'PAPER' if self.paper else 'LIVE'
+
+    def _market_ticks(self, security_id) -> float:
+        """How many ticks through the touch a manual MARKET ticket goes as a
+        limit: the contract's own setting, or the desk's for an instrument
+        that is not on the desk."""
+        key = self._contract_for_security(security_id)
+        if key is not None:
+            value = self.config.effective(key).get('market_limit_ticks')
+        else:
+            value = self.config.settings.get('DEFAULT_MARKET_LIMIT_TICKS',
+                                             config_mod.DEFAULT_SETTINGS.get(
+                                                 'DEFAULT_MARKET_LIMIT_TICKS', 0))
+        try:
+            return max(0.0, float(value or 0))
+        except (TypeError, ValueError):
+            return 0.0
 
     def _contract_for_security(self, security_id) -> Optional[str]:
         sid = str(security_id or '')
@@ -1959,6 +2016,8 @@ class Engine:
                 'tick_size': contract.tick_size,
                 'state': self.state_of(rt, now).value,
                 'halted_by': self.halted_by(rt, now),
+                'close_alert': (rt.close_alert if rt.position is not None
+                                and rt.position.is_open else None),
                 'market_note': self.market_note(rt),
                 'algo_on': bool(contract.algo_on),
                 'market': (book.to_dict() if book is not None else
