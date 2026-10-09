@@ -254,6 +254,15 @@ the drawing wins.
   working — a position at the venue does not become a paper one by a
   setting. PAPER fills at the live bid/offer with `PAPER-n` tickets and
   sends nothing.
+- **The FIX session RECOVERS, as TT's certification expects**
+  (`NativeFixSession`): a gap sends a ResendRequest (2) and holds what came
+  ahead of it until the gap is filled, so messages are applied in TT's
+  order; TT's ResendRequest is answered with a SequenceReset-GapFill — our
+  orders are NEVER resent; a SequenceReset moves the expected number; a
+  session Reject (3) never stops the session; a resent duplicate (43=Y) is
+  not applied twice; TT's News (B) records that its recovery is complete;
+  a quiet line gets a TestRequest before it is given up. Only a number
+  already used and not marked as a resend stops it.
 - **TT positions: asked for, never assumed.** A Request For Positions (AN)
   goes at each logon. Answered (AO/AP), `positions()` is the account and the
   book reconciles; refused (j, or a 35=3 naming AN — which must NOT stop the

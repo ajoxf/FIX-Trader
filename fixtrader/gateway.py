@@ -482,6 +482,12 @@ class NativeFixSession:
         self.stop_event = threading.Event()
         self.send_lock = threading.Lock()
         self.last_send_monotonic = 0.0
+        #: Messages TT sent AHEAD of a gap, held until the gap is filled so
+        #: the book sees them in TT's order (a FILLED never overtaken by the
+        #: NEW it followed). The resend we asked for, and our TestRequest.
+        self.pending: dict = {}
+        self.resend_from: int = 0
+        self.test_request_id = None
         self.thread = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
@@ -506,7 +512,9 @@ class NativeFixSession:
             pass
 
     def send(self, msg_type: str, fields: list[tuple[str, str]]):
-        if msg_type not in ("A", "0", "1", "5"):
+        # Session-level messages (Logon, Heartbeat, TestRequest, Resend,
+        # SequenceReset, Logout) go whatever the session's business list.
+        if msg_type not in ("A", "0", "1", "2", "4", "5"):
             if msg_type not in self.cfg.get('allowed_messages', ()):
                 raise NotImplementedError('This message is not enabled on this FIX session')
             # Only OUR orders go out: a reviewed manual ticket (FTM-) or the
@@ -585,7 +593,14 @@ class NativeFixSession:
 
                 if self.state.status == "CONNECTING" and time.monotonic() >= logon_deadline:
                     raise TimeoutError("TT did not answer the Logon request within 20 seconds")
-                if time.monotonic() - self.last_receive_monotonic > heartbeat_seconds * 2 + 5:
+                # Quiet for longer than a heartbeat: ask TT to prove it is
+                # there (TestRequest) before giving up on the session.
+                idle = time.monotonic() - self.last_receive_monotonic
+                if (self.state.status == "CONNECTED" and idle > heartbeat_seconds + 2
+                        and self.test_request_id is None):
+                    self.test_request_id = f"TEST-{int(time.time())}"
+                    self.send("1", [("112", self.test_request_id)])
+                if idle > heartbeat_seconds * 2 + 5:
                     raise TimeoutError("TT heartbeat timed out; reconnect the session")
         except Exception as exc:  # show the actual server/network reason in UI
             self.svc.audit.write(level='ERROR', category='Errors', session=self.session_name,
@@ -615,8 +630,34 @@ class NativeFixSession:
                 or fields.get('56') != self.cfg['sender_comp_id']):
             raise ValueError('Incoming FIX CompIDs do not match the configured session')
         msg_type, seq = fields.get("35", "?"), fields.get("34", "?")
-        if not seq.isdigit() or int(seq) != self.state.in_seq + 1:
-            expected = self.state.in_seq + 1
+        expected = self.state.in_seq + 1
+        if seq.isdigit() and msg_type == "4" and fields.get("123") != "Y":
+            # SequenceReset, Reset mode: TT sets the next number outright.
+            self._sequence_reset(fields, raw)
+            return
+        if seq.isdigit() and int(seq) < expected:
+            if fields.get("43") == "Y":
+                # A resent copy of something already applied: logged, not
+                # applied twice.
+                self.svc.log_fix(self.session_name, "IN", msg_type, seq, raw)
+                return
+        if seq.isdigit() and int(seq) > expected and msg_type not in ("5",):
+            # A GAP: messages were missed. Ask TT for them (ResendRequest,
+            # which TT honours) and hold this one until they arrive, so they
+            # are applied in TT's order. A Logon is applied at once — the
+            # session must come up to receive the resend.
+            self.svc.log_fix(self.session_name, "IN", msg_type, seq, raw)
+            if msg_type == "A":
+                # The session comes up now (the resend needs it); the Logon
+                # itself is applied again, in order, once the gap is filled.
+                with self.state.lock:
+                    self.state.status, self.state.error = "CONNECTED", ""
+                    self.state.last_logon = datetime.now(timezone.utc).isoformat()
+            self.pending[int(seq)] = raw
+            if self.resend_from != expected:
+                self._request_resend(expected, 0)
+            return
+        if not seq.isdigit() or int(seq) != expected:
             # A sequenced Logout still carries the server's actual rejection
             # reason in tag 58. Keep that evidence before reporting the gap;
             # previously the strict sequence check hid the most useful clue.
@@ -627,11 +668,81 @@ class NativeFixSession:
             raise ConnectionError(
                 f'FIX sequence mismatch on {msg_type}: expected {expected}, received {seq}. '
                 f'Session stopped; verify order status in TT before reconnecting.{detail}')
+        self._apply(fields, raw, msg_type, seq)
+        # The gap is filled up to here: what was held follows, in order.
+        while self.state.in_seq + 1 in self.pending:
+            held = self.pending.pop(self.state.in_seq + 1)
+            hf = parse_fix_message(held)
+            self._apply(hf, held, hf.get("35", "?"), hf.get("34", "?"), logged=True)
+        if not self.pending:
+            self.resend_from = 0
+
+    def _request_resend(self, begin: int, end: int) -> None:
+        """ResendRequest (2): everything from `begin` (0 = to the latest)."""
+        self.resend_from = begin
+        self.svc.audit.write(level='WARNING', category='FIX Session', session=self.session_name,
+                             direction='LOCAL', event='Sequence gap — resend requested',
+                             sequence=str(begin), details={'from': begin, 'to': end or 'latest'})
+        self.send("2", [("7", str(begin)), ("16", str(end))])
+
+    def _sequence_reset(self, fields, raw) -> None:
+        """SequenceReset (4): the next number TT will send is NewSeqNo (36),
+        in Reset mode or as a GapFill over messages it will not resend."""
+        self.svc.log_fix(self.session_name, "IN", "4", fields.get("34", ""), raw)
+        try:
+            new = int(fields.get("36", ""))
+        except ValueError:
+            return
+        with self.state.lock:
+            if new - 1 > self.state.in_seq or fields.get("123") != "Y":
+                self.state.in_seq = new - 1
+        while self.state.in_seq + 1 in self.pending:
+            held = self.pending.pop(self.state.in_seq + 1)
+            hf = parse_fix_message(held)
+            self._apply(hf, held, hf.get("35", "?"), hf.get("34", "?"), logged=True)
+        if not self.pending:
+            self.resend_from = 0
+
+    def _gap_fill(self, fields) -> None:
+        """Answer TT's ResendRequest (2) with a SequenceReset-GapFill: our
+        orders are NEVER resent — a stale order replayed is a new trade
+        nobody decided — and TT is told to move on to our next number."""
+        try:
+            begin = int(fields.get("7", "1") or 1)
+        except ValueError:
+            begin = 1
+        with self.send_lock:
+            with self.state.lock:
+                next_out = self.state.out_seq + 1
+            header = [("35", "4"), ("34", str(begin)), ("49", self.cfg["sender_comp_id"]),
+                      ("52", fix_timestamp()), ("56", self.cfg["target_comp_id"]),
+                      ("43", "Y"), ("122", fix_timestamp())]
+            if self.cfg.get("target_sub_id"):
+                header.append(("57", self.cfg["target_sub_id"]))
+            if self.cfg.get("on_behalf_of_comp_id"):
+                header.append(("115", self.cfg["on_behalf_of_comp_id"]))
+            if self.cfg.get("sender_sub_id"):
+                header.append(("50", self.cfg["sender_sub_id"]))
+            if self.cfg.get("on_behalf_of_sub_id"):
+                header.append(("116", self.cfg["on_behalf_of_sub_id"]))
+            payload = encode_fix_message(header + [("123", "Y"), ("36", str(next_out))])
+            if not self.socket:
+                return
+            self.socket.sendall(payload)
+            self.last_send_monotonic = time.monotonic()
+            self.svc.log_fix(self.session_name, "OUT", "4", str(begin), payload.decode("ascii"))
+
+    def _apply(self, fields, raw, msg_type, seq, logged=False):
         with self.state.lock:
             self.state.incoming_count += 1
             self.state.in_seq = int(seq) if seq.isdigit() else self.state.in_seq
             self.state.last_message = datetime.now(timezone.utc).isoformat()
-        self.svc.log_fix(self.session_name, "IN", msg_type, seq, raw)
+        self.test_request_id = None                 # TT is there
+        if not logged:
+            self.svc.log_fix(self.session_name, "IN", msg_type, seq, raw)
+        if msg_type == "4":                          # a GapFill, in sequence
+            self._sequence_reset(fields, raw)
+            return
         if msg_type in ('d', 'W', 'X', 'Y', 'j', '3', '8', '9'):
             self.svc.terminal.on_message(self.session_name, fields, raw)
         algo = getattr(self.svc, 'algo', None)
@@ -651,16 +762,25 @@ class NativeFixSession:
             self.state.last_heartbeat = datetime.now(timezone.utc).isoformat()
         elif msg_type == "1":
             self.send("0", [("112", fields.get("112", ""))])
-        elif msg_type == "3" and fields.get("372") == "AN":
-            # TT refusing our positions request is an ANSWER — positions
-            # unknown — not a broken session. Every other Reject still stops
-            # the session as before.
-            pass
-        elif msg_type in ("2", "3", "4"):
+        elif msg_type == "3":
+            # A session-level Reject names one message of ours that TT
+            # refused; the session itself is fine (FIX: never disconnect on a
+            # Reject). Its reason reaches the page that sent it.
+            self.svc.audit.write(level='WARNING', category='FIX Session', session=self.session_name,
+                                 direction='IN', event='Reject', sequence=seq,
+                                 details={'ref_seq': fields.get('45', ''),
+                                          'ref_msg': fields.get('372', ''),
+                                          'reason': self.svc._redact(fields.get('58', ''))})
+        elif msg_type == "2":
+            self._gap_fill(fields)
+        elif msg_type == "B" and self.session_name == "Order Routing":
+            # TT's News: its recovery after a (re)connect is complete — every
+            # execution report we missed has been delivered.
             with self.state.lock:
-                self.state.status = "ERROR"
-                self.state.error = fields.get("58", "Session recovery requires reconnect with TT-approved sequence reset")
-            self.stop_event.set()
+                self.state.recovered_at = datetime.now(timezone.utc).isoformat()
+            self.svc.audit.write(level='INFO', category='FIX Session', session=self.session_name,
+                                 direction='IN', event='TT recovery complete', sequence=seq,
+                                 details={'text': self.svc._redact(fields.get('148', '') or fields.get('58', ''))})
         elif msg_type == "8" and self.on_execution_report:
             self.on_execution_report(fields, raw)
         elif msg_type in ("W", "X") and self.on_market_data:
