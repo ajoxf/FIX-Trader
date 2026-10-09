@@ -1925,6 +1925,17 @@ class Engine:
                     f"Entries wait for a move; exits and CLOSE NOW work")
         return None
 
+    def md_status(self, rt: ContractRuntime) -> Optional[Dict[str, str]]:
+        """Why this contract has prices from TT or not (`ManualTerminal.
+        feed_status`); None on the simulator."""
+        terminal = getattr(self.gateway, 'terminal', None)
+        if terminal is None or not hasattr(terminal, 'feed_status'):
+            return None
+        try:
+            return terminal.feed_status(str(getattr(rt.contract, 'security_id', '') or ''))
+        except Exception:                                # noqa: BLE001
+            return None
+
     def market_note(self, rt: ContractRuntime) -> Optional[str]:
         """Why the window has no mid, in words, or None when it has one.
 
@@ -1933,6 +1944,9 @@ class Engine:
         statistics and the algo need BOTH sides, because the price is the mid.
         """
         book = rt.book
+        md = self.md_status(rt)
+        if md and md.get('state') not in ('LIVE', 'ONE_SIDED', None):
+            return md['text']
         if book is None:
             return ("no quote from the venue for this contract yet — its "
                     "window fills when a bid and an offer arrive")
@@ -2023,6 +2037,7 @@ class Engine:
                 'market': (book.to_dict() if book is not None else
                            {'bid': None, 'ask': None, 'mid': None}),
                 'feed': status,
+                'md': self.md_status(rt),
                 'stats': dict(rt.window.to_dict(), z_bid=z_bid, z_ask=z_ask,
                               stop_lo=rt.window.price_at_z(-float(settings.get('stop_loss_z', 4) or 4)),
                               stop_hi=rt.window.price_at_z(float(settings.get('stop_loss_z', 4) or 4))),

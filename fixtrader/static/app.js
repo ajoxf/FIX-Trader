@@ -1486,6 +1486,16 @@ function renderLadder(c, engine) {
   fe.textContent = feed.stale ? 'STALE (' + (has(feed.age_sec) ? feed.age_sec + 's' : 'no quote') + ')'
     : feed.settling ? 'SETTLING after a jump' : has(feed.age_sec) ? 'OK (quote ' + feed.age_sec + 's)' : 'no quote yet';
   fe.className = 'ld-feed ' + (feed.stale ? 'bad' : feed.settling ? 'warn' : 'ok');
+  // Why there are no prices, when there are none: TT refused (permissions),
+  // nobody quotes it, or TT has not answered — the engine's words.
+  const md = c.md || null;
+  if (md && !['LIVE', 'ONE_SIDED'].includes(md.state)) {
+    fe.textContent = ({ REFUSED: 'REFUSED by TT', NO_ANSWER: 'NO ANSWER from TT',
+      EMPTY: 'NO QUOTES on UAT', WAITING: 'requesting…', NO_SESSION: 'MD not connected',
+      NOT_REQUESTED: 'not requested', NO_ID: 'no Security ID' })[md.state] || md.state;
+    fe.className = 'ld-feed ' + (md.state === 'WAITING' ? 'warn' : 'bad');
+  }
+  fe.title = md ? md.text : '';
   el.querySelector('.ld-bk-sym').textContent = c.symbol || c.name;
   el.querySelector('.ld-bk-bid').textContent = num(m.bid, d);
   el.querySelector('.ld-bk-ask').textContent = num(m.ask, d);

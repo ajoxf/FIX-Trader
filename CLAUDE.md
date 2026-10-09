@@ -100,6 +100,13 @@ the drawing wins.
   (ManualTerminal refuses regardless). CLOSE ALL and Close @ LMT always close — a manual position by
   `preview_close` (77=C, capped at the ticket's open fills; a price makes it
   a LIMIT).
+- **A contract without prices says WHY** (`ManualTerminal.feed_status`,
+  `Engine.md_status`, on the ladder footer, the Algo window and the
+  Instruments watchlist): REFUSED by TT (35=Y with 281 in words, a 35=3
+  naming V — market-data permission: Orient / TT), NO ANSWER after
+  `FEED_ANSWER_SEC` (a Security ID TT does not know), EMPTY (TT answered,
+  nobody quotes it — a quiet UAT market, not a fault), or LIVE. An empty
+  snapshot is an answer.
 - **The ladder shows the order book TT sends**: Depth TOP (264=1, the
   touch) or FULL (264=0, every level, `FixGateway.depth`, best first) —
   switched per contract from the ladder (`Engine.set_depth`), each size at

@@ -18,6 +18,12 @@ from . import slippage as slippage_mod
 ORDER_TYPES = {'MARKET': '1', 'LIMIT': '2', 'STOP': '3', 'STOP_LIMIT': '4',
                'MARKET_ON_CLOSE': '5', 'LIMIT_ON_CLOSE': 'B', 'POST_ONLY': 'p'}
 TIFS = {'DAY': '0', 'GTC': '1', 'AT_OPEN': '2', 'IOC': '3', 'FOK': '4', 'GTD': '6', 'AT_CLOSE': '7'}
+#: MDReqRejReason (281): why TT refused a price request, in words.
+MD_REJECT_REASONS = {'0': 'unknown symbol', '1': 'duplicate request id',
+                     '2': 'insufficient bandwidth', '3': 'no market-data permission for this product',
+                     '4': 'unsupported subscription type', '5': 'unsupported market depth',
+                     '6': 'unsupported update type', '7': 'unsupported aggregated book',
+                     '8': 'unsupported entry type'}
 LIMIT_TYPES = {'LIMIT', 'STOP_LIMIT', 'LIMIT_ON_CLOSE', 'POST_ONLY'}
 TERMINAL = {'FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'}
 DEFAULT_RISK = {'trading_enabled': True, 'max_order_qty': 0.0,
@@ -467,7 +473,9 @@ class ManualTerminal:
             fields += [('267', '4'), ('269', '0'), ('269', '1'), ('269', '2'), ('269', 'x')]
             self.subscriptions[key] = request_id
             self.books[key] = {'bid': None, 'ask': None, 'last': None, 'bid_size': None, 'ask_size': None,
-                               'timestamp': '', 'error': '', 'entries': {}, 'full_depth': self.watch[key].get('full_depth', False)}
+                               'timestamp': '', 'error': '', 'entries': {}, 'full_depth': self.watch[key].get('full_depth', False),
+                               # When the request went, and whether TT has answered it at all.
+                               'requested_at': time.time(), 'answered': False}
         try:
             self._send('Market Data', 'V', fields)
         except Exception:
@@ -599,12 +607,26 @@ class ManualTerminal:
                 self._market(fields, raw)
                 self.quote_changed.set()
             elif msg in ('Y', 'j', '3'):
-                reason = self.gateway._redact(fields.get('58', 'TT rejected the request'))
+                reason = self.gateway._redact(fields.get('58', '') or '')
+                code = MD_REJECT_REASONS.get(fields.get('281', ''))
+                if code:
+                    reason = f"{code}" + (f" — {reason}" if reason else '')
+                reason = reason or 'TT rejected the request'
                 self.errors = (self.errors + [reason])[-10:]
                 request = fields.get('262') or fields.get('379')
+                matched = False
                 for key, request_id in self.subscriptions.items():
                     if request == request_id:
                         self.books[key]['error'] = reason
+                        matched = True
+                if not matched and name == 'Market Data' and fields.get('372') == 'V':
+                    # A session-level reject of a price request names its
+                    # message, not its request: every request TT has not
+                    # answered yet is the one it refused.
+                    for key in self.subscriptions:
+                        book = self.books.get(key) or {}
+                        if not book.get('answered'):
+                            book['error'] = reason
                 if self.search['status'] in ('Searching', 'Receiving results'):
                     self.search['error'] = reason
             elif msg in ('8', '9'):
@@ -633,6 +655,11 @@ class ManualTerminal:
         if group:
             groups.append(group)
         request_key = next((k for k, v in self.subscriptions.items() if v == header.get('262')), None)
+        # An answer is an answer even with nothing in it: an empty snapshot
+        # is a market nobody is quoting, not a request TT ignored.
+        for answered in {request_key, header.get('48')}:
+            if answered in self.books:
+                self.books[answered]['answered'] = True
         reset = set()
         touched = set()
         inherited_key = None
@@ -646,6 +673,7 @@ class ManualTerminal:
                 continue  # Never route by product name: multiple expiries share tag 55.
             inherited_key = key
             book = self.books[key]
+            book['answered'] = True
             touched.add(key)
             book['received_ms'] = received_ms
             book['fix_message_type'] = fields.get('35', header.get('35', ''))
@@ -905,6 +933,47 @@ class ManualTerminal:
                             'order_id': source['id'], 'close_id': last['id'],
                             'text': text, 'at': last.get('updated')})
             return out
+
+    #: How long TT may take to answer a price request before the screen
+    #: says it has not.
+    FEED_ANSWER_SEC = 10
+
+    def feed_status(self, key):
+        """Why this instrument has prices or not, in words a trader can act
+        on: TT refused the request (permissions — Orient / TT), TT answered
+        but nobody quotes it (a quiet UAT market), TT has not answered (a
+        Security ID it does not know), or prices are arriving."""
+        with self.lock:
+            key = str(key or '')
+            md = self.gateway._sessions.get('Market Data')
+            if not key:
+                return {'state': 'NO_ID', 'text': 'no TT Security ID on this contract'}
+            if md is None or md.state.status != 'CONNECTED':
+                return {'state': 'NO_SESSION', 'text': 'Market Data is not connected to TT'}
+            if key not in self.watch:
+                return {'state': 'NOT_REQUESTED', 'text': 'not on the Market Data watchlist yet'}
+            book = self.books.get(key)
+            if book is None or key not in self.subscriptions:
+                return {'state': 'NOT_REQUESTED', 'text': 'prices not requested from TT yet'}
+            if book.get('error'):
+                return {'state': 'REFUSED', 'text': 'TT refused the price request: ' + book['error'] +
+                        ' — usually market-data permission for this product on the account '
+                        '(ask Orient / TT to enable it)'}
+            waited = time.time() - float(book.get('requested_at') or time.time())
+            if not book.get('answered'):
+                if waited < self.FEED_ANSWER_SEC:
+                    return {'state': 'WAITING', 'text': 'prices requested from TT — waiting for the first answer'}
+                return {'state': 'NO_ANSWER', 'text': f'TT has not answered the price request in {waited:.0f}s '
+                        f'(Security ID {key}) — check the Security ID is right and the contract still '
+                        'listed; if it is, ask Orient / TT whether this product has market data on UAT'}
+            bid, ask = book.get('bid'), book.get('ask')
+            if bid is None and ask is None:
+                return {'state': 'EMPTY', 'text': 'TT answered, but nobody is quoting it — no bid and no '
+                        'offer on this market right now (common on UAT)'}
+            if bid is None or ask is None:
+                return {'state': 'ONE_SIDED', 'text': 'TT is sending only ' +
+                        ('an offer' if bid is None else 'a bid') + ' — nobody on the other side'}
+            return {'state': 'LIVE', 'text': 'prices arriving from TT'}
 
     def closeable(self, order):
         """Unclosed fills in this ticket's ledger, with outstanding closes reserved."""
@@ -1235,6 +1304,7 @@ class ManualTerminal:
                 bid, ask = book.get('bid'), book.get('ask')
                 book['spread'] = ask - bid if bid is not None and ask is not None else None
                 book['mid'] = (ask + bid) / 2 if bid is not None and ask is not None else None
+                book['feed_status'] = self.feed_status(key)
                 rows.append({'instrument': instrument, 'quote': book})
             pnl = self._pnl_snapshot(rows)
             return copy.deepcopy({'search': self.search, 'instruments': list(self.instruments.values())[:2000],

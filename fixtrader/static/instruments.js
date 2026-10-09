@@ -134,7 +134,10 @@
       for (const key of ['bid_size','bid','ask','ask_size','last','mid','spread']) row.append(text('td',fmt(q[key]),q.stale?'stale':key==='bid'?'bid':key==='ask'?'ask':''));
       const stamp=text('td',clock(q.timestamp));
       stamp.append(text('div',quoteStatus(q),q.stale?'stale':'quote-live'));
-      if (q.error) stamp.append(text('div',q.error,'quote-message'));
+      // Why there are no prices, in words: refused by TT, nobody quoting, no answer.
+      const fs=q.feed_status;
+      if (fs && !['LIVE','ONE_SIDED'].includes(fs.state)) stamp.append(text('div',fs.text,'quote-message'));
+      else if (q.error) stamp.append(text('div',q.error,'quote-message'));
       row.append(stamp);
       const actions=document.createElement('td');actions.append(button('Buy',()=>ticketFor(i,'BUY'),'buy'),button('Sell',()=>ticketFor(i,'SELL'),'sell'),button('Remove',async()=>{await command('remove',{security_id:i.security_id});notice('Removed from the watchlist.');}),button('Algo desk…',()=>toAlgoDesk(i)));row.append(actions);rows.append(row);
     }
@@ -315,7 +318,7 @@
       snapshot=await request('/api/snapshot');const engine=snapshot.engine||{};data=engine.manual_terminal||{};
       for(const row of data.watchlist||[]) {
         const newer=streamed.get(row.instrument.security_id);
-        if(newer?.timestamp&&(!row.quote.timestamp||Date.parse(newer.timestamp)>Date.parse(row.quote.timestamp)))row.quote=newer;
+        if(newer?.timestamp&&(!row.quote.timestamp||Date.parse(newer.timestamp)>Date.parse(row.quote.timestamp)))row.quote={...newer,feed_status:row.quote.feed_status};
       }
       const md=engine.fix_connection?.sessions?.find(s=>s.name==='Market Data');
       $('feed-status').textContent=`Source: TT ${engine.environment||'UAT'} FIX · Market data: ${md?.status||'DISCONNECTED'} · quote stream: ${streamState}${streamLatency===null?'':` · FIX-to-screen ${streamLatency} ms`} · Last heartbeat: ${clock(md?.last_heartbeat)}. UAT is a test feed; quote age reflects actual TT updates.`;
