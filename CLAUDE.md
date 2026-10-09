@@ -125,6 +125,10 @@ the drawing wins.
   each test cleans up by ticket, pass or fail. `tests/test_uat_orders.py`
   proves them against `tests/fake_tt.py` (real web app, engine loop and FIX
   sessions). A new order path gets a scenario here.
+  The page also embeds the desk's ladder and Algo window for the contract
+  (hands-on, as live): with the Algo TRADING on LIVE, on UAT only, the
+  ladder sends through the Algo's own path (`Engine.uat_order`) and the
+  Algo's TP / SL manage the result; by-hand PASS / FAIL is recorded.
 - **UAT and PROD are separate venues** and the screen always says which.
 
 ## Conventions that are easy to lose in a refactor

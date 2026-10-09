@@ -71,12 +71,15 @@ STEPS = {
     'M5': 'Ladder: BUY LIMIT at the bid. It rests until the market trades there, then fills and the position shows. '
           'Close it. If the market never trades there, cancel it.',
     'M6': 'Instruments & orders: send to an account TT does not know. The order shows REJECTED in TT\'s own words (tag 58).',
-    'A1': 'Execution LIVE (confirmed). The Algo opens at MARKET (FT- id, 77=O, 1028=N); its position shows with TT tickets, '
-          'not PAPER-. CLOSE ALL closes it by ticket (77=C, "Close P<id>" in 58).',
-    'A2': 'Execution LIVE. An Algo LIMIT away from the market rests (Working Orders, FT- id); Cancel all pulls it.',
-    'A3': 'Execution LIVE. An Algo position; Close @ LMT rests PINNED (77=C) above the market; CLOSE ALL cancels it, '
-          'and only on TT\'s CANCELLED sends ONE market close — never two closes at once.',
-    'A4': 'Execution LIVE. An Algo LIMIT at the bid fills when the market trades there; CLOSE ALL closes it.',
+    'A1': 'Hands-on ladder: Execution LIVE, Algo switch on Trades (ALGO LIVE). Market type, BUY: the Algo\'s order '
+          '(FT-, 77=O, 1028=N) fills; its position shows with TT tickets (not PAPER-) and its TP / SL on the Algo window. '
+          'CLOSE ALL closes it by ticket (77=C, "Close P<id>" in 58).',
+    'A2': 'Hands-on ladder, ALGO LIVE: click a Bids price well below the market — the Algo\'s LIMIT rests (Work column, '
+          'Working Orders, FT- id). Cancel all (CXL All) pulls it.',
+    'A3': 'Hands-on ladder, ALGO LIVE: BUY; then Close @ LMT above the market — it rests PINNED (77=C). CLOSE ALL '
+          'cancels it, and only on TT\'s CANCELLED sends ONE market close — never two closes at once.',
+    'A4': 'Hands-on ladder, ALGO LIVE: click the bid in Bids — the Algo\'s LIMIT rests and fills when the market '
+          'trades there; then the Algo\'s TP / SL manage it (or CLOSE ALL).',
 }
 
 
@@ -172,6 +175,37 @@ class ClientDriver(HttpDriver):
 
     def sleep(self, seconds):
         time.sleep(seconds if self.nap is None else min(seconds, self.nap))
+
+
+class HandChecks:
+    """What the trader proved BY HAND on the hands-on ladder, test by test —
+    PASS or FAIL with a note, the contract, the venue and when. Kept on disk
+    beside the automatic run."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.lock = __import__('threading').Lock()
+
+    def all(self) -> Dict[str, Any]:
+        try:
+            with open(self.path, encoding='utf-8') as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def mark(self, sid: str, result: str, note: str = '', contract: str = '',
+             environment: str = '') -> Dict[str, Any]:
+        with self.lock:
+            checks = self.all()
+            if result:
+                checks[sid] = {'result': result, 'note': note[:300],
+                               'contract': contract, 'environment': environment,
+                               'at': time.strftime('%Y-%m-%d %H:%M:%S')}
+            else:
+                checks.pop(sid, None)
+            with open(self.path, 'w', encoding='utf-8') as f:
+                json.dump(checks, f, indent=1)
+            return checks
 
 
 class OrderTestRun:

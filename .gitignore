@@ -55,3 +55,4 @@ legacy/_ttfix_repo_review/
 *.order-tests.json
 uat-results-*.json
 uat-results-*.html
+*.order-checks.json

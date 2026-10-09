@@ -1026,3 +1026,8 @@ table.grid tr.pays .tag { background: #cfe6d6; color: #1d5130; font-weight: 700;
 .ladderwin td.ask.has-qty:not(.touch) { background: #c23d3d; }
 .ladderwin .ld-depth { padding: 1px 6px; font-size: calc(11px * var(--fs)); }
 .ladderwin .ld-depth.on { background: #1f7ac2; color: #fff; border-color: #155a90; }
+
+/* The ladder on the Order tests page, sending the Algo's test orders (UAT). */
+.ladderwin .ld-lock.algo-test { background: #5b3a8c; }
+/* Embedded in the Order tests page: the page has its own navigation. */
+html.embed-uat .app-nav { display: none; }

@@ -7,7 +7,7 @@
 
 const $ = (id) => document.getElementById(id);
 const OT = { scenarios: [], picked: new Set(), env: null, running: false,
-             contractsSeen: '', mode: null };
+             contractsSeen: '', mode: null, checks: {}, deskFor: null };
 
 async function command(action, contract, args) {
   const q = await postJSON('/api/command', { action, contract: contract || '', args: args || {} });
@@ -47,7 +47,25 @@ function rowFor(s, result, current) {
   td4.textContent = result ? result.detail : (current ? 'running…' : '');
   const td5 = document.createElement('td'); td5.className = 'r';
   td5.textContent = result && result.seconds != null ? result.seconds : '';
-  tr.append(td0, td1, td2, td3, td4, td5);
+  const td6 = document.createElement('td'); td6.className = 'ot-hand';
+  if (s.id !== 'PRE') {
+    const mark = OT.checks[s.id] || {};
+    ['PASS', 'FAIL'].forEach((word) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = word === 'PASS' ? '✓ PASS' : '✗ FAIL';
+      b.className = word + (mark.result === word ? ' on' : '');
+      b.onclick = () => markHand(s.id, mark.result === word ? '' : word);
+      td6.appendChild(b);
+    });
+    if (mark.result) {
+      const note = document.createElement('small');
+      note.textContent = `${mark.at} · ${mark.contract || ''} · ${mark.environment || ''}` +
+        (mark.note ? ' — ' + mark.note : '');
+      td6.appendChild(note);
+    }
+  }
+  tr.append(td0, td1, td2, td3, td4, td5, td6);
   return tr;
 }
 
@@ -61,8 +79,31 @@ function paintSummary(results) {
   $('ot-run').disabled = OT.running || !n || OT.env !== 'UAT';
 }
 
+async function markHand(id, result) {
+  let note = '';
+  if (result === 'FAIL') {
+    const ok = await ask('Mark ' + id + ' FAILED by hand?',
+      'Recorded beside the automatic result, with the contract, the venue and the time. ' +
+      'Say what went wrong in the FIX logs or on the ladder before moving to a live market.', 'Mark FAIL');
+    if (!ok) return;
+    note = 'failed by hand';
+  }
+  await postJSON('/api/order-tests/check', { id, result, note, contract: $('ot-contract').value });
+  refresh();
+}
+
+/* The hands-on desk: the real desk, embedded, on the chosen contract. */
+function paintDesk() {
+  const key = $('ot-contract').value;
+  if (!key || key === OT.deskFor) return;
+  OT.deskFor = key;
+  $('ot-desk').src = '/desk?embed=uat&contract=' + encodeURIComponent(key);
+  $('ot-hands-note').textContent = key + ' · ' + (OT.env || DASH);
+}
+
 function paint(body) {
   OT.env = body.environment || null;
+  OT.checks = body.checks || {};
   const run = body.run && body.run.running ? body.run : null;
   OT.running = !!run;
   const shown = run || body.last || null;
@@ -123,6 +164,7 @@ async function refresh() {
         sel.appendChild(o);
       });
       if (was) sel.value = was;
+      paintDesk();
     }
     const ex = (snap.engine || {}).execution || {};
     OT.mode = ex.mode || null;
@@ -167,6 +209,8 @@ $('ot-stop').onclick = async () => {
   toast(r.data.ok ? 'INFO' : 'REJECT', 'Order tests', r.data.text || r.data.error || '');
   refresh();
 };
+
+$('ot-contract').onchange = paintDesk;
 
 refresh();
 setInterval(refresh, 1000);

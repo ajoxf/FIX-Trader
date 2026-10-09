@@ -240,3 +240,46 @@ def test_the_page_refuses_a_live_venue(desk, monkeypatch):
         'ids': ['M1'], 'contract': 'clz6', 'confirm': True})
     assert r.status_code == 409 and 'UAT only' in r.get_json()['error']
     assert not desk.tt.orders_in
+
+
+# -- hands-on: the Algo's own order path from the ladder, as it trades live ----
+
+def test_an_algo_test_order_while_the_algo_trades_is_managed_like_live(desk):
+    """The Order tests page's hands-on ladder, Algo on TRADE: a test order goes
+    through the Algo's path, and the Algo's own take-profit closes it."""
+    d = desk.d
+    assert d.command('execution', '', {'mode': 'LIVE', 'confirm': True})['ok']
+    # One tick wide: the spread alone ($10) does not reach the 2% stop ($20).
+    desk.tt.move('CL1', 9051, 9052)
+    run = desk.runner()
+    run.until('the one-tick book', lambda s: run.contract(s)['market'].get('bid') == 90.51)
+    r = d.command('algo_state', 'clz6', {'state': 'TRADE'})
+    assert r.get('ok'), r
+    sent = d.command('uat_order', 'clz6', {'side': 'BUY', 'order_type': 'MARKET', 'qty': 1})
+    assert sent.get('ok'), sent
+    run = desk.runner()
+    pos = run.until('the Algo position', lambda s: run.algo_position(s))
+    assert pos['side'] == 'BUY'
+    again = d.command('uat_order', 'clz6', {'side': 'BUY', 'order_type': 'MARKET'})
+    assert not again['ok'] and 'open' in again['error']       # one at a time
+    desk.tt.move('CL1', 9150, 9152)                           # +1.00: past the TP
+    run.until('closed by the Algo at its target', lambda s: run.algo_position(s) is None)
+    closes = [o for o in desk.tt.orders_in if o.get('77') == 'C']
+    assert closes and closes[-1]['11'].startswith('FT-') and closes[-1]['54'] == '2'
+
+
+def test_a_test_done_by_hand_is_recorded_and_cleared(desk):
+    c = desk.d.client
+    page = c.get('/order-tests').data
+    assert b'ot-desk' in page                                 # the hands-on desk
+    assert b'id="desktop"' in c.get('/desk?embed=uat&contract=clz6').data
+    r = c.post('/api/order-tests/check', json={'id': 'a1', 'result': 'pass',
+                                                'contract': 'clz6'}).get_json()
+    assert r['checks']['A1']['result'] == 'PASS'
+    assert r['checks']['A1']['environment'] == 'UAT'
+    assert c.get('/api/order-tests').get_json()['checks']['A1']['contract'] == 'clz6'
+    cleared = c.post('/api/order-tests/check', json={'id': 'A1', 'result': ''}).get_json()
+    assert 'A1' not in cleared['checks']
+    bad = c.post('/api/order-tests/check', json={'id': 'Z9', 'result': 'PASS'})
+    assert bad.status_code == 400
+    assert not desk.tt.orders_in                              # a record, never an order

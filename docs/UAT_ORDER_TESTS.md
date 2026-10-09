@@ -22,6 +22,25 @@ and shown on the page after a restart.
 From a terminal instead: `run_uat_tests.bat esz6` or
 `python -m fixtrader.uat --contract esz6 [--only M1,M3] [--with-hits]`.
 
+## Hands-on: the desk, as it is live
+
+Under the tests table the page shows the desk's own **ladder and Algo window**
+(and Trading Monitor) for the chosen contract — the same screen a live market
+is traded on, embedded (`/desk?embed=uat&contract=KEY`).
+
+- **Algo Off / Signals:** the ladder trades by hand — manual tickets (FTM-),
+  reviewed in the modal, exactly as on the desk.
+- **Algo on Trades, Execution LIVE (UAT only):** BUY / SELL and a click in Bids /
+  Asks go through the **Algo's own order path** (`uat_order`: the executor, an
+  FT- id, 77=O, 1028=N) as its signal would send them — the ladder banner turns
+  purple and says so. The Algo's take-profit and stop loss then manage the
+  position; CLOSE ALL and Close @ LMT close it as they would live. One test
+  position at a time; the engine refuses it on any venue but UAT.
+
+Do each test's **By hand** steps there and mark it **✓ PASS / ✗ FAIL** in the
+table's *By hand* column: kept with the contract, the venue and the time
+(`status.json.order-checks.json`), beside the automatic result.
+
 ## The tests
 
 | Test | Path | What it proves |

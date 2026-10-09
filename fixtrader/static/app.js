@@ -14,14 +14,23 @@
 'use strict';
 
 const DASH = '—';
+/* Embedded in the Order tests page (/desk?embed=uat&contract=KEY): ONE
+ * contract's ladder and Algo window, as they are live, with windows placed
+ * and kept apart from the desk's own. */
+const EMBED = (() => {
+  const q = new URLSearchParams(location.search);
+  return q.get('embed') === 'uat' ? (q.get('contract') || '') : null;
+})();
+const LS = EMBED === null ? 'ft.' : 'ft.uat.';
+if (EMBED !== null) document.documentElement.classList.add('embed-uat');
 const state = {
   refresh: 500,
   timer: null,
   sound: true,
-  closed: new Set(JSON.parse(localStorage.getItem('ft.closed') || '[]')),
+  closed: new Set(JSON.parse(localStorage.getItem(LS + 'closed') || '[]')),
   //: Windows minimised to the taskbar. Kept in this browser.
-  minimised: new Set(JSON.parse(localStorage.getItem('ft.min') || '[]')),
-  places: JSON.parse(localStorage.getItem('ft.places') || '{}'),
+  minimised: new Set(JSON.parse(localStorage.getItem(LS + 'min') || '[]')),
+  places: JSON.parse(localStorage.getItem(LS + 'places') || '{}'),
   lastEvent: {},
   focused: null,
   free: false,
@@ -213,7 +222,7 @@ async function restartEngine() {
 function wireWindow(el, key) {
   el.querySelector('.close').onclick = () => {
     state.closed.add(key);
-    localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));
+    localStorage.setItem(LS + 'closed', JSON.stringify([...state.closed]));
     el.remove();
     renderTabs();
   };
@@ -229,7 +238,7 @@ function setMinimised(el, on) {
   const key = el.dataset.key;
   el.classList.toggle('minimised', on);
   if (on) state.minimised.add(key); else state.minimised.delete(key);
-  try { localStorage.setItem('ft.min', JSON.stringify([...state.minimised])); }
+  try { localStorage.setItem(LS + 'min', JSON.stringify([...state.minimised])); }
   catch (e) { /* a private window forgets; the desk still works */ }
   if (!on) { state.focused = key; raise(el); }
   renderTabs();
@@ -302,7 +311,7 @@ function openLadder(key) {
   const wkey = '__ladder__' + key;
   if (state.closed.has(wkey)) {
     state.closed.delete(wkey);
-    localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));
+    localStorage.setItem(LS + 'closed', JSON.stringify([...state.closed]));
     tick();
   }
   const el = document.querySelector('.win[data-key="' + wkey + '"]');
@@ -402,7 +411,7 @@ function makeDraggable(el, key) {
 }
 
 function savePlaces() {
-  try { localStorage.setItem('ft.places', JSON.stringify(state.places)); }
+  try { localStorage.setItem(LS + 'places', JSON.stringify(state.places)); }
   catch (e) { /* a private window: the desk still works, it just forgets */ }
 }
 
@@ -971,7 +980,7 @@ function sideParams(params, side) {
 function ladderPref(key) {
   if (!ladderPrefs[key]) {
     let saved = {};
-    try { saved = JSON.parse(localStorage.getItem('ft.ladder.' + key) || '{}'); }
+    try { saved = JSON.parse(localStorage.getItem(LS + 'ladder.' + key) || '{}'); }
     catch (e) { /* private window: defaults */ }
     ladderPrefs[key] = Object.assign({ lock: false, filter: false, increment: null }, saved);
   }
@@ -979,7 +988,7 @@ function ladderPref(key) {
 }
 
 function saveLadderPref(key) {
-  try { localStorage.setItem('ft.ladder.' + key, JSON.stringify(ladderPrefs[key])); }
+  try { localStorage.setItem(LS + 'ladder.' + key, JSON.stringify(ladderPrefs[key])); }
   catch (e) { /* kept for this page only */ }
 }
 
@@ -1020,7 +1029,7 @@ function ladderFor(key) {
     if (r && r.ok) toast('OK', 'FEED', 'prices re-requested from TT', key);
   };
   const cxl = (side, label) => async () => {
-    if (el.classList.contains('manual-on')) {
+    if (el.classList.contains('manual-on') && !el.classList.contains('algo-test')) {
       return cancelManual(el, key, (o) => !side || o.ticket.side === side, label);
     }
     const ok = await ask('Cancel ' + label + ' on ' + el.querySelector('.title').textContent + '?',
@@ -1060,7 +1069,7 @@ function ladderFor(key) {
   });
   el.querySelector('.ld-grid tbody').addEventListener('contextmenu', (e) => {
     const cell = e.target.closest('td.work');
-    if (!cell || !el.classList.contains('manual-on')) return;
+    if (!cell || !el.classList.contains('manual-on') || el.classList.contains('algo-test')) return;
     e.preventDefault();
     const price = parseFloat(cell.parentElement.querySelector('td.price').textContent);
     cancelManual(el, key, (o) => Math.abs(Number(o.ticket.price) - price) < 1e-9,
@@ -1153,6 +1162,7 @@ async function manualOrder(el, key, side, price) {
   if (!el.classList.contains('manual-on')) return;
   const d = ladderData[key];
   if (!d) return;
+  if (el.classList.contains('algo-test')) return algoTestOrder(el, key, side, price);
   const m = d.c.market || {};
   const ot = el.querySelector('.ld-ot').value;
   const tif = el.querySelector('.ld-tif').value;
@@ -1182,6 +1192,37 @@ async function manualOrder(el, key, side, price) {
   if (!ok) return;
   const sent = await command('terminal_submit', '', { token: review.token, confirmed: true });
   if (sent && sent.ok) toast('ORDER', 'SENT', side + ' ' + t.quantity + ' — ' + (sent.order_id || ''), key);
+}
+
+/* UAT, on the Order tests page, with the Algo TRADING this contract: the
+ * ladder sends through the ALGO's own order path — the executor, an FT- id,
+ * 77=O, 1028=N — as its signal would on a live market; the Algo's TP / SL
+ * then manage the position. The engine refuses it on any venue but UAT. */
+async function algoTestOrder(el, key, side, price) {
+  const d = ladderData[key];
+  const m = d.c.market || {};
+  const ot = price !== null ? 'LIMIT' : el.querySelector('.ld-ot').value;
+  const qty = parseFloat(el.querySelector('.ld-qtybox.' + (side === 'BUY' ? 'buy' : 'sell')).value);
+  if (!(qty > 0)) { toast('REJECT', 'NOT SENT', 'type the ' + side + ' quantity first', key); return; }
+  let px = price;
+  if (px === null && ot === 'LIMIT') px = side === 'BUY' ? m.ask : m.bid;
+  if (ot === 'LIMIT' && (px === null || px === undefined)) {
+    toast('REJECT', 'NOT SENT', 'no ' + (side === 'BUY' ? 'offer' : 'bid') + ' to price the limit at', key);
+    return;
+  }
+  const dec = d.c.decimals === undefined ? 4 : d.c.decimals;
+  const ok = await ask('Algo test order — ' + side + ' ' + qty + ' ' + (d.c.name || key) + '?',
+    side + ' ' + qty + ' @ ' + (ot === 'MARKET' ? 'MARKET' : num(Number(px), dec) + ' LIMIT (rests there)') +
+    ' through the ALGO\'s own order path to TT UAT — an FT- order, 77=O, 1028=N, exactly as its ' +
+    'signal would send it on a live market. The Algo then manages the position: its take-profit and ' +
+    'stop loss, as on the Algo window. CLOSE ALL and Close @ LMT close it as they would live.',
+    'Send ' + side);
+  if (!ok) return;
+  const args = { side, order_type: ot, qty };
+  if (ot === 'LIMIT') args.price = px;
+  const r = await command('uat_order', key, args);
+  if (r && r.ok) toast('ORDER', 'ALGO TEST', side + ' ' + qty + ' ' + ot + ' — ' + r.clordid, key);
+  else if (r && r.error) toast('REJECT', 'NOT SENT', r.error, key);
 }
 
 async function cancelManual(el, key, which, label) {
@@ -1242,9 +1283,15 @@ function renderLadder(c, engine) {
   // up. Anything else and the order controls are off — and the banner says
   // which.
   const sessionUp = ((engine || {}).session || {}).state === 'LOGGED_ON';
-  const manualOn = !c.manual_block && !!term && !!c.security_id && sessionUp &&
-    (engine || {}).alive !== false;
+  // On the Order tests page, on UAT, with the Algo TRADING on LIVE: the
+  // ladder is the Algo's — its orders go the Algo's own way (algoTestOrder).
+  const algoTest = EMBED !== null && algoTrades && (engine || {}).environment === 'UAT' &&
+    ex.mode === 'LIVE' && !!term && !!c.security_id && sessionUp && !(c.position || {}).side &&
+    !(c.orders || []).length;
+  const manualOn = algoTest || (!c.manual_block && !!term && !!c.security_id && sessionUp &&
+    (engine || {}).alive !== false);
   el.classList.toggle('manual-on', manualOn);
+  el.classList.toggle('algo-test', algoTest);
   const mWorking = ladderManualWorking(c.key);
   const mOpen = ladderManualPositions(c.key);
   // SIGNALS mode: the trader's position as the Algo watches it — with the
@@ -1285,7 +1332,19 @@ function renderLadder(c, engine) {
   const lock = el.querySelector('.ld-lock');
   const lockText = el.querySelector('.ld-lock-text');
   const word = ALGO_WORDS[algoState] || algoState;
-  if (algoTrades) {
+  if (algoTest) {
+    lock.className = 'ld-lock algo-test';
+    lockText.textContent = 'UAT TEST · ' + word + ' — BUY / SELL or a click in Bids / Asks sends through the ' +
+      'ALGO\'s own order path (FT-), as its signal would live; its TP / SL manage the position.';
+    lock.title = 'Order tests page only, on TT UAT. One test position at a time.';
+  } else if (algoTrades && EMBED !== null) {
+    lock.className = 'ld-lock';
+    lockText.textContent = word + ' — ' + ((c.position || {}).side || (c.orders || []).length
+      ? 'the Algo holds this contract: CLOSE ALL or Close @ LMT, then the next test order.'
+      : ex.mode !== 'LIVE' ? 'arm Execution LIVE (taskbar) to send the Algo\'s test orders to TT UAT.'
+      : 'the TT session is not up.');
+    lock.title = '';
+  } else if (algoTrades) {
     lock.className = 'ld-lock';
     lockText.textContent = word + ' — manual orders are off on this ladder. ' +
       'CLOSE ALL and Close @ LMT still close.';
@@ -1607,7 +1666,7 @@ function positionsWindow() {
   const place = state.places['__positions__'];
   if (place) placeWindow(el, place.x, place.y);
   tradingMonitor = TradingMonitor(el.querySelector('.tmon'), {
-    storageKey: 'ft.monitor.tab',
+    storageKey: LS + 'monitor.tab',
     // The desk's own command(): it toasts a refusal itself, so the monitor
     // is told of it as an error and does not say it twice.
     command: async (action, contract, args) => {
@@ -1659,7 +1718,7 @@ function analysisWindow() {
   el = tpl.content.firstElementChild.cloneNode(true);
   el.querySelector('.close').onclick = () => {
     state.closed.add('__analysis__');
-    localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));
+    localStorage.setItem(LS + 'closed', JSON.stringify([...state.closed]));
     el.remove();
     renderTabs();
   };
@@ -2698,7 +2757,7 @@ async function tick() {
     renderChrome(snap);
     window.__lastSnapshot = snap;
     const seen = new Set(['__positions__', '__analysis__']);
-    (snap.contracts || []).forEach((c) => {
+    (snap.contracts || []).filter((c) => EMBED === null || c.key === EMBED).forEach((c) => {
       seen.add(c.key);
       // A settings panel belongs to its contract and outlives a poll. The
       // sweep below removes windows for contracts that are gone; it must not
@@ -2772,7 +2831,7 @@ document.getElementById('sound-toggle').onclick = (e) => {
 
 document.getElementById('tidy').onclick = () => {
   state.places = {};
-  localStorage.removeItem('ft.places');
+  localStorage.removeItem(LS + 'places');
   state.free = false;
   document.getElementById('desktop').classList.remove('free');
   document.querySelectorAll('.win').forEach((el) => {
@@ -2814,7 +2873,7 @@ document.getElementById('add-panel').onclick = () => {
       : key === '__analysis__' ? 'Analysis' : key;
     b.onclick = () => {
       state.closed.delete(key);
-      localStorage.setItem('ft.closed', JSON.stringify([...state.closed]));
+      localStorage.setItem(LS + 'closed', JSON.stringify([...state.closed]));
       menu.classList.add('hidden');
       tick();
     };

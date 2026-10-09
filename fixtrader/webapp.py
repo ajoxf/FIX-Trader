@@ -100,6 +100,7 @@ def create_app(config_path: str = "config.json",
     from . import uat as uat_mod
     order_tests = uat_mod.OrderTestRun(str(status_path) + '.order-tests.json')
     app.extensions['order_tests'] = order_tests
+    hand_checks = uat_mod.HandChecks(str(status_path) + '.order-checks.json')
 
     @app.get('/order-tests')
     def order_tests_page():
@@ -114,7 +115,23 @@ def create_app(config_path: str = "config.json",
                            'waits': sid in uat_mod.HIT_SCENARIOS}
                           for sid, title in uat_mod.SCENARIOS],
             'environment': engine.get('environment'),
-            'run': order_tests.status(), 'last': order_tests.last()})
+            'run': order_tests.status(), 'last': order_tests.last(),
+            'checks': hand_checks.all()})
+
+    @app.post('/api/order-tests/check')
+    def api_order_tests_check():
+        """The trader's own word on a test done by hand: PASS, FAIL, or
+        cleared. A record, not an order — nothing is sent."""
+        data = request.get_json(silent=True) or {}
+        sid = str(data.get('id') or '').upper()
+        result = str(data.get('result') or '').upper()
+        if sid not in {s for s, _ in uat_mod.SCENARIOS} or result not in ('PASS', 'FAIL', ''):
+            return jsonify({'ok': False, 'error': 'unknown test or result'}), 400
+        engine = read_status().get('engine') or {}
+        checks = hand_checks.mark(sid, result, str(data.get('note') or ''),
+                                  str(data.get('contract') or ''),
+                                  str(engine.get('environment') or ''))
+        return jsonify({'ok': True, 'checks': checks})
 
     @app.post('/api/order-tests/run')
     def api_order_tests_run():

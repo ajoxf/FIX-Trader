@@ -1598,9 +1598,11 @@ class Engine:
         Algo's position like any other, and closes like any other (CLOSE
         NOW, Close @ LMT).
 
-        Refused on any venue that is not UAT, unless LIVE is armed, while the
-        Algo trades the contract, and while anything is open or working on
-        it — algo or hand."""
+        With the Algo TRADING the contract (the Order tests page's hands-on
+        ladder) its exits then manage the position as they would live: the
+        TP / SL priced at the fill. Refused on any venue that is not UAT,
+        unless LIVE is armed, and while anything is open or working on the
+        contract — algo or hand: one test position at a time."""
         rt = self.runtimes.get(key)
         if rt is None:
             return {'ok': False, 'error': f"no contract {key}"}
@@ -1614,9 +1616,6 @@ class Engine:
                     'the taskbar first: a test order goes to TT UAT'}
         if self.killed:
             return {'ok': False, 'error': 'KILL ALL is on'}
-        if self.algo_state(key) in ('PAPER', 'LIVE'):
-            return {'ok': False, 'error': 'the Algo is trading this contract — '
-                    'set it to Off or Signals for a test order'}
         held = self.algo_business(key) + self.manual_business(key)
         if held:
             return {'ok': False, 'error': 'something is open on this contract: '
