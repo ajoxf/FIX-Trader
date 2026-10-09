@@ -367,3 +367,19 @@ def test_clear_results_gives_a_fresh_page_and_sends_nothing(desk):
     body = client.get('/api/order-tests').get_json()
     assert not body['last'] and not body['checks']
     assert len(desk.tt.orders_in) == sent                    # nothing sent
+
+
+def test_an_algo_close_written_late_to_the_fix_log_is_still_found(desk, monkeypatch):
+    """The FIX log is written in the background; on a busy feed the close's
+    line lands after the position is already flat. The check waits for it
+    instead of failing "no closing order (77=C) found"."""
+    from fixtrader.fix_audit import FixAuditLog
+    append = FixAuditLog._append
+
+    def late(self, row):
+        if '77=C' in str(row.get('raw', '')) and row.get('direction') == 'OUT':
+            time.sleep(1.5)
+        append(self, row)
+    monkeypatch.setattr(FixAuditLog, '_append', late)
+    assert desk.d.command('execution', '', {'mode': 'LIVE', 'confirm': True})['ok']
+    passed(desk.runner().run(['A1']))

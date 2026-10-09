@@ -53,7 +53,7 @@ SCENARIOS = [
     ('M1', 'Manual: buy limit below the market waits, then cancel'),
     ('M8', 'Manual: sell limit above the market waits, then cancel'),
     ('M2', 'Manual: change the price of a waiting limit'),
-    ('M4', 'Manual: buy limit at the offer fills; take-profit limit waits; CLOSE ALL'),
+    ('M4', 'Manual: buy limit through the offer fills; take-profit limit waits; CLOSE ALL'),
     ('M5', 'Manual: buy limit at the bid fills when the market comes to it'),
     ('M6', "Manual: an order TT refuses shows TT's reason"),
     ('A1', 'Algo: buys at market, then CLOSE ALL'),
@@ -78,7 +78,7 @@ SHORT = {
     'M1': 'Buy limit below the market, then cancel',
     'M8': 'Sell limit above the market, then cancel',
     'M2': 'Move a waiting limit to a new price',
-    'M4': 'Buy limit at the offer, then a take-profit limit',
+    'M4': 'Buy limit through the offer, then a take-profit limit',
     'M5': 'Buy limit at the bid — wait for a seller',
     'M6': 'An order TT rejects',
     'A1': 'Algo buys at market, then close',
@@ -95,7 +95,8 @@ EXPECT = {
     'M1': 'Waits in the book (Working orders) and does not fill. Cancel removes it.',
     'M8': 'Waits in the book above the market and does not fill. Cancel removes it.',
     'M2': 'TT confirms the new price and the order keeps waiting there. Then cancelled.',
-    'M4': 'Priced at the offer, so it fills at once. A Close @ LMT (take-profit) then waits above '
+    'M4': 'Priced 2 ticks above the offer, so it fills at once — at the offer or better. A Close @ '
+          'LMT (take-profit) then waits above '
           'the market; it is cancelled and CLOSE ALL closes at market.',
     'M5': 'Waits at the bid until someone sells to it, then you are long 1 and it is closed. '
           'On a quiet market nobody may — then it is cancelled.',
@@ -125,7 +126,7 @@ STEPS = {
     'M8': 'Ladder (Algo Off): click an Asks price well above the market → review → Send. It waits; cancel it.',
     'A6': 'Algo switch on UAT: click an Asks price well above the market. The Algo\'s sell waits; CXL All pulls it.',
     'M7': 'Ladder (Algo Off): Market type, SELL → review → Send. A short position shows; CLOSE ALL buys it back (77=C).',
-    'M4': 'Ladder: BUY LIMIT at the offer — fills at once. Close @ LMT at a price above the market: it RESTS (77=C). '
+    'M4': 'Ladder: BUY LIMIT a tick or two above the offer — fills at once. Close @ LMT at a price above the market: it RESTS (77=C). '
           'Cancel it; then CLOSE ALL closes at market.',
     'M5': 'Ladder: BUY LIMIT at the bid. It rests until the market trades there, then fills and the position shows. '
           'Close it. If the market never trades there, cancel it.',
@@ -718,13 +719,18 @@ class Runner:
         self.tags(oid, t77='O', t54='2', t40=self.at_market, t59=self.at_market_tif)
         return self._manual_round_trip(oid, side='SELL')
 
+    #: A marketable limit is priced this many ticks THROUGH the offer: a
+    #: quiet UAT offer moves a tick between reading it and the order
+    #: arriving, and a limit exactly AT it then rests instead of filling.
+    THROUGH = 2
+
     def m4(self):
         bid, ask, tick, dec = self.book()
-        oid = self.manual('BUY', 'LIMIT', self.px(ask, tick, dec))
+        oid = self.manual('BUY', 'LIMIT', self.px(ask + self.THROUGH * tick, tick, dec))
         o = self.manual_status(oid, ('FILLED', 'NEW'), f'{oid} answered')
         if o['status'] == 'NEW':
             self.manual_cancel(oid)
-            raise Failed('the offer moved before it filled — rerun M4')
+            raise Failed(f'it rested instead of filling — the offer moved more than {self.THROUGH} ticks; rerun M4')
         return self._manual_round_trip(oid, close_with_limit=True)
 
     def m5(self):
@@ -762,9 +768,7 @@ class Runner:
             raise Failed(f'the position carries {tickets} — not TT tickets')
         self.ok(self.d.command('close_now', self.key), 'CLOSE NOW')
         self.algo_flat('flat again after CLOSE NOW')
-        closes = [m for m in self._algo_sent() if m.get('77') == 'C']
-        if not closes:
-            raise Failed('no closing order (77=C) found in the FIX log')
+        closes = self._closes_after(cid)
         closes.sort(key=lambda m: int(str(m.get('11', '0')).rsplit('-', 1)[-1] or '0', 36))
         close = closes[-1]
         want = '2' if side == 'BUY' else '1'
@@ -777,14 +781,35 @@ class Runner:
     def a5(self):
         return self.a1(side='SELL')
 
-    def _algo_sent(self):
-        """Every D the Algo sent during this run (FT- ids), via the journal."""
-        out = []
-        for o in (self.d.journal().get('orders') or []):
-            cid = o.get('clordid') or ''
-            if cid.startswith('FT-') and cid not in [x.get('11') for x in out]:
-                out += [m for m in self.d.sent(cid) if m.get('35') == 'D']
-        return out
+    def _closes_after(self, open_cid, count=1):
+        """The D messages of the Algo's CLOSING orders on this contract
+        sent after `open_cid` — read from the journal, then the FIX log,
+        waited for: the log is written in the background, so the newest line
+        can land a moment after the position is already flat."""
+        def closing_orders():
+            orders = self.d.journal().get('orders') or []
+            opened = next((o.get('sent_at') or '' for o in orders
+                           if o.get('clordid') == open_cid), '')
+            return [o for o in orders if o.get('contract_key') == self.key
+                    and o.get('intent') == 'CLOSE'
+                    and str(o.get('clordid') or '').startswith('FT-')
+                    and (o.get('sent_at') or '') >= opened]
+
+        def found(_snap):
+            msgs = []
+            orders = closing_orders()
+            for o in orders:
+                msgs += [m for m in self.d.sent(o['clordid'])
+                         if m.get('35') == 'D' and m.get('77') == 'C']
+            return msgs if orders and len(msgs) >= max(count, 1) else None
+        try:
+            return self.until('the closing order (77=C) in the FIX log', found)
+        except Failed:
+            if not closing_orders():
+                raise Failed('flat again, but the Algo recorded no closing order — '
+                             'the position closed some other way; see the Fills tab') from None
+            raise Failed('the Algo recorded its closing order, but its New Order '
+                         '(35=D, 77=C) is not in the FIX log') from None
 
     def a2(self, side='BUY'):
         bid, ask, tick, dec = self.book()
@@ -803,13 +828,13 @@ class Runner:
 
     def a3(self):
         bid, ask, tick, dec = self.book()
-        cid = self.algo_open('BUY', 'LIMIT', float(self.px(ask, tick, dec)))
+        cid = self.algo_open('BUY', 'LIMIT', float(self.px(ask + self.THROUGH * tick, tick, dec)))
         pos = self.until('the marketable LIMIT filled', lambda s: self.algo_position(s)
                          or ((self.algo_order(cid, s) or {}).get('state') == 'WORKING' and 'rest'))
         if pos == 'rest':
             self.ok(self.d.command('cancel_all', self.key), 'cancel')
             self.algo_flat('cancelled')
-            raise Failed('the offer moved before it filled — rerun A3')
+            raise Failed(f'it rested instead of filling — the offer moved more than {self.THROUGH} ticks; rerun A3')
         bid, ask, tick, dec = self.book()
         far = float(self.px(ask + self.away * tick, tick, dec))
         self.ok(self.d.command('close_limit', self.key, {'price': far}), 'Close @ LMT')
@@ -823,8 +848,8 @@ class Runner:
         self.tags(pinned['clordid'], msg='F')
         # The closes of THIS position: they name it in 58 ("Close P<id> ...").
         ref = (first.get('58') or '').split(' ')[:2]
-        closes = [m for m in self._algo_sent() if m.get('77') == 'C'
-                  and (m.get('58') or '').split(' ')[:2] == ref]
+        closes = [m for m in self._closes_after(cid, count=2)
+                  if (m.get('58') or '').split(' ')[:2] == ref]
         closes.sort(key=lambda m: int(str(m.get('11', '0')).rsplit('-', 1)[-1] or '0', 36))
         last = closes[-1] if closes else {}
         crossed = last.get('40') == '1' or (last.get('40') == '2' and last.get('59') == '3')

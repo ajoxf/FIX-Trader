@@ -78,6 +78,8 @@ ORD_REJ_REASONS = {
 def reject_reason(f: Dict[str, str], text: str = '') -> str:
     """TT's words (58) with the reason code (103) said in words beside them."""
     code = f.get('103', '')
+    if code == '99':
+        return text or 'other'      # FIX's "Other": TT's text says it all
     words = ORD_REJ_REASONS.get(code) or (f'reason code {code}' if code else '')
     if words and words.lower() not in (text or '').lower():
         return f"{text} ({words})" if text else words
