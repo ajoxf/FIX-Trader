@@ -53,6 +53,9 @@ class Exchange:
         #: When set, every new order is REJECTED with these words — as CME
         #: via TT rejects an order priced outside its band.
         self.reject_text = None
+        #: The book is SHOWN but nothing at it trades — a thin UAT market:
+        #: an immediate-or-cancel order is cancelled unfilled.
+        self.no_liquidity = False
         #: Every Execution Report sent on Order Routing, in order:
         #: (time, fields, delivered). `drop_reports` > 0 loses the next N on
         #: the way — the program never sees them — as a line that was down.
@@ -224,7 +227,10 @@ class Exchange:
                      t14=0, t151=order['qty'])
         buy = order['side'] == '1'
         touch = book['ask'] if buy else book['bid']
-        if order['type'] == '1':                         # MARKET
+        if self.no_liquidity and f.get('59') == '3':
+            self._report(order, t17=self.next_exec('C'), t150='4', t39='4',
+                         t14=0, t151=0)
+        elif order['type'] == '1':                       # MARKET
             self._fill(order, touch)
         elif (buy and order['price'] >= touch) or (not buy and order['price'] <= touch):
             self._fill(order, touch)                     # marketable LIMIT

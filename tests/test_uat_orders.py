@@ -334,3 +334,21 @@ def test_each_flow_keeps_its_newest_result_across_runs(desk):
     latest = body['last']['latest']
     assert latest['M3']['status'] == 'PASS' and latest['M1']['status'] == 'PASS'
     assert [r['id'] for r in body['last']['results']] == ['M1']     # the run itself
+
+
+def test_an_at_market_order_tt_cancels_unfilled_fails_at_once_and_says_why(desk):
+    """A thin UAT market: the price is shown, nothing at it trades, and TT
+    cancels the immediate-or-cancel order. The check says so straight away
+    — not "filled — not seen in 20s"."""
+    desk.tt.no_liquidity = True
+    started = time.monotonic()
+    results = desk.runner().run(['M3'])
+    assert results[0]['status'] == 'FAIL'
+    assert 'cancelled the at-market order unfilled' in results[0]['detail']
+    assert 'not seen in' not in results[0]['detail']
+    assert time.monotonic() - started < 8
+
+
+def test_an_at_market_order_that_trades_still_passes(desk):
+    """The control: the same check with liquidity at the touch."""
+    passed(desk.runner().run(['M3']))

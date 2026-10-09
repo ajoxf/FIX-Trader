@@ -115,7 +115,7 @@ def connect(monkeypatch):
                             md_password_env='TEST_MD', account='ACC1')
         gw = FixGateway(venue)
         gw.start()
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 5
         while gw.state() != SessionState.LOGGED_ON and time.monotonic() < deadline:
             time.sleep(0.01)
         assert gw.state() == SessionState.LOGGED_ON

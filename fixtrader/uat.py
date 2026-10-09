@@ -509,10 +509,43 @@ class Runner:
         self.mine.append(sent['order_id'])
         return sent['order_id']
 
+    FINAL = ('FILLED', 'CANCELED', 'REJECTED', 'EXPIRED')
+
     def manual_status(self, oid, statuses, what=None, timeout=None):
-        return self.until(what or f'{oid} {"/".join(statuses)}', lambda s: (
-            (self.manual_order(oid, s) or {}).get('status') in statuses
-            and self.manual_order(oid, s)), timeout)
+        """Wait for the ticket to reach one of `statuses`. One that ended
+        somewhere else fails NOW, with what TT said — never 20 seconds of
+        waiting for a fill that can no longer come."""
+        seen = {}
+
+        def test(s):
+            o = self.manual_order(oid, s) or {}
+            seen.update(o)
+            status = o.get('status')
+            if status in statuses:
+                return o
+            if status in self.FINAL:
+                raise Failed(self._ended(oid, o))
+            return None
+        try:
+            return self.until(what or f'{oid} {"/".join(statuses)}', test, timeout)
+        except Failed as e:
+            if seen.get('status') and seen.get('status') not in self.FINAL:
+                raise Failed(f"{e}; it is {seen.get('status')}"
+                             + (f" — TT: {seen['text']}" if seen.get('text') else '')) from None
+            raise
+
+    def _ended(self, oid, o):
+        """Why a ticket ended where it did not have to, in plain words."""
+        status, text = o.get('status'), o.get('text') or ''
+        ticket = o.get('ticket') or {}
+        filled = float(o.get('filled_qty') or 0)
+        if status in ('CANCELED', 'EXPIRED') and ticket.get('tif') == 'IOC' and filled <= 0:
+            return (f"{oid}: TT cancelled the at-market order unfilled — nobody was at "
+                    f"{ticket.get('price')} or better when it arrived (an IOC never waits). "
+                    f"On a thin UAT market the shown price may not be tradeable; "
+                    f"raise 'market limit ticks' for this contract or retry"
+                    + (f". TT: {text}" if text else ''))
+        return f"{oid} ended {status}" + (f" — TT: {text}" if text else '')
 
     def manual_close(self, entry_oid, price=None):
         args = {'order_id': entry_oid}
