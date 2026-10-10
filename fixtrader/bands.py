@@ -50,10 +50,13 @@ def bucket_of(at, timeframe_sec, anchor=0.0):
 class SpreadCandles:
     """Closed candles of one contract's mid, plus the one forming now."""
 
-    def __init__(self, timeframe_sec, length, anchor=0.0):
+    def __init__(self, timeframe_sec, length, anchor=0.0, keep=None):
         self.timeframe_sec = float(timeframe_sec)
         self.length = int(length)
         self.anchor = float(anchor or 0.0)
+        #: How many closed candles are kept: KEEP_MULTIPLE x N, or more when
+        #: a reader needs a longer history (the trend filter's lookback).
+        self.keep = max(self.length * KEEP_MULTIPLE, self.length + 1, int(keep or 0))
         #: bucket start -> close, for CLOSED candles only.
         self.closed = {}
         self.forming = None          # (bucket, close) or None
@@ -100,7 +103,7 @@ class SpreadCandles:
         return finished
 
     def _trim(self):
-        keep = max(self.length * KEEP_MULTIPLE, self.length + 1)
+        keep = self.keep
         if len(self.closed) > keep:
             for bucket in sorted(self.closed)[:len(self.closed) - keep]:
                 del self.closed[bucket]

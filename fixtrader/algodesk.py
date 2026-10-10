@@ -48,7 +48,8 @@ class AlgoRun:
         self.store = store
         self.signal = algo_module.AlgoSignal(params)
         self.candles = bands.SpreadCandles(params['timeframe_min'] * 60.0,
-                                           params['length'])
+                                           params['length'],
+                                           keep=algo_module.candles_kept(params))
         self.history = {'note': None, 'candles': 0}
         self.day = self._new_day(None)
         self.recent = deque(maxlen=20)
@@ -73,18 +74,19 @@ class AlgoRun:
 
     @property
     def signature(self):
-        return (self.params['timeframe_min'], self.params['length'])
+        return (self.params['timeframe_min'], self.params['length'],
+                algo_module.candles_kept(self.params))
 
     # -- history --------------------------------------------------------------
 
     def seed(self, now):
         """Closed candles from the recorded mids — enough for the band and
-        the EMA to settle (`KEEP_MULTIPLE` x N)."""
+        the EMA to settle and the trend filter to measure (`candles_kept`)."""
         if self.store is None:
             self.history['note'] = 'collecting candles from the live price'
             return
         tf = self.candles.timeframe_sec
-        span = tf * (self.params['length'] * bands.KEEP_MULTIPLE + 2)
+        span = tf * (self.candles.keep + 2)
         from datetime import datetime, timezone
         since = datetime.fromtimestamp(now - span, timezone.utc)
         try:
@@ -113,7 +115,8 @@ class AlgoRun:
         self.signal.params = params
         if old != self.signature:
             self.candles = bands.SpreadCandles(params['timeframe_min'] * 60.0,
-                                               params['length'])
+                                               params['length'],
+                                               keep=algo_module.candles_kept(params))
             if now is not None:
                 self.seed(now)
             else:

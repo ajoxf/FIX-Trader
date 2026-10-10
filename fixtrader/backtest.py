@@ -69,7 +69,8 @@ def run(rows, params, width, k, fee_points, commission, margin,
     for i in range(len(rows)):
         bucket, close = rows[i]
         now = bucket + tf
-        candles = bands.SpreadCandles(tf, p['length'])
+        candles = bands.SpreadCandles(tf, p['length'],
+                                      keep=algo_module.candles_kept(p))
         candles.seed(rows[:i + 1])
         closes = candles.closes()
         stats = candles.stats()

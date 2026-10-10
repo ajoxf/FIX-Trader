@@ -599,6 +599,21 @@ def levels_gate(p, price, fee_points, k, margin, atr, width):
     return out
 
 
+def trend_lookback_candles(p):
+    """The trend filter's lookback, in candles of this timeframe."""
+    return max(1, int(round(p['trend_lookback_min'] / float(p['timeframe_min']))))
+
+
+def candles_kept(p):
+    """How many closed candles the Algo keeps: enough for the EMA to settle
+    (KEEP_MULTIPLE x N) AND for the trend filter to measure its drift (N +
+    its lookback). Kept fewer, the trend filter is never measured — on
+    1-minute candles a 120-minute lookback needs 140, and 5 x 20 kept it
+    blocking every entry for ever."""
+    return max(p['length'] * bands.KEEP_MULTIPLE,
+               p['length'] + trend_lookback_candles(p) + 1)
+
+
 def trend_drift(closes, length, lookback, sigma):
     """How far the band's middle (EMA) has moved over `lookback` candles,
     in sigma: + rising, - falling. None until there is enough history —
@@ -639,8 +654,7 @@ def judge_filters(p, md, stats, closes, cost_in):
                   else hl_candles * p['timeframe_min'])
     regime = algofilters.regime(closes[-2 * p['length']:],
                                 p['regime_er_max'], p['regime_min_crossings'])
-    lookback = max(1, int(round(p['trend_lookback_min']
-                                / float(p['timeframe_min']))))
+    lookback = trend_lookback_candles(p)
     drift = trend_drift(closes, p['length'], lookback, sigma)
 
     def edge_at(z):
