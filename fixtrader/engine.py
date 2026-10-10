@@ -2087,6 +2087,7 @@ class Engine:
                 'venue': contract.venue,
                 'decimals': contract.decimals,
                 'tick_size': contract.tick_size,
+                'tick_value': contract.tick_value,
                 'state': self.state_of(rt, now).value,
                 'halted_by': self.halted_by(rt, now),
                 'close_alert': (rt.close_alert if rt.position is not None

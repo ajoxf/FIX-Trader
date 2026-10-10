@@ -351,8 +351,14 @@ window.TradingMonitor = function (root, opts) {
     if (!entry || !has(entry.avg_price) || !has(r.price)) return null;
     const ticket = entry.ticket || {};
     const sid = String(ticket.security_id || r.security_id || '');
+    // The desk contract first — the figures the trader set on the Exchanges
+    // page — then the watchlist as TT defines it now. A ticket's own copy
+    // was taken when it was sent and may predate a units fix (GC read as a
+    // tick of 1, ES as 25): last, never first.
+    const desk = contracts().find((c) => String(c.security_id || '') === sid
+                                  && Number(c.tick_size) > 0 && Number(c.tick_value) > 0);
     const row = (manual().watchlist || []).find((w) => String((w.instrument || {}).security_id) === sid);
-    const inst = (row && row.instrument) || ticket.instrument || {};
+    const inst = desk || (row && row.instrument) || ticket.instrument || {};
     const tick = Number(inst.tick_size), value = Number(inst.tick_value);
     if (!(tick > 0) || !(value > 0)) return null;
     const sign = ticket.side === 'SELL' ? -1 : 1;

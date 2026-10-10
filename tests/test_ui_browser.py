@@ -1497,11 +1497,16 @@ def test_the_fills_tab_prices_a_manual_close_and_counts_lots_and_contracts(serve
              received='2026-10-09T11:05:21+00:00'),
     ]
     db.save_tt_fills(rows)
-    gc = {'security_id': 'GC1', 'tick_size': '0.1', 'tick_value': '10'}
     es = {'security_id': 'ES1', 'tick_size': '0.25', 'tick_value': '12.50'}
     snap = json.loads((tmp / 'status.json').read_text())
+    # The desk's own GC contract carries the figures the trader set; the
+    # watchlist has no GC at all, and ES there still reads TT's old 25.
+    snap['contracts'] = list(snap['contracts']) + [dict(
+        snap['contracts'][0], key='gc', name='GC Dec26', security_id='GC1',
+        tick_size=0.1, tick_value=10.0)]
+    es = dict(es, tick_size='0.25')
     snap['engine']['manual_terminal'] = {
-        'watchlist': [{'instrument': gc, 'quote': {}}, {'instrument': es, 'quote': {}}],
+        'watchlist': [{'instrument': es, 'quote': {}}],
         'orders': [
             {'id': 'FTM-open1', 'ids': ['FTM-open1'], 'avg_price': 4220.1, 'status': 'FILLED',
              'ticket': {'security_id': 'GC1', 'side': 'BUY',
@@ -1509,7 +1514,8 @@ def test_the_fills_tab_prices_a_manual_close_and_counts_lots_and_contracts(serve
             {'id': 'FTM-close1', 'ids': ['FTM-close1'], 'close_of': 'FTM-open1', 'status': 'FILLED',
              'ticket': {'security_id': 'GC1', 'side': 'SELL'}},
             {'id': 'FTM-open2', 'ids': ['FTM-open2'], 'avg_price': 7853.0, 'status': 'FILLED',
-             'ticket': {'security_id': 'ES1', 'side': 'SELL'}},
+             'ticket': {'security_id': 'ES1', 'side': 'SELL',
+                        'instrument': {'tick_size': '25', 'tick_value': '12.5'}}},
             {'id': 'FTM-close2', 'ids': ['FTM-close2'], 'close_of': 'FTM-open2', 'status': 'FILLED',
              'ticket': {'security_id': 'ES1', 'side': 'BUY'}},
         ], 'pnl': {'positions': []}}
