@@ -249,6 +249,12 @@ def test_the_account_page_and_its_journal(tmp_path, tick_value=1.0):
     assert body['closed'][0]['net_pnl'] == 8.0
     csv = c.get('/api/tt_fills.csv').data.decode()
     assert 'exec_id' in csv.splitlines()[0] and 'E9' in csv
+    import csv as csv_mod
+    import io
+    table = {r['exec_id']: r for r in csv_mod.DictReader(io.StringIO(csv))}
+    assert csv.splitlines()[0].endswith(',pnl')
+    assert float(table['E9']['pnl']) == 10.0         # the Fills tab's figure
+    assert table['E10']['pnl'] == ''                  # not ours: empty, never 0
 
 
 def test_the_journal_survives_a_contract_with_no_tick_value(tmp_path):
@@ -275,3 +281,46 @@ def test_close_all_escalates_with_auto_trade_off(tmp_path):
         engine.poll(now=gw.now)
     assert rt.position is None                          # the market close went
     assert len(gw.sent_ids) == sent + 1
+
+
+def test_the_fills_csv_prices_a_manual_close_against_the_ticket_it_closed(tmp_path):
+    """The CSV carries the same P&L as the Fills tab: a manual close against
+    the ticket it closed, with the DESK contract's tick (what the trader set)
+    over the ticket's own old copy."""
+    import csv as csv_mod
+    import io
+    import json
+    from fixtrader.config import ContractConfig, TraderConfig
+    from fixtrader.database import Database
+    from fixtrader.webapp import create_app
+
+    cfg = TraderConfig(path=str(tmp_path / 'config.json'))
+    cfg.settings['DATABASE_PATH'] = str(tmp_path / 'j.db')
+    cfg.contracts['gc'] = ContractConfig(key='gc', name='GC Dec26', symbol='GC',
+                                         tick_size=0.1, tick_value=10.0, security_id='GC1')
+    cfg.save()
+    db = Database(str(tmp_path / 'j.db'))
+    base = {'orig_clordid': '', 'account': 'ACC', 'symbol': 'GC', 'contract_key': 'gc',
+            'qty': 1.0, 'cum_qty': 1.0, 'leaves_qty': 0.0, 'exec_type': '2',
+            'ord_status': '2', 'text': '', 'ours': 'MANUAL', 'security_id': 'GC1'}
+    db.save_tt_fills([
+        dict(base, exec_id='M1', clordid='FTM-a', order_id='T1', tt_time='t1', side='BUY',
+             open_close='OPEN', price=4220.1, received='2026-10-09T18:46:33+00:00'),
+        dict(base, exec_id='M2', clordid='FTM-b', order_id='T2', tt_time='t2', side='SELL',
+             open_close='CLOSE', price=4218.0, received='2026-10-09T18:46:34+00:00')])
+    status = tmp_path / 's.json'
+    status.write_text(json.dumps({'engine': {'manual_terminal': {'orders': [
+        {'id': 'FTM-a', 'ids': ['FTM-a'], 'avg_price': 4220.1,
+         'ticket': {'security_id': 'GC1', 'side': 'BUY',
+                    'instrument': {'tick_size': '1', 'tick_value': '10'}}},
+        {'id': 'FTM-b', 'ids': ['FTM-b'], 'close_of': 'FTM-a',
+         'ticket': {'security_id': 'GC1', 'side': 'SELL'}}], 'watchlist': []}}}))
+    app = create_app(str(tmp_path / 'config.json'), str(status),
+                     str(tmp_path / 'c.jsonl'), str(tmp_path / 'r.json'))
+    c = app.test_client()
+    table = {r['exec_id']: r for r in csv_mod.DictReader(io.StringIO(
+        c.get('/api/tt_fills.csv').data.decode()))}
+    assert float(table['M2']['pnl']) == -210.0        # -2.1 x $100, not -$21
+    assert table['M1']['pnl'] == ''                    # an open has no P&L
+    fills = {f['exec_id']: f for f in c.get('/api/journal').get_json()['tt_fills']}
+    assert fills['M2']['pnl'] == -210.0                # the tab says the same

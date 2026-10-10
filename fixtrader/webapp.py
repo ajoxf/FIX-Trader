@@ -347,34 +347,12 @@ def create_app(config_path: str = "config.json",
             })
         orders = db.orders(limit=2000)
         by_id = {o['clordid']: o for o in orders}
-        positions = {p['id']: p for p in closed}
-        for p in db.open_positions():
-            positions.setdefault(p.id, {'side': p.side.value,
-                                        'entry_price': p.avg_price})
         tt = db.tt_fills(limit=limit)
+        _price_fills(config, db, tt, _manual_book())
         timing: Dict[str, List[float]] = {}
         first_fill = set()
         for f in reversed(tt):                 # oldest first: first fill per order
             order = by_id.get(f['clordid']) or by_id.get(f['orig_clordid'])
-            contract = config.contracts.get(f.get('contract_key') or
-                                            (order or {}).get('contract_key') or '')
-            f['name'] = contract.name if contract else (f['symbol'] or f['security_id'])
-            f['decimals'] = contract.decimals if contract else None
-            f['intent'] = (order or {}).get('intent')
-            f['order_type'] = (order or {}).get('order_type')
-            f['position_id'] = (order or {}).get('position_id')
-            f['pnl'] = None
-            pos = positions.get(f['position_id'])
-            if (order and order.get('intent') == 'CLOSE' and pos and contract
-                    and pos.get('entry_price') is not None):
-                sign = 1 if pos['side'] == 'BUY' else -1
-                # No tick value (or price) is an UNKNOWN P&L — a dash — never
-                # a journal that fails and empties the Fills tab with it.
-                money = (sizing.to_money((f['price'] - pos['entry_price']) * sign,
-                                         contract.tick_size, contract.tick_value,
-                                         f['qty'])
-                         if f.get('price') is not None else None)
-                f['pnl'] = round(money, 2) if money is not None else None
             if order and order.get('sent_at') and f['clordid'] not in first_fill:
                 first_fill.add(f['clordid'])
                 try:
@@ -392,12 +370,23 @@ def create_app(config_path: str = "config.json",
                         'account': next((v.account for v in config.venues.values()
                                          if getattr(v, 'account', '')), '')})
 
+    def _manual_book():
+        """The manual ticket's orders and watchlist, from the engine's
+        snapshot — what a manual close is priced against."""
+        engine = read_status().get('engine') or {}
+        return engine.get('manual_terminal') or {}
+
     @app.get('/api/tt_fills.csv')
     def api_tt_fills_csv():
-        """The TT fills tape as TT sent it, newest first."""
+        """The TT fills tape as TT sent it, newest first — and beside TT's
+        own fields, the P&L this program puts on a closing fill of ours (the
+        same figure as the Fills tab), empty where it cannot be priced."""
         from .database import Database
-        rows = _db(load_config()).tt_fills(limit=100000)
-        return _csv('tt_fills.csv', list(Database.TT_FILL_COLUMNS), rows)
+        config = load_config()
+        db = _db(config)
+        rows = db.tt_fills(limit=100000)
+        _price_fills(config, db, rows, _manual_book())
+        return _csv('tt_fills.csv', list(Database.TT_FILL_COLUMNS) + ['pnl'], rows)
 
     @app.get('/api/slippage')
     def api_slippage():
@@ -932,6 +921,76 @@ def create_app(config_path: str = "config.json",
                         'note': SIMULATED_SPEC_NOTE if simulated else None})
 
     return app
+
+
+def _price_fills(config, db, tt, manual):
+    """Name each TT fill and put a P&L on each CLOSING fill of ours, in
+    place: the Algo's against the position it closed, a manual ticket's
+    against the ticket it closed (`close_of`). (fill - entry) x side, in
+    money through `sizing.to_money`. The contract's figures are the desk
+    contract's — what the trader set — then the watchlist's as TT defines
+    them now, the ticket's own copy last (it may predate a units fix). A
+    P&L that cannot be priced is None, never 0 and never a failed page."""
+    orders = {o['clordid']: o for o in db.orders(limit=100000)}
+    positions = {}
+    for p in db.closed_positions(limit=100000):
+        positions[p.id] = (p.side.value, p.avg_price)
+    for p in db.open_positions():
+        positions.setdefault(p.id, (p.side.value, p.avg_price))
+    by_sid = {str(getattr(c, 'security_id', '') or ''): c
+              for c in config.contracts.values() if getattr(c, 'security_id', '')}
+    m_orders = list(manual.get('orders') or [])
+    m_by_id = {o.get('id'): o for o in m_orders}
+    m_owner = {}
+    for o in m_orders:
+        for cid in list(o.get('ids') or []) + [o.get('current_id'), o.get('id')]:
+            if cid:
+                m_owner[cid] = o
+    watch = {str((w.get('instrument') or {}).get('security_id') or ''): w.get('instrument') or {}
+             for w in manual.get('watchlist') or []}
+
+    def money(points, tick, value, qty):
+        try:
+            out = sizing.to_money(points, float(tick) if tick else None,
+                                  float(value) if value else None, float(qty or 0))
+        except (TypeError, ValueError):
+            return None
+        return round(out, 2) if out is not None else None
+
+    for f in tt:
+        order = orders.get(f['clordid']) or orders.get(f.get('orig_clordid') or '')
+        contract = config.contracts.get(f.get('contract_key') or
+                                        (order or {}).get('contract_key') or '')
+        f['name'] = contract.name if contract else (f['symbol'] or f['security_id'])
+        f['decimals'] = contract.decimals if contract else None
+        f['intent'] = (order or {}).get('intent')
+        f['order_type'] = (order or {}).get('order_type')
+        f['position_id'] = (order or {}).get('position_id')
+        f['pnl'] = None
+        if f.get('price') is None:
+            continue
+        if order is not None:
+            pos = positions.get(f['position_id'])
+            if order.get('intent') == 'CLOSE' and pos and contract and pos[1] is not None:
+                sign = 1 if pos[0] == 'BUY' else -1
+                f['pnl'] = money((f['price'] - pos[1]) * sign, contract.tick_size,
+                                 contract.tick_value, f['qty'])
+            continue
+        closing = m_owner.get(f['clordid'])
+        entry = m_by_id.get((closing or {}).get('close_of'))
+        if not entry or entry.get('avg_price') is None:
+            continue
+        ticket = entry.get('ticket') or {}
+        sid = str(ticket.get('security_id') or f.get('security_id') or '')
+        desk = by_sid.get(sid)
+        if desk is not None and desk.tick_size and desk.tick_value:
+            tick, value = desk.tick_size, desk.tick_value
+        else:
+            inst = watch.get(sid) or ticket.get('instrument') or {}
+            tick, value = inst.get('tick_size'), inst.get('tick_value')
+        sign = -1 if ticket.get('side') == 'SELL' else 1
+        f['pnl'] = money((f['price'] - float(entry['avg_price'])) * sign, tick, value, f['qty'])
+    return tt
 
 
 def _csv(filename, columns, rows):
