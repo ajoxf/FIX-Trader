@@ -1479,7 +1479,13 @@ def test_the_fills_tab_prices_a_manual_close_and_counts_lots_and_contracts(serve
     the Algo's alone), and "26 contracts" was the lots traded. A manual close
     is priced against the ticket it closed, with the instrument's tick value."""
     url, tmp = server
+    from fixtrader.config import ContractConfig, TraderConfig
     from fixtrader.database import Database
+    cfg = (TraderConfig.from_file(str(tmp / 'config.json')) if (tmp / 'config.json').exists()
+           else TraderConfig(path=str(tmp / 'config.json')))
+    cfg.contracts['gc'] = ContractConfig(key='gc', name='GC Dec26', symbol='GC',
+                                         tick_size=0.1, tick_value=10.0, security_id='GC1')
+    cfg.save()                                         # the desk contract, as the trader set it
     db = Database(str(tmp / 'fixtrader.db'))          # beside the status file
     base = {'orig_clordid': '', 'account': 'ACC', 'symbol': 'GC', 'contract_key': '',
             'qty': 1.0, 'cum_qty': 1.0, 'leaves_qty': 0.0, 'exec_type': 'F',
