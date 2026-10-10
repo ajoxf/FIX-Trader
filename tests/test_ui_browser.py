@@ -1472,3 +1472,62 @@ def test_the_ladder_draws_the_full_book(server):
         assert page.locator('.ladderwin .ld-depth').is_disabled()
         browser.close()
     assert errors == []
+
+
+def test_the_fills_tab_prices_a_manual_close_and_counts_lots_and_contracts(server):
+    """Found on TT UAT: manual closing fills showed no P&L (the total was
+    the Algo's alone), and "26 contracts" was the lots traded. A manual close
+    is priced against the ticket it closed, with the instrument's tick value."""
+    url, tmp = server
+    from fixtrader.database import Database
+    db = Database(str(tmp / 'fixtrader.db'))          # beside the status file
+    base = {'orig_clordid': '', 'account': 'ACC', 'symbol': 'GC', 'contract_key': '',
+            'qty': 1.0, 'cum_qty': 1.0, 'leaves_qty': 0.0, 'exec_type': 'F',
+            'ord_status': '2', 'text': '', 'ours': 'MANUAL'}
+    rows = [
+        dict(base, exec_id='X1', clordid='FTM-open1', order_id='T1', tt_time='20260109-18:46:33.000',
+             security_id='GC1', side='BUY', open_close='OPEN', price=4220.1, received='2026-10-09T18:46:33+00:00'),
+        dict(base, exec_id='X2', clordid='FTM-close1', order_id='T2', tt_time='20260109-18:46:34.000',
+             security_id='GC1', side='SELL', open_close='CLOSE', price=4218.0, received='2026-10-09T18:46:34+00:00'),
+        dict(base, exec_id='X3', clordid='FTM-open2', order_id='T3', tt_time='20260109-09:39:55.000',
+             security_id='ES1', symbol='ES', side='SELL', open_close='OPEN', price=7853.0,
+             received='2026-10-09T09:39:55+00:00'),
+        dict(base, exec_id='X4', clordid='FTM-close2', order_id='T4', tt_time='20260109-11:05:21.000',
+             security_id='ES1', symbol='ES', side='BUY', open_close='CLOSE', price=7879.0,
+             received='2026-10-09T11:05:21+00:00'),
+    ]
+    db.save_tt_fills(rows)
+    gc = {'security_id': 'GC1', 'tick_size': '0.1', 'tick_value': '10'}
+    es = {'security_id': 'ES1', 'tick_size': '0.25', 'tick_value': '12.50'}
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['engine']['manual_terminal'] = {
+        'watchlist': [{'instrument': gc, 'quote': {}}, {'instrument': es, 'quote': {}}],
+        'orders': [
+            {'id': 'FTM-open1', 'ids': ['FTM-open1'], 'avg_price': 4220.1, 'status': 'FILLED',
+             'ticket': {'security_id': 'GC1', 'side': 'BUY',
+                        'instrument': {'tick_size': '1', 'tick_value': '10'}}},   # read before the units fix
+            {'id': 'FTM-close1', 'ids': ['FTM-close1'], 'close_of': 'FTM-open1', 'status': 'FILLED',
+             'ticket': {'security_id': 'GC1', 'side': 'SELL'}},
+            {'id': 'FTM-open2', 'ids': ['FTM-open2'], 'avg_price': 7853.0, 'status': 'FILLED',
+             'ticket': {'security_id': 'ES1', 'side': 'SELL'}},
+            {'id': 'FTM-close2', 'ids': ['FTM-close2'], 'close_of': 'FTM-open2', 'status': 'FILLED',
+             'ticket': {'security_id': 'ES1', 'side': 'BUY'}},
+        ], 'pnl': {'positions': []}}
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser = _launch(p)
+        page = browser.new_page(viewport={'width': 1600, 'height': 900})
+        page.on('pageerror', lambda e: errors.append(str(e)))
+        page.goto(url + 'account', wait_until='domcontentloaded')
+        page.locator('.mon-tabs button[data-tab="fills"]').click()
+        page.wait_for_selector('.mon-pane table.fills tbody tr')
+        page.wait_for_timeout(600)
+        summary = page.locator('.mon-sum').inner_text()
+        assert '4 lots' in summary and '2 contracts' in summary, summary
+        # GC: (4218.0 - 4220.1) x $100 = -$210; ES short: (7853 - 7879) x $50 = -$1,300.
+        assert '-$1,510.00' in summary, summary
+        text = page.locator('.mon-pane table.fills').inner_text()
+        assert '-$210.00' in text and '-$1,300.00' in text
+        browser.close()
+    assert errors == []

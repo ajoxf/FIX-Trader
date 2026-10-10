@@ -338,6 +338,27 @@ window.TradingMonitor = function (root, opts) {
       (note ? ' <span class="tiny">' + esc(note) + '</span>' : '') + '</td></tr>';
   }
 
+  /* A manual CLOSING fill's P&L, against the ticket it closed (close_of):
+   * (fill - entry average) x side, in ticks x the tick value x qty — the
+   * instrument's figures as TT defines them NOW (an old ticket may carry
+   * figures read before the units were fixed). None where it cannot be
+   * priced: a dash, never 0. */
+  function manualClosePnl(r) {
+    const orders = manual().orders || [];
+    const o = orders.find((x) => (x.ids || []).includes(r.clordid) || x.current_id === r.clordid);
+    if (!o || !o.close_of) return null;
+    const entry = orders.find((x) => x.id === o.close_of);
+    if (!entry || !has(entry.avg_price) || !has(r.price)) return null;
+    const ticket = entry.ticket || {};
+    const sid = String(ticket.security_id || r.security_id || '');
+    const row = (manual().watchlist || []).find((w) => String((w.instrument || {}).security_id) === sid);
+    const inst = (row && row.instrument) || ticket.instrument || {};
+    const tick = Number(inst.tick_size), value = Number(inst.tick_value);
+    if (!(tick > 0) || !(value > 0)) return null;
+    const sign = ticket.side === 'SELL' ? -1 : 1;
+    return Math.round((Number(r.price) - Number(entry.avg_price)) * sign / tick * value * Number(r.qty || 0) * 100) / 100;
+  }
+
   function fillsPane() {
     const j = state.journal;
     if (!j) return '<p class="empty">Loading the TT fills…</p>';
@@ -362,11 +383,14 @@ window.TradingMonitor = function (root, opts) {
         ours: 'PAPER', text: 'filled here at the live bid/offer — nothing sent to TT', pnl: null }));
       rows.sort((a, b) => String(b.received || '').localeCompare(String(a.received || '')));
     }
+    rows.forEach((r) => { if (r.ours === 'MANUAL' && !has(r.pnl)) r.pnl = manualClosePnl(r); });
     if (state.oursOnly) rows = rows.filter((r) => r.ours);
     const total = rows.reduce((a, r) => a + (Number(r.qty) || 0), 0);
+    const traded = new Set(rows.map((r) => r.security_id || r.name)).size;
     const pnls = rows.filter((r) => has(r.pnl));
     const pnl = pnls.reduce((a, r) => a + r.pnl, 0);
-    html += '<div class="mon-sum"><span>' + rows.length + ' fills</span><span>' + qty(total) + ' contracts</span>' +
+    html += '<div class="mon-sum"><span>' + rows.length + ' fills</span><span>' + qty(total) + ' lots</span>' +
+      '<span>' + traded + ' contract' + (traded === 1 ? '' : 's') + '</span>' +
       '<span>' + rows.filter((r) => r.ours).length + ' ours</span>' +
       '<span>account ' + esc(j.account || DASH) + '</span>' +
       '<span>closing fills\' P&amp;L <b class="' + cls(pnl) + '">' + (pnls.length ? money(pnl) : DASH) + '</b></span></div>';
@@ -582,7 +606,7 @@ window.TradingMonitor = function (root, opts) {
       'for a short. Net after costs takes the whole round trip off, so a position shows a loss the instant ' +
       'it opens. Close sends a closing order by the position\'s own tickets (77=C) and stands that contract\'s Algo down.',
     orders: 'cancel is a REQUEST: an order stays working until TT says it is cancelled, and it can fill in between.',
-    fills: 'Each row is a TT Execution Report (35=8) carrying a fill. P&L is shown on a closing fill of ours, against the position it closed, before fees. Sending is not a fill.',
+    fills: 'Each row is a TT Execution Report (35=8) carrying a fill. P&L is shown on a closing fill of ours — the Algo\'s against the position it closed, a manual one against the ticket it closed — before fees. Sending is not a fill.',
     accounts: 'The account this desk trades, the FIX sessions it trades over, and the P&L by origin. A figure TT does not publish here is said, never shown as 0.',
     analysis: 'Built from what is recorded: the Algo\'s closed positions and the manual ticket\'s closed trades. Net is after the configured round trip; a figure nobody measured is a dash, never 0.',
     slippage: 'Measured against the price each decision was made at. Positive is a cost at both ends; negative an improvement.',
