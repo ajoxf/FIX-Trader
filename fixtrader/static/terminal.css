@@ -350,6 +350,11 @@ body {
 .modal-box h2 { margin: 0 0 8px; font-size: calc(14px * var(--fs)); }
 .modal-box p { margin: 0 0 14px; font-size: calc(12px * var(--fs)); line-height: 1.5; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+/* The spread an order is reviewed against: plain, and RED when it is wider
+   than the contract's "Book no wider than". */
+.modal-box p.modal-warn { padding: 5px 8px; border: 1px solid #b9b9b9; background: #f4f4f4;
+                          font-family: var(--mono, monospace); }
+.modal-box p.modal-warn.wide { border-color: #b03030; background: #f6e2e2; color: #8a1c1c; font-weight: 700; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 

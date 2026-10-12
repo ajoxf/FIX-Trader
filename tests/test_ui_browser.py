@@ -1543,3 +1543,26 @@ def test_the_fills_tab_prices_a_manual_close_and_counts_lots_and_contracts(serve
         assert '-$210.00' in text and '-$1,300.00' in text
         browser.close()
     assert errors == []
+
+
+def test_the_order_review_shows_the_spread_red_when_wide(server):
+    """The shared modal carries the spread line an order is reviewed against:
+    plain inside the contract's limit, red over it, absent with none."""
+    url, _ = server
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        # Opened, not awaited: ask() resolves only when it is answered.
+        page.evaluate("() => { ask('Buy?', 'body', 'Send', {text: 'Spread 4218 / 4230: 12 wide', wide: true}); }")
+        warn = page.locator('#modal-warn')
+        assert warn.is_visible() and '12 wide' in warn.inner_text()
+        assert 'wide' in (warn.get_attribute('class') or '')
+        page.click('#modal-cancel')
+        page.evaluate("() => { ask('Buy?', 'body', 'Send', {text: 'Spread 4219.5 / 4219.7: 0.2 wide', wide: false}); }")
+        assert 'wide' not in (page.locator('#modal-warn').get_attribute('class') or '').split()
+        page.click('#modal-cancel')
+        page.evaluate("() => { ask('Cancel?', 'body', 'OK'); }")
+        assert not page.locator('#modal-warn').is_visible()
+        page.click('#modal-cancel')
+        browser.close()
+    assert errors == []

@@ -301,7 +301,11 @@
       const args=Object.fromEntries(new FormData(e.target));args.cancel_on_disconnect=e.target.elements.cancel_on_disconnect.checked;
       const r=await command('preview',args), wrap=document.createElement('div'), dl=document.createElement('dl');
       for(const [key,value] of Object.entries(r.ticket)){if(key==='instrument')continue;const div=document.createElement('div');div.append(text('dt',key.replaceAll('_',' ')),text('dd',fmt(value)));dl.append(div);}
-      wrap.append(text('h3',r.ticket.instrument.display_name||r.ticket.instrument.description||r.ticket.instrument.symbol),dl,text('p','Review expires in 60 seconds. Confirming sends this order to TT UAT. Exchange acceptance is reported below.'));
+      const spread=r.book&&r.book.text?text('p',r.book.text):null;
+      if(spread)spread.className='spread-line'+(r.book.wide?' wide':'');
+      wrap.append(text('h3',r.ticket.instrument.display_name||r.ticket.instrument.description||r.ticket.instrument.symbol));
+      if(spread)wrap.append(spread);
+      wrap.append(dl,text('p','Review expires in 60 seconds. Confirming sends this order to TT UAT. Exchange acceptance is reported below.'));
       const details=document.createElement('details');details.append(text('summary','FIX fields to be sent'),text('pre',r.fields.map(([k,v])=>`${k}=${v}`).join('\n')));wrap.append(details);
       confirmDialog('Review UAT order',wrap,'Confirm · Send UAT order',()=>command('submit',{token:r.token,confirmed:true}));
     }catch(error){notice(error.message,true);}finally{$('review-order').disabled=false;}

@@ -122,8 +122,15 @@ function toast(kind, title, message, sub) {
 
 /* -- the one modal ------------------------------------------------------- */
 
-function ask(title, body, confirmLabel) {
+function ask(title, body, confirmLabel, warn) {
   return new Promise((resolve) => {
+    // `warn`: {text, wide} — a line above the body, red when wide.
+    const w = document.getElementById('modal-warn');
+    if (w) {
+      w.hidden = !(warn && warn.text);
+      w.textContent = (warn && warn.text) || '';
+      w.classList.toggle('wide', !!(warn && warn.wide));
+    }
     const modal = document.getElementById('modal');
     document.getElementById('modal-title').textContent = title;
     document.getElementById('modal-body').textContent = body;
@@ -1230,7 +1237,7 @@ async function manualOrder(el, key, side, price) {
     ' LIMIT') + ' · ' + t.tif + ' · account ' + t.account + ' · Open/Close: OPEN (77=O). ' +
     'A manual ticket (FTM-), sent to TT ' + ((d.engine || {}).environment || '') +
     ' on your confirmation; an acknowledgement or fill comes from TT.',
-    'Send ' + side);
+    'Send ' + side, review.book);
   if (!ok) return;
   const sent = await command('terminal_submit', '', { token: review.token, confirmed: true });
   if (sent && sent.ok) toast('ORDER', 'SENT', side + ' ' + t.quantity + ' — ' + (sent.order_id || ''), key);
@@ -1294,7 +1301,7 @@ async function closeManual(el, key, price) {
   const ok = await ask((price === null ? 'CLOSE ALL' : 'Close @ LMT') + ' — ' +
     el.querySelector('.title').textContent + '?',
     lines.join('; ') + '. Open/Close: CLOSE (77=C), capped at what each ticket has open.',
-    price === null ? 'CLOSE NOW' : 'Rest the close');
+    price === null ? 'CLOSE NOW' : 'Rest the close', (reviews[0] || {}).book);   // shown, never a block
   if (!ok) return;
   for (const r of reviews) await command('terminal_submit', '', { token: r.token, confirmed: true });
   toast('ORDER', 'CLOSING', lines.join('; '), key);

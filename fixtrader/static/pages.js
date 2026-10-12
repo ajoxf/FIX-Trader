@@ -26,8 +26,15 @@ function toast(kind, title, message, sub) {
 }
 
 /* The one modal. No native confirm() / alert() / prompt(), ever. */
-function ask(title, body, confirmLabel) {
+function ask(title, body, confirmLabel, warn) {
   return new Promise((resolve) => {
+    // `warn`: {text, wide} — a line above the body, red when wide.
+    const w = document.getElementById('modal-warn');
+    if (w) {
+      w.hidden = !(warn && warn.text);
+      w.textContent = (warn && warn.text) || '';
+      w.classList.toggle('wide', !!(warn && warn.wide));
+    }
     const modal = document.getElementById('modal');
     document.getElementById('modal-title').textContent = title;
     document.getElementById('modal-body').textContent = body;

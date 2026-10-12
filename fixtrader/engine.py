@@ -180,6 +180,7 @@ class Engine:
         if terminal is not None:
             terminal.mode_block = self._manual_block
             terminal.market_ticks = self._market_ticks
+            terminal.spread_limit = self._spread_limit
         #: Asked for from the screen, after a change only a restart takes on.
         #: The runner stops cleanly and the launcher starts it again.
         self.restart_requested: bool = False
@@ -1288,6 +1289,16 @@ class Engine:
         if key in self.dry_run or not self.auto_trade_enabled:
             return 'DRY'
         return 'PAPER' if self.paper else 'LIVE'
+
+    def _spread_limit(self, security_id) -> float:
+        """The desk contract's "Book no wider than" (ticks, 0 = none)."""
+        key = self._contract_for_security(security_id)
+        if key is None:
+            return 0.0
+        try:
+            return float(self.config.effective(key).get('max_book_spread_ticks') or 0)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _market_ticks(self, security_id) -> float:
         """How many ticks through the touch a manual MARKET ticket goes as a

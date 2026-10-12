@@ -173,3 +173,32 @@ def test_every_clordid_we_send_fits_tts_20_characters(terminal):
     r = AlgoOrderRouter(SimpleNamespace(venue=None, contracts=[], _redact=lambda t: t))
     r.seq = 99999
     assert len(r._next_id()) <= 20
+
+
+# -- the spread an order is reviewed against ---------------------------------
+
+def test_the_review_shows_the_spread_and_flags_it_wider_than_the_limit(terminal):
+    """Found on UAT gold, 4218.0 / 4230.0: an order at market crosses the
+    spread, and on a thin book that is the whole cost of the trade. The review
+    says it — in money — and flags it WIDE over the contract's limit."""
+    quote(terminal, 9050, 9052)                     # 90.50 / 90.52: 2 ticks
+    terminal.spread_limit = lambda sid: 1
+    book = terminal.preview(market_ticket())['book']
+    assert book['ticks'] == 2 and book['money'] == 20.0
+    assert book['wide'] and 'WIDER' in book['text'] and '90.5 / 90.52' in book['text']
+
+
+def test_a_spread_inside_the_limit_or_with_no_limit_is_not_flagged(terminal):
+    """The control — and the review is never refused for it: the trader decides."""
+    quote(terminal, 9050, 9052)
+    terminal.spread_limit = lambda sid: 3
+    review = terminal.preview(market_ticket())
+    assert review['ok'] and not review['book']['wide'] and 'WIDER' not in review['book']['text']
+    terminal.spread_limit = lambda sid: 0
+    assert not terminal.preview(market_ticket())['book']['wide']
+
+
+def test_with_no_quote_the_review_says_the_spread_is_not_known(terminal):
+    terminal.market_ticks = lambda sid: 2
+    book = terminal.preview(market_ticket())['book']
+    assert book['spread'] is None and 'not known' in book['text'] and not book['wide']

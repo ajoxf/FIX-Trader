@@ -165,6 +165,9 @@ class ManualTerminal:
         #: Security ID — set by the engine from the contract's settings. 0 is
         #: a true market order.
         self.market_ticks = lambda security_id: 0.0
+        #: The contract's "Book no wider than" in ticks (0 = no limit) — the
+        #: engine's, for an instrument on the desk.
+        self.spread_limit = lambda security_id: 0.0
         self.watch = self._load('watch')
         for instrument in self.watch.values():
             self._enrich(instrument)
@@ -920,7 +923,47 @@ class ManualTerminal:
             self.previews = {k: v for k, v in self.previews.items() if v['expires'] > time.time()}
             self.previews[token] = {'ticket': ticket, 'expires': time.time() + 60}
             return {'ok': True, 'token': token, 'ticket': ticket,
-                    'fields': self._order_fields(ticket, 'assigned-on-confirmation'), 'expires_in': 60}
+                    'fields': self._order_fields(ticket, 'assigned-on-confirmation'), 'expires_in': 60,
+                    'book': self.book_check(ticket)}
+
+    def book_check(self, ticket):
+        """The spread a ticket is reviewed against, in words — and WIDE when
+        it is over the contract's "Book no wider than": an order at market
+        crosses it, and on a thin book that is the whole cost of the trade
+        (UAT gold 4218.0 / 4230.0: $1,200 a lot, round trip). Shown, never a
+        refusal: the trader decides."""
+        sid = ticket.get('security_id')
+        book = self.books.get(sid) or {}
+        bid, ask = book.get('bid'), book.get('ask')
+        out = {'bid': bid, 'ask': ask, 'spread': None, 'ticks': None, 'money': None,
+               'limit_ticks': None, 'wide': False, 'text': None}
+        if bid is None or ask is None:
+            out['text'] = 'no bid and offer from TT right now — the spread is not known'
+            return out
+        instrument = ticket.get('instrument') or self.watch.get(sid) or {}
+        live = self.watch.get(sid) or {}
+        try:
+            tick = float(live.get('tick_size') or instrument.get('tick_size') or 0)
+            value = float(live.get('tick_value') or instrument.get('tick_value') or 0)
+        except (TypeError, ValueError):
+            tick = value = 0.0
+        spread = float(ask) - float(bid)
+        out['spread'] = round(spread, 10)
+        if tick > 0:
+            out['ticks'] = round(spread / tick, 4)
+            if value > 0:
+                out['money'] = round(out['ticks'] * value * float(ticket.get('quantity') or 0), 2)
+        try:
+            limit = float(self.spread_limit(sid) or 0)
+        except (TypeError, ValueError):
+            limit = 0.0
+        out['limit_ticks'] = limit or None
+        cost = f" — about {out['money']:,.2f} to cross, round trip" if out['money'] is not None else ''
+        size = f"{spread:g} wide" + (f" ({out['ticks']:g} ticks)" if out['ticks'] is not None else '')
+        out['wide'] = bool(limit and out['ticks'] is not None and out['ticks'] > limit + 1e-9)
+        out['text'] = (f"Spread {bid:g} / {ask:g}: {size}{cost}"
+                       + (f". WIDER than this contract's {limit:g}-tick limit." if out['wide'] else ''))
+        return out
 
     def _refuse_if_blocked(self, ticket=None):
         reason = self.mode_block(ticket)
