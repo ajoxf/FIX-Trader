@@ -114,3 +114,26 @@ def test_candles_kept_covers_the_lookback_and_never_less_than_five_n():
     assert algo_mod.candles_kept(base) == 5 * base['length']
     one = dict(base, timeframe_min=1)
     assert algo_mod.candles_kept(one) == base['length'] + 120 + 1
+
+
+def test_a_book_wider_than_the_limit_holds_entries_and_says_why(tmp_path):
+    """"Book no wider than" was on the settings screen and enforced nowhere:
+    on UAT gold went 4218.0 / 4230.0 and every round trip paid 12 points."""
+    cfg, gw, db, engine = desk(tmp_path, max_book_spread_ticks=3)
+    walk(engine, gw, 30 * 60)
+    gw.set_book('gc', 4218.0, 4230.0, 5, 5)
+    engine.poll(now=gw.now)
+    health = engine.runtimes['gc'].algo.body.get('health') or ''
+    assert 'book is 120 ticks wide' in health and 'over the 3-tick limit' in health
+
+
+def test_a_book_inside_the_limit_or_no_limit_is_not_held(tmp_path):
+    """The control: 2 ticks wide under a 3-tick limit, and 120 with none set."""
+    cfg, gw, db, engine = desk(tmp_path, max_book_spread_ticks=3)
+    walk(engine, gw, 30 * 60)
+    assert 'ticks wide' not in (engine.runtimes['gc'].algo.body.get('health') or '')
+    cfg2, gw2, db2, engine2 = desk(tmp_path / 'b' if (tmp_path / 'b').mkdir() is None else tmp_path)
+    walk(engine2, gw2, 30 * 60)
+    gw2.set_book('gc', 4218.0, 4230.0, 5, 5)
+    engine2.poll(now=gw2.now)
+    assert 'ticks wide' not in (engine2.runtimes['gc'].algo.body.get('health') or '')

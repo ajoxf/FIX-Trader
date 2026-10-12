@@ -647,6 +647,8 @@ class Engine:
         elif self.recovery_running():
             health = ('TT FIX Recovery is replaying what was missed — entries '
                       'wait until it finishes')
+        elif self._too_wide(contract, settings, book):
+            health = self._too_wide(contract, settings, book)
         elif status['stale']:
             health = (f"price unchanged {status['age_sec']:.0f}s — entries "
                       f"wait for a move")
@@ -1456,6 +1458,26 @@ class Engine:
             recover()
         except Exception:                                # noqa: BLE001
             logger.exception("FIX Recovery could not be started")
+
+    @staticmethod
+    def _too_wide(contract, settings, book) -> Optional[str]:
+        """Why the book is too wide to ENTER on, or None: the contract's
+        "Book no wider than" (max_book_spread_ticks, 0 = off). An entry
+        crosses the spread twice — on a thin UAT book or a blow-out, 12.0
+        points of gold is $1,200 lost the instant it fills. Exits never wait
+        for it."""
+        try:
+            limit = float(settings.get('max_book_spread_ticks') or 0)
+            tick = float(contract.tick_size or 0)
+        except (TypeError, ValueError):
+            return None
+        if limit <= 0 or tick <= 0 or book is None or getattr(book, 'width', None) is None:
+            return None
+        ticks = book.width / tick
+        if ticks <= limit + 1e-9:
+            return None
+        return (f'the book is {ticks:.0f} ticks wide ({book.bid:g} / {book.ask:g}) — '
+                f'over the {limit:g}-tick limit; entries wait')
 
     def recovery_status(self) -> Optional[Dict[str, Any]]:
         status = getattr(self.gateway, 'recovery_status', None)
