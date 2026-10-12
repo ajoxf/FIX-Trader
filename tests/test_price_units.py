@@ -50,7 +50,9 @@ def terminal(tmp_path):
     define(t, rid, 'ESZ6', **{'969': '25', '16552': '25', '9787': '0.01'})
     # Gold as TT UAT defines it: everything in FIX units (42219 = 4221.9).
     define(t, rid, 'GCZ6', **{'969': '1', '16552': '1', '16554': '10', '9787': '0.1'})
-    for key in ('CL1', 'GC1', 'ES1', 'ESZ6', 'GCZ6'):
+    # ...and as it came on 12 Oct: NO 969 at all.
+    define(t, rid, 'GCZ6B', **{'16552': '1', '16554': '10', '9787': '0.1'})
+    for key in ('CL1', 'GC1', 'ES1', 'ESZ6', 'GCZ6', 'GCZ6B'):
         t.add({'security_id': key})
     return t
 
@@ -219,3 +221,16 @@ def test_tick_and_point_value_from_tts_fix_units(terminal):
     assert float(gc['point_value']) == 100.0
     cl = terminal.watch['CL1']                    # 16552 in trader prices: unchanged
     assert (cl['tick_size'], float(cl['tick_value']), float(cl['point_value'])) == ('0.01', 10.0, 1000.0)
+
+
+def test_without_969_the_exchange_tick_is_read_in_tts_units_too(terminal):
+    """GC on TT UAT with no 969: 16552=1, 9787=0.1. Read raw, the tick was 1
+    and every gold limit not on a whole dollar was refused ("price must align
+    with the instrument tick size 1")."""
+    gc = terminal.watch['GCZ6B']
+    assert gc['tick_size'] == '0.1'
+    assert float(gc['tick_value']) == 10.0 and float(gc['point_value']) == 100.0
+    preview = terminal.preview({'security_id': 'GCZ6B', 'side': 'BUY', 'order_type': 'LIMIT',
+                                'quantity': '1', 'price': '4216.3', 'tif': 'DAY',
+                                'account': 'ACC', 'open_close': 'O'})
+    assert dict(preview['fields'])['44'] == '42163'

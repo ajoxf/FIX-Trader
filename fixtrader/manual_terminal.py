@@ -232,6 +232,17 @@ class ManualTerminal:
                     instrument['display_factor'])).normalize(), 'f')
             except (InvalidOperation, ValueError):
                 pass
+        elif (p.get('16552') and instrument['display_factor_source'] == '9787'
+              and instrument['display_factor'] not in ('', '1')):
+            # No 969, but TT says the factor (9787): its exchange tick (16552)
+            # is then in the same FIX units as its prices — GC on UAT sends
+            # 16552=1 with 9787=0.1, and a tick of 1 refused every price that
+            # was not a whole dollar. The trader's tick is 16552 x the factor.
+            try:
+                instrument['tick_size'] = format((Decimal(p['16552']) * Decimal(
+                    instrument['display_factor'])).normalize(), 'f')
+            except (InvalidOperation, ValueError):
+                pass
         instrument['tick_value'] = ''
         if p.get('16552') and p.get('16554'):
             # The exchange's tick (16552) and its value per unit (16554) are
