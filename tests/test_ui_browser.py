@@ -1566,3 +1566,27 @@ def test_the_order_review_shows_the_spread_red_when_wide(server):
         page.click('#modal-cancel')
         browser.close()
     assert errors == []
+
+
+def test_the_feed_line_never_changes_height_and_never_wraps(server):
+    """Found on TT UAT: the price stream and the page refresh each wrote the
+    feed line, in two wordings of different lengths — it wrapped differently
+    every half second and shifted the whole Instruments page."""
+    url, _ = server
+    errors = []
+    with sync_playwright() as p:
+        browser = _launch(p)
+        page = browser.new_page(viewport={'width': 1100, 'height': 800})
+        page.on('pageerror', lambda e: errors.append(str(e)))
+        page.goto(url + 'instruments', wait_until='domcontentloaded')
+        page.wait_for_function("document.getElementById('feed-status').textContent.startsWith('Source:')")
+        heights = set()
+        for _ in range(10):
+            heights.add(page.evaluate("document.getElementById('feed-status').offsetHeight"))
+            page.wait_for_timeout(200)
+        assert len(heights) == 1, heights
+        assert page.evaluate("getComputedStyle(document.getElementById('feed-status')).whiteSpace") == 'nowrap'
+        text = page.locator('#feed-status').inner_text()
+        assert 'FIX-to-screen' in text and 'quote stream' in text
+        browser.close()
+    assert errors == []

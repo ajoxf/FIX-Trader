@@ -234,3 +234,32 @@ def test_without_969_the_exchange_tick_is_read_in_tts_units_too(terminal):
                                 'quantity': '1', 'price': '4216.3', 'tif': 'DAY',
                                 'account': 'ACC', 'open_close': 'O'})
     assert dict(preview['fields'])['44'] == '42163'
+
+
+def test_a_new_order_waits_for_the_units_and_a_close_never_does(terminal):
+    """Before TT's definition arrives the display factor is unknown: a price
+    typed as the trader knows it would go out as a FIX price. A NEW order is
+    refused, saying why; the control — the same contract once defined — goes."""
+    terminal.watch['RAW1'] = {'security_id': 'RAW1', 'symbol': 'GC', 'exchange': 'CME',
+                              'description': 'GC', 'tick_size': '0.1', 'parameters': {}}
+    with pytest.raises(ValueError, match='definition'):
+        terminal.preview({'security_id': 'RAW1', 'side': 'SELL', 'order_type': 'LIMIT',
+                          'quantity': '1', 'price': '4216.3', 'tif': 'DAY', 'account': 'ACC'})
+    assert terminal.preview({'security_id': 'GCZ6B', 'side': 'SELL', 'order_type': 'LIMIT',
+                             'quantity': '1', 'price': '4216.3', 'tif': 'DAY',
+                             'account': 'ACC'})['ok']
+
+
+def test_the_desk_shows_no_price_until_the_units_are_known(terminal):
+    from types import SimpleNamespace
+    from fixtrader.gateway import FixGateway
+    gw = FixGateway.__new__(FixGateway)
+    gw.terminal = terminal
+    gw._contract_security_ids = {'raw': 'RAW2', 'cl': 'CL1'}
+    gw._sessions = {'Market Data': SimpleNamespace(state=SimpleNamespace(status='CONNECTED'),
+                                                   is_running=lambda: True)}
+    terminal.watch['RAW2'] = {'security_id': 'RAW2', 'parameters': {}}
+    terminal.books['RAW2'] = {'bid': 42160.0, 'ask': 42163.0, 'timestamp': ''}
+    assert gw.top_of_book('raw') is None                     # units unknown: nothing shown
+    terminal.books['CL1'] = {'bid': 90.5, 'ask': 90.52, 'timestamp': ''}
+    assert gw.top_of_book('cl').bid == 90.5                  # the control

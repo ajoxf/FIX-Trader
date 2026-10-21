@@ -25,9 +25,15 @@
   }
   function applyQuoteFrame(frame) {
     streamState=frame.source==='TT_FIX_UAT'&&frame.simulated===false&&frame.connected?'verified TT FIX stream':'disconnected';
+    // FIX-to-screen is measured on a NEW quote only — one TT sent just now
+    // (published within 2 s of reaching our FIX session). An old quote
+    // re-published says how old the quote is, not how fast the screen is:
+    // that read "33289 ms" on a quiet market.
     const received=Object.values(frame.quotes||{}).reduce((latest,q)=>Math.max(latest,Number(q.received_ms)||0),0);
-    if(received>latestReceived){latestReceived=received;streamLatency=Math.max(0,Math.round(Date.now()-received));}
-    else if(streamLatency===null)streamLatency=Math.max(0,Math.round(Date.now()-Number(frame.published_ms)));
+    if(received>latestReceived){
+      latestReceived=received;
+      if(Number(frame.published_ms)-received<2000)streamLatency=Math.max(0,Math.round(Date.now()-received));
+    }
     for(const row of data.watchlist||[]) {
       const quote=frame.quotes?.[row.instrument.security_id];
       if(!quote)continue;
@@ -37,9 +43,21 @@
       row.quote.spread=quote.ask!==null&&quote.ask!==undefined&&quote.bid!==null&&quote.bid!==undefined?quote.ask-quote.bid:null;
       row.quote.mid=quote.ask!==null&&quote.ask!==undefined&&quote.bid!==null&&quote.bid!==undefined?(quote.ask+quote.bid)/2:null;
     }
-    const md=snapshot.engine?.fix_connection?.sessions?.find(s=>s.name==='Market Data');
-    $('feed-status').textContent=`Source: TT ${snapshot.engine?.environment||'UAT'} FIX · ${streamState} · FIX-to-screen ${streamLatency} ms · Last heartbeat: ${clock(md?.last_heartbeat)}. Quote age is measured in milliseconds from the last TT update.`;
+    renderFeed();
     renderWatch();
+  }
+  /* ONE line, ONE wording, from both the price stream and the page's
+   * refresh — two writers with two wordings of different lengths wrapped
+   * differently and shifted the page every half second. It never wraps
+   * (CSS) and is rewritten only when it changed. */
+  function renderFeed() {
+    const engine=snapshot.engine||{};
+    const md=engine.fix_connection?.sessions?.find(s=>s.name==='Market Data');
+    const text=[`Source: TT ${engine.environment||'UAT'} FIX`,`Market data: ${md?.status||'DISCONNECTED'}`,
+      `quote stream: ${streamState}`,`FIX-to-screen ${streamLatency===null?'—':streamLatency+' ms'}`,
+      `last heartbeat ${clock(md?.last_heartbeat)}`].join(' · ');
+    const el=$('feed-status');
+    if(el.textContent!==text){el.textContent=text;el.title=text+'. FIX-to-screen: from our FIX session receiving a new TT quote to this screen showing it. A quote\'s age on its row is measured from TT\'s last update.';}
   }
   function connectQuoteStream() {
     if(!window.EventSource)return;
@@ -324,8 +342,7 @@
         const newer=streamed.get(row.instrument.security_id);
         if(newer?.timestamp&&(!row.quote.timestamp||Date.parse(newer.timestamp)>Date.parse(row.quote.timestamp)))row.quote={...newer,feed_status:row.quote.feed_status};
       }
-      const md=engine.fix_connection?.sessions?.find(s=>s.name==='Market Data');
-      $('feed-status').textContent=`Source: TT ${engine.environment||'UAT'} FIX · Market data: ${md?.status||'DISCONNECTED'} · quote stream: ${streamState}${streamLatency===null?'':` · FIX-to-screen ${streamLatency} ms`} · Last heartbeat: ${clock(md?.last_heartbeat)}. UAT is a test feed; quote age reflects actual TT updates.`;
+      renderFeed();
       $('session').textContent=!engine.alive?'Engine offline':`${engine.environment||''} · ${engine.session?.state||'DOWN'}`;
       $('session').className='tag '+(engine.alive&&engine.session?.state==='LOGGED_ON'?'good':'error');
       // Who is trading: a hand order is refused only on a contract whose

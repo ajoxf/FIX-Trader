@@ -34,6 +34,9 @@ def test_configured_contract_is_subscribed_with_tt_identity_and_book_is_live(tmp
                                security_exchange='CME')
 
     gateway.subscribe(contract)
+    # TT's definition has arrived and names no factor: its prices are the
+    # trader's (until it does, no price is shown).
+    gateway.terminal.watch['98765']['display_factor'] = '1'
 
     assert len(session.sent) == 1
     message_type, fields = session.sent[0]
@@ -67,6 +70,7 @@ def test_a_one_sided_tt_book_reaches_the_window_but_is_not_a_usable_book(tmp_pat
     contract = SimpleNamespace(key='cl_bz', name='CL|BZ', symbol='CL|BZ',
                                security_id='555', security_exchange='CME')
     gateway.subscribe(contract)
+    gateway.terminal.watch['555']['display_factor'] = '1'      # TT defined it, no factor
     request = dict(session.sent[0][1])['262']
     raw = f'35=W\x01262={request}\x01268=1\x01269=1\x01270=307\x01271=12\x01'
     gateway.terminal.on_message('Market Data', {'35': 'W'}, raw)

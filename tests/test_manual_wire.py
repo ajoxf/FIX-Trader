@@ -37,7 +37,7 @@ def test_review_send_and_execution_use_native_fix_wire(monkeypatch):
         deadline=time.monotonic()+2
         while gateway.state().value!='LOGGED_ON' and time.monotonic()<deadline:time.sleep(.01)
         assert gateway.state().value=='LOGGED_ON'
-        gateway.terminal.watch['1']={'security_id':'1','symbol':'ES','description':'Test contract','exchange':'CME','tick_size':'0.25','parameters':{}}
+        gateway.terminal.watch['1']={'security_id':'1','symbol':'ES','description':'Test contract','exchange':'CME','tick_size':'0.25','parameters':{},'display_factor':'1'}
         preview=gateway.terminal.preview({'security_id':'1','side':'BUY','quantity':'1','price':'-0.25','order_type':'LIMIT','tif':'DAY'})
         result=gateway.terminal.submit({'token':preview['token'],'confirmed':True})
         deadline=time.monotonic()+2

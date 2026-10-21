@@ -39,6 +39,7 @@ def test_fix_book_enters_feed_and_disconnect_blocks_stale_book(tmp_path):
     gateway._sessions['Market Data'] = session
     gateway.subscribe(SimpleNamespace(key='spread', name='Spread', symbol='CL-BZ',
                                       security_id='123', security_exchange='CME'))
+    gateway.terminal.watch['123']['display_factor'] = '1'      # TT defined it, no factor
     request = gateway.terminal.subscriptions['123']
     raw = ('35=W\x0134=7\x01262=' + request + '\x01268=3\x01269=0\x01270=10\x01'
            '269=1\x01270=11\x01269=2\x01270=10.5\x01')

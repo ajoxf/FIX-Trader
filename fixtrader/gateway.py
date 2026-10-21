@@ -437,8 +437,12 @@ class FixGateway:
             self.terminal.catalogue[security_id] = copy.deepcopy(instrument)
             self.terminal._save('watch', security_id, instrument)
             session = self._sessions.get('Market Data')
+            # Only once TT's recovery is complete — before that a price
+            # request is refused; the terminal's poll subscribes every watched
+            # contract as soon as the session is ready.
             if (session is not None and session.state.status == 'CONNECTED'
-                    and session.is_running()):
+                    and session.is_running()
+                    and getattr(session, 'ready', lambda: True)()):
                 self.terminal._subscribe(security_id)
         return None
 
@@ -470,6 +474,10 @@ class FixGateway:
             return None
         security_id = self._contract_security_ids.get(key, key)
         with self.terminal.lock:
+            if self.terminal.price_factor(security_id) is None:
+                # TT has not said this contract's units yet: a price shown now
+                # would be in TT's FIX units (gold as 42163) — none is shown.
+                return None
             book = self.terminal.books.get(security_id)
             # One side alone IS returned: it is what TT is publishing, and
             # the window has to show it rather than a blank that looks like

@@ -813,6 +813,14 @@ class ManualTerminal:
         instrument = self.watch.get(str(args.get('security_id', '')))
         if instrument is None:
             raise ValueError('Add an instrument to the watchlist first')
+        if not risk_reducing and self.price_factor(str(args.get('security_id', ''))) is None:
+            # Until TT's definition says the display factor, a price typed as
+            # the trader knows it (4216.3) would go out as a FIX price (421.63
+            # in trader terms) — a sell far through the market. A new order
+            # waits a moment; a close never does (it is priced from TT's own
+            # book, in TT's own units, both ends alike).
+            raise ValueError("TT has not sent this contract's definition yet — its "
+                             "prices may still be in TT's units; try again in a moment")
         ticket = {k: clean(args.get(k, '')) for k in ('side', 'order_type', 'tif', 'account', 'text', 'expire_date', 'open_close', 'capacity', 'customer_capacity')}
         if ticket['side'] not in ('BUY', 'SELL') or ticket['order_type'] not in ORDER_TYPES or ticket['tif'] not in TIFS:
             raise ValueError('Choose a supported side, order type and time in force')

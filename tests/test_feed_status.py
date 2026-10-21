@@ -58,3 +58,26 @@ def test_no_answer_is_said_after_a_while_and_not_before(terminal):
 def test_the_watchlist_carries_it(terminal):
     rows = {r['instrument']['security_id']: r['quote'] for r in terminal.snapshot()['watchlist']}
     assert rows['CL1']['feed_status']['state'] in ('WAITING', 'NO_ANSWER')
+
+
+def test_a_contract_added_before_tt_is_ready_waits_and_is_subscribed_after(tmp_path):
+    """Found by a test under load: subscribing a contract after the Market
+    Data logon but BEFORE TT's "Recovery is complete" raised, instead of
+    waiting — the terminal's poll subscribes it once the session is ready."""
+    from types import SimpleNamespace
+    from fixtrader.config import VenueConfig
+    from fixtrader.gateway import FixGateway
+    gw = FixGateway(VenueConfig('TT', environment='UAT'), manual_path=str(tmp_path / 'm.db'))
+    sent = []
+    gw.terminal._subscribe = lambda key, action='1': sent.append(key)
+    ready = {'now': False}
+    gw._sessions['Market Data'] = SimpleNamespace(
+        state=SimpleNamespace(status='CONNECTED'), is_running=lambda: True,
+        ready=lambda: ready['now'], cfg={})
+    contract = SimpleNamespace(key='gc', name='GC', symbol='GC', security_id='GC1',
+                               security_exchange='CME', tick_size=0.1, tick_value=10.0)
+    gw.subscribe(contract)                    # not ready: no error, nothing sent
+    assert sent == []
+    ready['now'] = True
+    gw.subscribe(contract)                    # the control: ready, it goes at once
+    assert sent == ['GC1']
