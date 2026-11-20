@@ -468,14 +468,15 @@ def create_app(config_path: str = "config.json",
 
     @app.get('/api/chart/<path:key>')
     def api_chart(key):
-        """The chart window's history: the contract's MID and its z, on
-        candles of `tf` minutes (15, 60 or 240) built from the mids this
-        system recorded — a FIX session has no bars to ask for. z is the
-        Algo's own measure, TradingView's convention: middle = EMA(N) of
-        the closes, sigma = the POPULATION sigma of the last N, with N this
-        contract's band length. A candle with no recorded mid is not a
-        point (the market was shut, or nobody watched); before N candles
-        there is no z — None, never 0."""
+        """The chart window's candles: the contract's MID as open / high /
+        low / close per candle of `tf` minutes (15, 60 or 240), built from
+        the mids this system RECORDED — a FIX session has no bars to ask
+        for. The close is the Algo's (the last mid in the candle). The
+        screen lays the Algo's own band over them (EMA(N) middle,
+        population sigma of the last N) and draws z as candles of their
+        own; it is sent N candles more than it shows so the first one
+        shown already has a band. A candle with no recorded mid is not
+        drawn — a gap, never filled in."""
         from datetime import timedelta
         from . import algo as algo_mod, bands
         config = load_config()
@@ -489,36 +490,35 @@ def create_app(config_path: str = "config.json",
         if tf_min not in (15, 60, 240):
             tf_min = 15
         try:
-            points = max(20, min(400, int(request.args.get('points', 150))))
+            want = max(20, min(400, int(request.args.get('candles', 300))))
         except ValueError:
-            points = 150
+            want = 300
         params = algo_mod.params_from_settings(config.effective(key))
         length = params['length']
         tf = tf_min * 60.0
-        since = datetime.now(timezone.utc) - timedelta(seconds=tf * (points + length * 3))
-        closes = bands.candles_from_samples(
-            _db(config).samples_between(key, since=since), tf)
-        out, window, value = [], [], None
-        alpha = 2.0 / (length + 1.0)
-        for i, (at, close) in enumerate(closes):
-            window = (window + [close])[-length:]
-            if i + 1 < length:
-                z = None
+        since = datetime.now(timezone.utc) - timedelta(seconds=tf * (want + length + 1))
+        candles = {}
+        for ts, price in _db(config).samples_between(key, since=since):
+            if price is None:
+                continue
+            at = ts.timestamp() if hasattr(ts, 'timestamp') else float(ts)
+            b = bands.bucket_of(at, tf)
+            price = float(price)
+            c = candles.get(b)
+            if c is None:
+                candles[b] = {'t': b, 'o': price, 'h': price, 'l': price, 'c': price}
             else:
-                if value is None:
-                    value = sum(c for _, c in closes[:length]) / float(length)
-                else:
-                    value = alpha * close + (1.0 - alpha) * value
-                sigma = bands.population_stdev(window)
-                z = round((close - value) / sigma, 3) if sigma else None
-            out.append({'t': at, 'mid': close, 'z': z})
-        out = out[-points:]
+                c['h'] = max(c['h'], price)
+                c['l'] = min(c['l'], price)
+                c['c'] = price
+        out = [candles[b] for b in sorted(candles)][-(want + length):]
         return jsonify({
             'ok': True, 'key': key, 'tf': tf_min, 'length': length,
+            'algo_timeframe_min': params['timeframe_min'],
             'decimals': getattr(contract, 'decimals', 4),
             'entry_z': params['entry_z'],
             'stop_z': params['stop_z'] if params['stop_z_on'] else None,
-            'points': out,
+            'at': time.time(), 'candles': out,
             'note': (f"{len(out)} candle(s) of {tf_min} min from the recorded mids"
                      if out else
                      f"no mids recorded for {key} over this period — the engine "

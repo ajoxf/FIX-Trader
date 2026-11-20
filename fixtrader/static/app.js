@@ -3102,40 +3102,178 @@ function renderGrid(snap) {
   });
 }
 
-/* -- the chart window, W3's charts -------------------------------------------
+/* -- the chart window: the MT5 desk's pair chart, on ONE contract -----------
  *
- * One per contract, drawn as the W3 / OKX dashboard draws them (Chart.js):
- * the Algo's Z-SCORE as a blue line with the entry levels dashed green either
- * side and the z stop dotted red when the contract has one; under it the
- * contract's PRICE — the mid of the book — in W3's purple. "Live" is what
- * the desk has watched since this window opened (the last 100 points);
- * 15m / 1h / 4h are candles built from the mids this system RECORDED (a FIX
- * session has no bars to backfill from). A missing z is a gap, never 0.
+ * Two candlestick plots, one above the other, drawn in SVG at the box's own
+ * pixel size (ported from the MT5 desk's `svgCandles`): the Algo's Z-SCORE as
+ * candles — each candle's open / high / low / close against ITS OWN band —
+ * with +entry dashed red, −entry dashed green and the z stop dotted grey when
+ * the contract has one; and the contract's own price (the MID: the venue
+ * lists the spread itself) as candles with the band's mean in orange and the
+ * entry bands dashed. A candle that CLOSED beyond the entry band is outlined.
+ * Candles are 15m / 1h / 4h of the mids this system RECORDED (a FIX session
+ * has no bars), the newest moving live with the desk's own mids. + / − zoom,
+ * ↺ puts it back; the last value is tagged on the right of each plot.
+ * Unmeasured is not zero: no band before N candles, so no z candle there.
  */
 state.charts = (() => {
   try { return JSON.parse(localStorage.getItem(LS + 'charts') || '[]'); } catch (e) { return []; }
 })();
-const chartData = {};         // key -> {tf, live: [{t, z, mid}], hist, lastAt, charts}
+const chartData = {};   // key -> {tf, shown, hist: {tf: body}, live: [10 s candles], contract}
+const CHART_SHOWN = 75;
+const CHART_LIVE_SEC = 10;
+const CHART = { up: '#198754', down: '#dc3545', stop: '#6c757d', mean: '#fd7e14',
+                grid: 'rgba(128,128,128,.25)', text: '#6c757d' };
 function saveCharts() {
   try { localStorage.setItem(LS + 'charts', JSON.stringify(state.charts)); } catch (e) { /* forgets */ }
 }
-const W3 = {
-  z: '#0d6efd', entry: '#198754', stop: '#dc3545', price: '#6f42c1',
-  grid: 'rgba(0,0,0,0.1)', ticks: '#212529',
-};
-function w3Options(yMin, yMax) {
-  const o = {
-    responsive: true, maintainAspectRatio: false, animation: false,
-    plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
-    scales: {
-      x: { display: false },
-      y: { grid: { color: W3.grid }, ticks: { color: W3.ticks, font: { size: 10 } } },
-    },
-    elements: { point: { radius: 0 } },
-  };
-  if (yMin !== undefined) { o.scales.y.min = yMin; o.scales.y.max = yMax; }
-  return o;
+function chartClock(t, withDay) {
+  const d = new Date(t * 1000);
+  const two = (n) => (n < 10 ? '0' : '') + n;
+  const clock = two(d.getHours()) + ':' + two(d.getMinutes());
+  return withDay ? d.getDate() + ' ' + ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul',
+    'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()] + ' ' + clock : clock;
 }
+
+/* The recorded candles with the live 10-second ones folded in: a live mid
+ * makes a candle's high, low and close; a bucket the history has not reached
+ * yet starts a new candle. */
+function mergeLive(history, live, seconds, since) {
+  const byT = {};
+  const out = history.map((c) => { const k = { t: c.t, o: c.o, h: c.h, l: c.l, c: c.c }; byT[c.t] = k; return k; });
+  (live || []).forEach((lc) => {
+    const b = Math.floor(lc.t / seconds) * seconds;
+    let candle = byT[b];
+    if (!candle) {
+      if (out.length && b < out[out.length - 1].t) return;
+      candle = byT[b] = { t: b, o: lc.o, h: lc.h, l: lc.l, c: lc.c };
+      out.push(candle);
+      return;
+    }
+    candle.h = Math.max(candle.h, lc.h);
+    candle.l = Math.min(candle.l, lc.l);
+    if (lc.t + CHART_LIVE_SEC >= since) candle.c = lc.c;
+  });
+  return out;
+}
+
+/* The Algo's band on every candle: Pine's EMA middle (seeded with the simple
+ * average of the first N closes) and the POPULATION sigma of the last N.
+ * None until there are N closes behind it. */
+function withBands(candles, length) {
+  const alpha = 2 / (length + 1);
+  let mean = null, sum = 0;
+  candles.forEach((c, i) => {
+    if (i < length) sum += c.c;
+    if (i === length - 1) mean = sum / length;
+    else if (i >= length) mean = alpha * c.c + (1 - alpha) * mean;
+    if (i < length - 1) { c.m = null; c.sd = null; return; }
+    const last = candles.slice(i - length + 1, i + 1);
+    const avg = last.reduce((acc, w) => acc + w.c, 0) / length;
+    const sd = Math.sqrt(last.reduce((acc, w) => acc + (w.c - avg) * (w.c - avg), 0) / length);
+    c.m = mean;
+    c.sd = sd > 1e-12 ? sd : null;
+  });
+  return candles;
+}
+
+/* One candlestick plot, the MT5 desk's: candles on the CLOCK (a stretch with
+ * nothing recorded is a gap), `lines` straight across, `curves` following
+ * the candles, and the last value tagged on the right. */
+function svgCandles(box, candles, opts) {
+  const w = Math.max(box.clientWidth, 200);
+  const h = Math.max(box.clientHeight, 110);
+  const left = 44, right = 8, top = 8, bottom = 18;
+  const lines = opts.lines || [], curves = opts.curves || [];
+  const ys = [];
+  candles.forEach((c) => { if (c) ys.push(c.h, c.l); });
+  lines.forEach((line) => ys.push(line.y));
+  curves.forEach((curve) => candles.forEach((c) => {
+    const v = c ? curve.value(c) : null;
+    if (v !== null && v !== undefined && isFinite(v)) ys.push(v);
+  }));
+  let lo = Math.min.apply(null, ys), hi = Math.max.apply(null, ys);
+  if (!isFinite(lo) || !isFinite(hi)) { lo = -1; hi = 1; }
+  if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+  const pad = (hi - lo) * 0.06;
+  lo -= pad; hi += pad;
+  const times = opts.times || [];
+  const seconds = opts.seconds || 60;
+  const t0 = times.length ? times[0] : 0;
+  const t1 = times.length ? times[times.length - 1] + seconds : 1;
+  const plotW = w - left - right;
+  const slot = seconds / (t1 - t0) * plotW;
+  const X = (i) => left + (times[i] + seconds / 2 - t0) / (t1 - t0) * plotW;
+  const Y = (v) => top + (hi - v) / (hi - lo) * (h - top - bottom);
+  const body = Math.max(1, Math.min(12, slot * 0.7));
+  let svg = '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h +
+    '" xmlns="http://www.w3.org/2000/svg">';
+  const ticks = (opts.ticks || [0, 1, 2, 3, 4].map((k) => lo + (hi - lo) * k / 4))
+    .filter((v) => v >= lo && v <= hi);
+  ticks.forEach((v) => {
+    svg += '<line x1="' + left + '" x2="' + (w - right) + '" y1="' + Y(v).toFixed(1) +
+      '" y2="' + Y(v).toFixed(1) + '" stroke="' + CHART.grid + '" stroke-width="1"/>' +
+      '<text x="' + (left - 4) + '" y="' + (Y(v) + 3).toFixed(1) +
+      '" text-anchor="end" font-size="10" fill="' + CHART.text + '">' + v.toFixed(opts.digits) + '</text>';
+  });
+  lines.forEach((line) => {
+    svg += '<line class="' + (line.cls || '') + '" x1="' + left + '" x2="' + (w - right) +
+      '" y1="' + Y(line.y).toFixed(1) + '" y2="' + Y(line.y).toFixed(1) + '" stroke="' +
+      line.colour + '" stroke-width="1" stroke-dasharray="' + line.dash + '"/>';
+  });
+  curves.forEach((curve) => {
+    let path = '', pen = 'M';
+    candles.forEach((c, i) => {
+      const v = c ? curve.value(c) : null;
+      if (v === null || v === undefined || !isFinite(v)) { pen = 'M'; return; }
+      path += pen + X(i).toFixed(1) + ' ' + Y(v).toFixed(1) + ' ';
+      pen = 'L';
+    });
+    if (path) {
+      svg += '<path class="' + (curve.cls || '') + '" d="' + path + '" fill="none" stroke="' +
+        curve.colour + '" stroke-width="' + (curve.width || 1) + '" stroke-dasharray="' +
+        (curve.dash || '0') + '"/>';
+    }
+  });
+  candles.forEach((c, i) => {
+    if (!c) return;
+    const up = c.c >= c.o;
+    const colour = up ? CHART.up : CHART.down;
+    const x = X(i);
+    const yTop = Y(Math.max(c.o, c.c)), yBot = Y(Math.min(c.o, c.c));
+    svg += '<g class="cw-candle ' + (up ? 'up' : 'down') + (c.beyond ? ' beyond' : '') + '">' +
+      '<line x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" y1="' + Y(c.h).toFixed(1) +
+      '" y2="' + Y(c.l).toFixed(1) + '" stroke="' + (c.beyond ? '#000' : colour) + '" stroke-width="1"/>' +
+      '<rect x="' + (x - body / 2).toFixed(1) + '" y="' + yTop.toFixed(1) + '" width="' +
+      body.toFixed(1) + '" height="' + Math.max(1, yBot - yTop).toFixed(1) + '" fill="' + colour +
+      '" stroke="' + (c.beyond ? '#000' : colour) + '" stroke-width="' + (c.beyond ? 1.5 : 1) + '"/></g>';
+  });
+  // The last value: a dotted line across, and its figure in a black tag on
+  // the right — where the eye goes for "where is it now".
+  if (opts.last && opts.last.value !== null && opts.last.value !== undefined && isFinite(opts.last.value)) {
+    const y = Y(opts.last.value);
+    const text = opts.last.text;
+    const tw = 7 * text.length + 10;
+    svg += '<line class="cw-lastline" x1="' + left + '" x2="' + (w - right) + '" y1="' + y.toFixed(1) +
+      '" y2="' + y.toFixed(1) + '" stroke="#555" stroke-width="1" stroke-dasharray="1 3"/>' +
+      '<g class="cw-lasttag"><rect x="' + (w - right - tw).toFixed(1) + '" y="' + (y - 9).toFixed(1) +
+      '" width="' + tw + '" height="18" rx="2" fill="#212529"/><text x="' + (w - right - tw / 2).toFixed(1) +
+      '" y="' + (y + 4).toFixed(1) + '" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">' +
+      esc(text) + '</text></g>';
+  }
+  if (times.length) {
+    const withDay = t1 - t0 > 20 * 3600;
+    [0, 0.25, 0.5, 0.75, 1].forEach((f, k) => {
+      const anchor = k === 0 ? 'start' : k === 4 ? 'end' : 'middle';
+      svg += '<text x="' + (left + f * plotW).toFixed(1) + '" y="' + (h - 4) +
+        '" font-size="10" text-anchor="' + anchor + '" fill="' + CHART.text + '">' +
+        chartClock(t0 + f * (t1 - t0), withDay) + '</text>';
+    });
+  }
+  return { svg: svg + '</svg>',
+           geom: { left, right, top, bottom, w, h, lo, hi, slot, t0, t1, seconds, times, x: X } };
+}
+
 function chartWindow(key) {
   const wkey = '__chart__' + key;
   let el = document.querySelector('.win[data-key="' + CSS.escape(wkey) + '"]');
@@ -3147,69 +3285,75 @@ function chartWindow(key) {
   el.innerHTML = '<div class="titlebar"><span class="swatch"></span>' +
     '<span class="title"></span><span class="winbtns">' +
     '<button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button>' +
-    '<button class="winbtn close" title="Close this window">&times;</button></span></div>' +
-    '<div class="ch-bar">' +
-    ['live', '15', '60', '240'].map((tf) => '<button type="button" class="tk ch-tf" data-tf="' + tf + '">' +
-      ({ live: 'Live', 15: '15m', 60: '1h', 240: '4h' })[tf] + '</button>').join('') +
-    '<span class="ch-now"></span></div>' +
-    '<div class="ch-body">' +
-    '<div class="w3-card ch-zcard"><div class="w3-head"><small>&#9889; Z-Score History</small>' +
-    '<small class="ch-zlegend"></small></div><div class="w3-canvas"><canvas class="ch-z"></canvas></div></div>' +
-    '<div class="w3-card ch-pcard"><div class="w3-head"><small>&#8776; Price History (mid)</small>' +
-    '<small class="ch-plegend"></small></div><div class="w3-canvas"><canvas class="ch-p"></canvas></div></div>' +
-    '</div><div class="wfoot"><span class="ch-note grow"></span></div>';
+    '<button class="winbtn close" title="Close the chart">&times;</button></span></div>' +
+    '<div class="cw-body"><div class="cw-bar">' +
+    '<span class="cw-tfs" title="Candle size. The Algo reads its own timeframe; the others are for looking.">' +
+    '<button type="button" data-tf="15">15m</button><button type="button" data-tf="60">1h</button>' +
+    '<button type="button" data-tf="240">4h</button></span>' +
+    '<span class="cw-size hint"></span>' +
+    '<span class="cw-zoom"><button type="button" class="cw-in" title="Zoom in — fewer candles">+</button>' +
+    '<button type="button" class="cw-out" title="Zoom out — more candles">&minus;</button>' +
+    '<button type="button" class="cw-reset" title="Back to ' + CHART_SHOWN + ' candles">&#8634;</button></span>' +
+    '<span class="cw-now"></span></div>' +
+    '<div class="cw-card"><div class="cw-head">Z-Score <span class="cw-key"><b class="k-candle up"></b>' +
+    '<b class="k-candle down"></b>z <i class="k-up"></i>+entry <i class="k-down"></i>&minus;entry ' +
+    '<span class="cw-key-stop" hidden><i class="k-stop"></i>&plusmn;stop</span></span></div>' +
+    '<div class="cw-plot cw-z"></div></div>' +
+    '<div class="cw-card"><div class="cw-head">Spread <span class="cw-key"><i class="k-mean"></i>mean ' +
+    '<i class="k-up"></i><i class="k-down"></i>&plusmn;entry</span><span class="cw-badges">' +
+    '<span class="cw-badge cw-min">Min: &mdash;</span><span class="cw-badge cw-max">Max: &mdash;</span></span></div>' +
+    '<div class="cw-plot cw-spread"></div></div>' +
+    '<div class="cw-note hint"></div></div>';
   el.querySelector('.close').onclick = () => {
     state.charts = state.charts.filter((k) => k !== key);
     saveCharts();
-    const d = chartData[key];
-    if (d && d.charts) { d.charts.z.destroy(); d.charts.p.destroy(); d.charts = null; }
     el.remove();
     renderTabs();
   };
   el.querySelector('.min').onclick = () => setMinimised(el, true);
   if (state.minimised.has(wkey)) el.classList.add('minimised');
   el.onmousedown = () => { state.focused = wkey; raise(el); };
-  el.querySelectorAll('.ch-tf').forEach((b) => {
+  let tf = 15, shown = CHART_SHOWN;
+  try {
+    tf = parseInt(localStorage.getItem(LS + 'chart.tf.' + key), 10) || 15;
+    shown = parseInt(localStorage.getItem(LS + 'chart.shown.' + key), 10) || CHART_SHOWN;
+  } catch (e) { /* defaults */ }
+  chartData[key] = chartData[key] || { live: [], hist: {} };
+  Object.assign(chartData[key], { tf: [15, 60, 240].includes(tf) ? tf : 15, shown });
+  const remember = () => {
+    try {
+      localStorage.setItem(LS + 'chart.tf.' + key, String(chartData[key].tf));
+      localStorage.setItem(LS + 'chart.shown.' + key, String(chartData[key].shown));
+    } catch (e) { /* forgets */ }
+  };
+  el.querySelectorAll('.cw-tfs button').forEach((b) => {
     b.onclick = () => {
-      const d = chartData[key];
-      d.tf = b.dataset.tf;
-      try { localStorage.setItem(LS + 'chart.tf.' + key, d.tf); } catch (e) { /* forgets */ }
-      d.hist = null;
-      loadChartHistory(key);
-      paintChart(key);
+      chartData[key].tf = parseInt(b.dataset.tf, 10);
+      remember();
+      el.dataset.drawn = '';
+      loadChartHistory(key, true);
+      drawChart(key);
     };
+  });
+  const zoom = (n) => {
+    chartData[key].shown = Math.max(20, Math.min(300, n));
+    remember();
+    el.dataset.drawn = '';
+    drawChart(key);
+  };
+  el.querySelector('.cw-in').onclick = () => zoom(Math.round(chartData[key].shown * 0.75));
+  el.querySelector('.cw-out').onclick = () => zoom(Math.round(chartData[key].shown / 0.75));
+  el.querySelector('.cw-reset').onclick = () => zoom(CHART_SHOWN);
+  [['.cw-z', 'z'], ['.cw-spread', 's']].forEach(([sel, plot]) => {
+    const box = el.querySelector(sel);
+    box.addEventListener('mousemove', (e) => chartHover(el, plot, e));
+    box.addEventListener('mouseleave', () => chartUnhover(el));
   });
   makeDraggable(el, wkey);
   document.getElementById('desktop').appendChild(el);
-  floatNew(el, wkey, 560, 380);
-  let tf = 'live';
-  try { tf = localStorage.getItem(LS + 'chart.tf.' + key) || 'live'; } catch (e) { /* default */ }
-  chartData[key] = chartData[key] || { live: [], lastAt: 0 };
-  chartData[key].tf = tf;
-  if (window.Chart) {
-    const z = new Chart(el.querySelector('.ch-z'), {
-      type: 'line',
-      data: { labels: [], datasets: [
-        { label: 'Z-Score', data: [], borderColor: W3.z, borderWidth: 2, tension: 0.1, pointRadius: 0, spanGaps: false },
-        { label: '+Entry', data: [], borderColor: W3.entry, borderWidth: 2, borderDash: [5, 5], pointRadius: 0 },
-        { label: '-Entry', data: [], borderColor: W3.entry, borderWidth: 2, borderDash: [5, 5], pointRadius: 0 },
-        { label: '+Stop', data: [], borderColor: W3.stop, borderWidth: 1, borderDash: [2, 2], pointRadius: 0 },
-        { label: '-Stop', data: [], borderColor: W3.stop, borderWidth: 1, borderDash: [2, 2], pointRadius: 0 },
-      ] },
-      options: w3Options(-5, 5),
-    });
-    const p = new Chart(el.querySelector('.ch-p'), {
-      type: 'line',
-      data: { labels: [], datasets: [
-        { label: 'Mid', data: [], borderColor: W3.price, borderWidth: 2, tension: 0.1, pointRadius: 0, spanGaps: false },
-      ] },
-      options: w3Options(),
-    });
-    chartData[key].charts = { z, p };
-  } else {
-    el.querySelector('.ch-note').textContent = 'the chart library did not load';
-  }
-  if (tf !== 'live') loadChartHistory(key);
+  floatNew(el, wkey, 780, 500);
+  if (window.ResizeObserver) new ResizeObserver(() => drawChart(key)).observe(el);
+  loadChartHistory(key, true);
   return el;
 }
 
@@ -3223,86 +3367,218 @@ function openChart(key) {
   renderTabs();
 }
 
-async function loadChartHistory(key) {
+async function loadChartHistory(key, now) {
   const d = chartData[key];
-  if (!d || d.tf === 'live') return;
+  if (!d) return;
   const tf = d.tf;
+  const held = d.hist[tf];
+  if (d.busy || (!now && held && Date.now() - held.fetched < 60000)) return;
+  d.busy = true;
   try {
     const r = await fetch('/api/chart/' + encodeURIComponent(key) + '?tf=' + tf, { cache: 'no-store' });
     const body = await r.json();
-    if (d.tf !== tf) return;          // the trader moved on meanwhile
-    d.hist = body;
-    d.histAt = Date.now();
+    body.fetched = Date.now();
+    d.hist[tf] = body;
   } catch (e) {
-    d.hist = { ok: false, error: 'the history could not be read' };
+    d.hist[tf] = { ok: false, error: 'the recorded candles could not be read', fetched: Date.now() };
   }
-  paintChart(key);
-}
-
-function chartLevels(c) {
-  const algo = (c && c.algo) || {};
-  const params = algo.params || {};
-  const entry = params.entry_z !== undefined ? params.entry_z : ((c && c.settings) || {}).entry_threshold;
-  const stop = params.stop_z_on ? (params.stop_z !== undefined ? params.stop_z : ((c && c.settings) || {}).stop_loss_z) : null;
-  return { entry: entry === undefined ? null : entry, stop: stop === undefined ? null : stop };
-}
-
-function paintChart(key) {
-  const d = chartData[key];
+  d.busy = false;
   const el = document.querySelector('.win[data-key="' + CSS.escape('__chart__' + key) + '"]');
-  if (!d || !el) return;
-  el.querySelectorAll('.ch-tf').forEach((b) => b.classList.toggle('act', b.dataset.tf === d.tf));
-  const c = d.contract || {};
-  const dec = c.decimals === undefined ? 4 : c.decimals;
-  let pts, entry, stop, note;
-  if (d.tf === 'live') {
-    pts = d.live;
-    ({ entry, stop } = chartLevels(c));
-    note = pts.length ? 'live: the last ' + pts.length + ' point(s) watched since this window opened'
-      : 'live: waiting for the first price';
-  } else if (!d.hist) {
-    pts = []; ({ entry, stop } = chartLevels(c)); note = 'reading the recorded mids…';
-  } else if (!d.hist.ok) {
-    pts = []; ({ entry, stop } = chartLevels(c)); note = d.hist.error || 'no history';
-  } else {
-    pts = d.hist.points || [];
-    entry = d.hist.entry_z; stop = d.hist.stop_z;
-    note = d.hist.note + ' · z over ' + d.hist.length + ' candles';
-  }
-  el.querySelector('.ch-note').textContent = note;
-  const last = pts.length ? pts[pts.length - 1] : null;
-  el.querySelector('.ch-now').textContent = last
-    ? 'z ' + signed(last.z, 2) + ' · mid ' + num(last.mid, dec) : '';
-  el.querySelector('.ch-zlegend').textContent = entry !== null && entry !== undefined
-    ? 'entry ±' + entry + (stop !== null && stop !== undefined ? ' · stop ±' + stop : ' · z stop off') : '';
-  el.querySelector('.ch-plegend').textContent = last ? num(last.mid, dec) : '';
-  if (!d.charts) return;
-  const labels = pts.map((p) => {
-    const t = new Date(typeof p.t === 'number' ? p.t * 1000 : p.t);
-    return d.tf === 'live' ? t.toLocaleTimeString([], { hour12: false })
-      : t.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
-  });
-  const n = pts.length;
-  const fill = (v) => (v === null || v === undefined ? Array(n).fill(null) : Array(n).fill(v));
-  const z = d.charts.z;
-  z.data.labels = labels;
-  z.data.datasets[0].data = pts.map((p) => (p.z === null || p.z === undefined ? null : p.z));
-  z.data.datasets[1].data = fill(entry);
-  z.data.datasets[2].data = fill(entry === null || entry === undefined ? null : -entry);
-  z.data.datasets[3].data = fill(stop);
-  z.data.datasets[4].data = fill(stop === null || stop === undefined ? null : -stop);
-  // W3 fixes the axis at ±5; a z stop beyond it widens it so the line shows.
-  const reach = Math.max(5, Math.ceil(Math.abs(stop || 0) + 0.5));
-  z.options.scales.y.min = -reach; z.options.scales.y.max = reach;
-  z.update('none');
-  const p = d.charts.p;
-  p.data.labels = labels;
-  p.data.datasets[0].data = pts.map((q) => (q.mid === null || q.mid === undefined ? null : q.mid));
-  p.update('none');
+  if (el) el.dataset.drawn = '';
+  drawChart(key);
 }
 
-/* Every open chart: fed the snapshot (live points, at most one a second)
- * and repainted. Returns the window keys it holds, for the desk's sweep. */
+function drawChart(key) {
+  const d = chartData[key];
+  const node = document.querySelector('.win[data-key="' + CSS.escape('__chart__' + key) + '"]');
+  if (!d || !node || node.classList.contains('minimised')) return;
+  const tf = d.tf;
+  const hist = d.hist[tf];
+  const zBox = node.querySelector('.cw-z'), sBox = node.querySelector('.cw-spread');
+  const lastLive = d.live[d.live.length - 1];
+  const stamp = [tf, d.shown, hist ? hist.fetched : '', d.live.length, lastLive ? lastLive.c : '',
+    zBox.clientWidth, zBox.clientHeight, sBox.clientWidth, sBox.clientHeight].join('|');
+  if (node.dataset.drawn === stamp) return;
+  node.dataset.drawn = stamp;
+  node.querySelectorAll('.cw-tfs button').forEach((b) =>
+    b.classList.toggle('on', parseInt(b.dataset.tf, 10) === tf));
+  const c0 = d.contract || {};
+  const dec = c0.decimals === undefined ? 4 : c0.decimals;
+  const label = tf === 15 ? '15-minute candles' : tf === 60 ? '1-hour candles' : '4-hour candles';
+  const note = node.querySelector('.cw-note');
+  const nowBox = node.querySelector('.cw-now');
+  const seconds = tf * 60;
+  const candles0 = hist && hist.ok ? mergeLive(hist.candles || [], d.live, seconds, (hist.at || 0)) : [];
+  if (!candles0.length) {
+    const why = !hist ? 'reading the recorded mids…' : (hist.error || hist.note || 'no candles yet');
+    const empty = '<div class="cw-empty">' + esc(why) + '</div>';
+    zBox.innerHTML = empty; sBox.innerHTML = empty;
+    nowBox.textContent = ''; note.textContent = '';
+    node.querySelector('.cw-size').textContent = label;
+    node.querySelector('.cw-min').textContent = 'Min: —';
+    node.querySelector('.cw-max').textContent = 'Max: —';
+    node._drawn = null;
+    return;
+  }
+  const length = hist.length || 20;
+  const entry = hist.entry_z, stop = hist.stop_z;
+  const all = withBands(candles0, length);
+  const shown = all.slice(-d.shown);
+  node.querySelector('.cw-size').textContent = label + ' · ' + shown.length + ' shown';
+  const zc = shown.map((c) => {
+    if (c.sd === null || c.m === null) return null;
+    const z = { t: c.t, o: (c.o - c.m) / c.sd, h: (c.h - c.m) / c.sd, l: (c.l - c.m) / c.sd, c: (c.c - c.m) / c.sd };
+    z.beyond = entry !== null && entry !== undefined && Math.abs(z.c) >= entry;
+    c.beyond = z.beyond;
+    return z;
+  });
+  const times = shown.map((c) => c.t);
+  const zLines = [{ y: 0, colour: CHART.grid, dash: '0' }];
+  if (entry !== null && entry !== undefined) {
+    zLines.push({ y: entry, colour: '#dc3545', dash: '5 5', cls: 'cw-entry-up' });
+    zLines.push({ y: -entry, colour: '#198754', dash: '5 5', cls: 'cw-entry-down' });
+  }
+  if (stop !== null && stop !== undefined) {
+    zLines.push({ y: stop, colour: CHART.stop, dash: '1 3', cls: 'cw-stop' });
+    zLines.push({ y: -stop, colour: CHART.stop, dash: '1 3', cls: 'cw-stop' });
+  }
+  node.querySelector('.cw-key-stop').hidden = stop === null || stop === undefined;
+  const geom = { z: null, s: null };
+  const lastZ = zc[zc.length - 1] ? zc[zc.length - 1].c : null;
+  if (zc.some((z) => z)) {
+    const reach = Math.max(2, Math.ceil(Math.abs(stop || entry || 2)));
+    const ticks = [];
+    for (let k = -reach - 2; k <= reach + 2; k += 1) ticks.push(k);
+    const zPlot = svgCandles(zBox, zc, { lines: zLines, digits: 0, ticks, times, seconds,
+      last: { value: lastZ, text: lastZ === null ? '' : lastZ.toFixed(2) } });
+    zBox.innerHTML = zPlot.svg;
+    geom.z = zPlot.geom;
+  } else {
+    zBox.innerHTML = '<div class="cw-empty">no band yet — fewer than ' + length + ' candles</div>';
+  }
+  const band = (k) => (c) => (c.m === null || c.sd === null ? null : c.m + k * c.sd);
+  const curves = [{ value: band(0), colour: CHART.mean, cls: 'cw-mean', width: 1.5 }];
+  if (entry !== null && entry !== undefined) {
+    curves.push({ value: band(entry), colour: '#dc3545', dash: '5 5', cls: 'cw-band-entry' });
+    curves.push({ value: band(-entry), colour: '#198754', dash: '5 5', cls: 'cw-band-entry' });
+  }
+  const last = shown[shown.length - 1];
+  const sPlot = svgCandles(sBox, shown, { curves, digits: dec > 4 ? 4 : dec, times, seconds,
+    last: { value: last.c, text: num(last.c, dec) } });
+  sBox.innerHTML = sPlot.svg;
+  geom.s = sPlot.geom;
+  node._drawn = { shown, zc, geom, entry, length, label, dec };
+  if (node._hover) chartHover(node, node._hover.plot, { clientX: node._hover.clientX, clientY: node._hover.clientY });
+  node.querySelector('.cw-min').textContent = 'Min: ' + num(Math.min.apply(null, shown.map((c) => c.l)), dec);
+  node.querySelector('.cw-max').textContent = 'Max: ' + num(Math.max.apply(null, shown.map((c) => c.h)), dec);
+  nowBox.textContent = 'now: z ' + (lastZ === null ? DASH : (lastZ > 0 ? '+' : '') + lastZ.toFixed(2)) +
+    ' · spread ' + num(last.c, dec) + (last.sd ? ' · 1σ ' + num(last.sd, dec) : '');
+  const own = hist.algo_timeframe_min === tf;
+  note.textContent = 'Hover a candle for its prices, the mean and the entry bands. Bands: EMA(' + length +
+    ') middle, the entry ±' + num(entry, 2) + 'σ dashed — the Algo’s own arithmetic' +
+    (own ? ', on its own ' + tf + '-minute candles: these are its bands.'
+      : '; the Algo itself reads ' + hist.algo_timeframe_min + '-minute candles.') +
+    ' Outlined: closed beyond the entry band. Candles of the recorded mids, the newest moving live.';
+}
+
+/* The hover: a crosshair on both plots through the same candle, the level
+ * under the pointer, and a readout of the candle in price and in sigma. */
+function crossNode(parent, cls) {
+  const found = parent.querySelector(':scope > .' + cls);
+  if (found) return found;
+  const made = document.createElement('div');
+  made.className = cls;
+  made.hidden = true;
+  parent.appendChild(made);
+  return made;
+}
+function chartUnhover(node) {
+  node.querySelectorAll('.cw-xline, .cw-yline, .cw-ylabel, .cw-tip').forEach((e) => { e.hidden = true; });
+  node._hover = null;
+}
+function chartHover(node, plot, event) {
+  const drawn = node._drawn;
+  if (!drawn) return;
+  const geom = drawn.geom[plot];
+  if (!geom) return;
+  const box = node.querySelector(plot === 'z' ? '.cw-z' : '.cw-spread');
+  const rect = box.getBoundingClientRect();
+  const x = event.clientX - rect.left, y = event.clientY - rect.top;
+  if (x < geom.left || x > geom.w - geom.right) { chartUnhover(node); return; }
+  const at = geom.t0 + (x - geom.left) / (geom.w - geom.left - geom.right) * (geom.t1 - geom.t0);
+  const i = geom.times.findIndex((t) => t <= at && at < t + geom.seconds);
+  const c = i >= 0 ? drawn.shown[i] : null;
+  if (!c) { chartUnhover(node); return; }
+  const z = drawn.zc[i];
+  [['.cw-z', 'z'], ['.cw-spread', 's']].forEach(([sel, k]) => {
+    const g = drawn.geom[k];
+    const line = crossNode(node.querySelector(sel), 'cw-xline');
+    if (!g) { line.hidden = true; return; }
+    line.hidden = false;
+    line.style.left = g.x(i) + 'px';
+    line.style.top = g.top + 'px';
+    line.style.height = (g.h - g.top - g.bottom) + 'px';
+  });
+  const value = geom.hi - (y - geom.top) / (geom.h - geom.top - geom.bottom) * (geom.hi - geom.lo);
+  node.querySelectorAll('.cw-yline, .cw-ylabel').forEach((e) => { e.hidden = true; });
+  if (y >= geom.top && y <= geom.h - geom.bottom) {
+    const yline = crossNode(box, 'cw-yline');
+    yline.hidden = false;
+    yline.style.top = y + 'px';
+    yline.style.left = geom.left + 'px';
+    yline.style.width = (geom.w - geom.left - geom.right) + 'px';
+    const ylabel = crossNode(box, 'cw-ylabel');
+    ylabel.hidden = false;
+    ylabel.style.top = (y - 8) + 'px';
+    ylabel.textContent = plot === 'z' ? (value > 0 ? '+' : '') + value.toFixed(2) + 'σ' : value.toFixed(drawn.dec);
+  }
+  const bodyEl = node.querySelector('.cw-body');
+  const tip = crossNode(bodyEl, 'cw-tip');
+  tip.hidden = false;
+  tip.innerHTML = chartTipHtml(drawn, c, z);
+  const bodyRect = bodyEl.getBoundingClientRect();
+  let tx = event.clientX - bodyRect.left + 14, ty = event.clientY - bodyRect.top + 14;
+  if (tx + tip.offsetWidth > bodyRect.width - 4) tx = event.clientX - bodyRect.left - tip.offsetWidth - 14;
+  if (ty + tip.offsetHeight > bodyRect.height - 4) ty = Math.max(4, event.clientY - bodyRect.top - tip.offsetHeight - 14);
+  tip.style.left = Math.max(4, tx) + 'px';
+  tip.style.top = ty + 'px';
+  node._hover = { plot, clientX: event.clientX, clientY: event.clientY };
+}
+function chartTipHtml(drawn, c, z) {
+  const entry = drawn.entry;
+  const p = (v) => (v === null || v === undefined ? DASH : num(v, drawn.dec));
+  const band = (k) => (c.m === null || !c.sd ? null : c.m + k * c.sd);
+  const score = (v) => (v === null || v === undefined || !isFinite(v) ? '' : (v > 0 ? '+' : '') + v.toFixed(2));
+  const head = new Date(c.t * 1000).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short',
+    hour: '2-digit', minute: '2-digit' }) + ' · ' + drawn.label;
+  const rows = [
+    ['', 'Price', 'Score', 'cols'],
+    ['Open', p(c.o), z ? score(z.o) : ''],
+    ['High', p(c.h), z ? score(z.h) : ''],
+    ['Low', p(c.l), z ? score(z.l) : ''],
+    ['Close', p(c.c), z ? score(z.c) : '', c.c >= c.o ? 'up' : 'down'],
+    ['Range', p(c.h - c.l), c.sd ? ((c.h - c.l) / c.sd).toFixed(2) : ''],
+  ];
+  const bands = [];
+  if (entry !== null && entry !== undefined) bands.push(['+ entry', p(band(entry)), score(entry), 'entry-up']);
+  bands.push(['Mean', p(c.m), '0.00', 'mean']);
+  if (entry !== null && entry !== undefined) bands.push(['− entry', p(band(-entry)), score(-entry), 'entry-down']);
+  const tr = (r) => '<tr class="' + (r[3] || '') + '"><th>' + r[0] + '</th><td>' + r[1] +
+    '</td><td class="z">' + (r[2] || '') + '</td></tr>';
+  let verdict = '';
+  if (z && entry !== null && entry !== undefined) {
+    verdict = Math.abs(z.c) >= entry ? '<div class="beyond">closed beyond the entry band</div>'
+      : Math.abs(z.h) >= entry || Math.abs(z.l) >= entry
+        ? '<div class="touched">touched the entry band, closed inside</div>' : '';
+  }
+  if (!z) verdict = '<div class="hint">no band yet — fewer than ' + drawn.length + ' candles behind it</div>';
+  return '<div class="head">' + esc(head) + '</div><table>' + rows.map(tr).join('') +
+    '<tr class="sep"><th colspan="3">Bands</th></tr>' + bands.map(tr).join('') + '</table>' + verdict;
+}
+
+/* Every open chart: the desk's own mids folded into 10-second live candles
+ * (kept two hours), the recorded candles re-read every minute, redrawn only
+ * when something changed. Returns the window keys it holds. */
 function renderCharts(snap) {
   const keys = [];
   const byKey = {};
@@ -3315,18 +3591,19 @@ function renderCharts(snap) {
     el.querySelector('.title').textContent = (c.name || key) + ' · Chart';
     const d = chartData[key];
     d.contract = c;
-    const now = Date.now();
     const mid = (c.market || {}).mid;
-    const algo = c.algo || {};
-    const z = algo.z_mid !== undefined && algo.z_mid !== null ? algo.z_mid : (c.stats || {}).z;
-    if (now - d.lastAt >= 1000 && (mid !== null && mid !== undefined)) {
-      d.lastAt = now;
-      d.live.push({ t: now / 1000, z: z === undefined ? null : z, mid });
-      if (d.live.length > 100) d.live.shift();
+    if (mid !== null && mid !== undefined && !((c.feed || {}).stale)) {
+      const b = Math.floor(Date.now() / 1000 / CHART_LIVE_SEC) * CHART_LIVE_SEC;
+      const last = d.live[d.live.length - 1];
+      if (last && last.t === b) {
+        last.h = Math.max(last.h, mid); last.l = Math.min(last.l, mid); last.c = mid;
+      } else {
+        d.live.push({ t: b, o: mid, h: mid, l: mid, c: mid });
+        if (d.live.length > 720) d.live.shift();
+      }
     }
-    // History refreshes itself every minute: a candle closes on its own clock.
-    if (d.tf !== 'live' && d.hist && now - (d.histAt || 0) > 60000) loadChartHistory(key);
-    if (!el.classList.contains('minimised')) paintChart(key);
+    loadChartHistory(key, false);
+    drawChart(key);
   });
   return keys;
 }
@@ -3533,7 +3810,7 @@ function renderAddMenu() {
     c.key, () => openWindow(c.key)));
   if (contracts.length && typeof chartWindow === 'function') title('Charts');
   if (typeof chartWindow === 'function') {
-    contracts.forEach((c) => item((c.name || c.key) + ' · Chart', 'z-score and price, live and history',
+    contracts.forEach((c) => item((c.name || c.key) + ' · Chart', 'z-score and price candles, 15m / 1h / 4h',
       '__chart__' + c.key, () => openChart(c.key)));
   }
   title('Windows');

@@ -159,12 +159,18 @@ the drawing wins.
 - **A key does what its button does** (B S F X 1-5 0 L M Tab ? Esc, on the
   focused ladder): it presses the ladder's own button, never while a field
   has the keyboard, and the Keys button turns them all off.
-- **The chart window is W3's** (Chart.js 4.4.6, bundled in
-  `static/vendor`, no CDN): z in #0d6efd with ±entry dashed #198754 and the
-  z stop dotted #dc3545 only when the contract has one, the mid in #6f42c1.
-  Live is what the window has watched; 15m / 1h / 4h are candles of the
-  RECORDED mids (`/api/chart`), z by the Algo's own convention. A z before
-  N candles is None — a gap, never 0.
+- **The chart window is the MT5 desk's pair chart, on ONE contract**
+  (SVG, drawn at the box's own pixel size — no chart library): z as
+  CANDLES (each candle against its own band) with +entry dashed red,
+  −entry dashed green and the z stop dotted grey only when the contract has
+  one; under it the contract's price as candles with the band's mean in
+  orange and the entry bands dashed; Min / Max, the last value tagged on
+  the right, a candle that CLOSED beyond the entry band outlined, + / − /
+  ↺ zoom, and the hover readout in price and sigma. 15m / 1h / 4h are
+  candles of the RECORDED mids (`/api/chart`: open, high, low, close; the
+  close is the Algo's), the newest moving live with the desk's mids. The
+  band is the Algo's arithmetic (`withBands`: EMA(N), population sigma); a
+  z before N candles is not drawn — a gap, never 0.
 
 ## Conventions that are easy to lose in a refactor
 

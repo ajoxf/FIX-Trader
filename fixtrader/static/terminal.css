@@ -1226,16 +1226,118 @@ table.keys { border-collapse: collapse; margin: 0 0 10px; }
 table.keys th { text-align: left; font: 700 calc(12px * var(--fs)) var(--mono); padding: 2px 14px 2px 0; vertical-align: top; white-space: nowrap; }
 table.keys td { font-size: calc(12px * var(--fs)); padding: 2px 0; }
 
-/* -- the chart window: W3's cards and charts ---------------------------- */
-.win.chartwin { display: flex; flex-direction: column; overflow: hidden; min-width: 340px; min-height: 260px; }
-.win.chartwin:not(.placed) { width: 560px; height: 380px; }
-.chartwin .ch-bar { display: flex; align-items: center; gap: 3px; padding: 3px 4px; background: var(--frame); border-bottom: 1px solid var(--frame-line); }
-.chartwin .ch-bar .tk.act { background: #0d6efd; color: #fff; border-color: #0a58ca; }
-.chartwin .ch-now { margin-left: auto; font: 600 calc(11px * var(--fs)) var(--mono); }
-.chartwin .ch-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; padding: 6px; background: #fff; }
-.w3-card { display: flex; flex-direction: column; min-height: 0; background: #f8f9fa; border: 1px solid rgba(0,0,0,.175); border-radius: 6px; overflow: hidden; }
-.w3-card.ch-zcard { flex: 7 1 0; }
-.w3-card.ch-pcard { flex: 5 1 0; }
-.w3-head { display: flex; justify-content: space-between; padding: 4px 10px; background: #e9ecef; border-bottom: 1px solid rgba(0,0,0,.175); color: #212529; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-.w3-head small { font-size: calc(11.5px * var(--fs)); }
-.w3-canvas { position: relative; flex: 1 1 auto; min-height: 60px; padding: 4px; }
+/* -- the chart window: the MT5 desk's pair chart (ladder.css) ----------- */
+.win.chartwin { overflow: hidden; min-width: 420px; min-height: 320px; }
+.win.chartwin:not(.placed) { width: 780px; height: 500px; }
+.win.chartwin { display: flex; flex-direction: column; }
+.win.chartwin .cw-body {
+  flex: 1; display: flex; flex-direction: column; gap: 6px;
+  padding: 6px 8px; overflow: auto; min-height: 0;
+}
+.win.chartwin .cw-bar { font-size: 12px; display: flex; gap: 6px;
+  align-items: center; }
+.win.chartwin .cw-now { margin-left: auto; font-weight: 600; }
+.win.chartwin .cw-card { flex: 1; display: flex; flex-direction: column;
+  min-height: 140px; border: 1px solid rgba(128,128,128,.35);
+  border-radius: 3px; background: var(--panel-bg, #fff); }
+.win.chartwin .cw-head { font-size: 12px; font-weight: 600;
+  padding: 3px 6px; border-bottom: 1px solid rgba(128,128,128,.25);
+  display: flex; align-items: center; gap: 8px; }
+.win.chartwin .cw-key { font-weight: 400; color: #6c757d;
+  margin-left: auto; display: flex; gap: 6px; align-items: center; }
+.win.chartwin .cw-key i { display: inline-block; width: 14px; height: 0;
+  border-top: 2px solid; vertical-align: middle; margin-right: 2px; }
+.win.chartwin .cw-key .k-sd { border-top: 1px dotted rgba(13,110,253,.8); }
+.win.chartwin .cw-key .k-mean { border-top: 2px solid #fd7e14; }
+.win.chartwin .cw-tfs { display: inline-flex; }
+.win.chartwin .cw-tfs button { font: 700 11px var(--ui); padding: 1px 8px;
+  border: 1px solid rgba(0, 0, 0, .3); background: var(--chrome);
+  cursor: pointer; margin-right: -1px; }
+.win.chartwin .cw-tfs button:first-child { border-radius: 3px 0 0 3px; }
+.win.chartwin .cw-tfs button:last-child { border-radius: 0 3px 3px 0; }
+.win.chartwin .cw-tfs button.on { background: #0d6efd; color: #fff;
+  border-color: #0d6efd; }
+.win.chartwin .cw-key .k-candle { display: inline-block; width: 5px;
+  height: 10px; vertical-align: middle; margin-right: 1px; }
+.win.chartwin .cw-key .k-candle.up { background: #198754; }
+.win.chartwin .cw-key .k-candle.down { background: #dc3545;
+  margin-right: 3px; }
+.win.chartwin .cw-key .k-up { border-top: 1px dashed #dc3545; }
+.win.chartwin .cw-key .k-down { border-top: 1px dashed #198754; }
+.win.chartwin .cw-key .k-stop { border-top: 1px dotted #6c757d; }
+.win.chartwin .cw-badges { margin-left: auto; display: flex; gap: 4px; }
+.win.chartwin .cw-badge { font-weight: 600; font-size: 11px;
+  padding: 1px 6px; border-radius: 3px; color: #212529; }
+.win.chartwin .cw-min { background: #6edff6; }
+.win.chartwin .cw-max { background: #ffda6a; }
+.win.chartwin .cw-plot { flex: 1; position: relative; min-height: 110px;
+  overflow: hidden; }
+.win.chartwin .cw-plot svg { position: absolute; inset: 0; }
+.win.chartwin .cw-empty { position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center; color: #6c757d;
+  font-size: 12px; }
+.win.chartwin .cw-note { font-size: 11px; }
+/* The ladder's Chart button: lit while its chart is open. Styled like
+ * the Algo switch beside it, and never allowed to push the window's own
+ * buttons onto a second line. */
+.window.ladder .chart-btn { font: 700 10px var(--ui); padding: 0 6px;
+  margin-left: 4px; border: 1px solid rgba(0, 0, 0, .25); border-radius: 2px;
+  background: var(--chrome); cursor: pointer; white-space: nowrap;
+  flex-shrink: 0; }
+.window.ladder .chart-btn.on { background: #0d6efd; color: #fff;
+  border-color: #0d6efd; }
+
+/* The Algo window's legs: each one's account number and broker, small,
+ * under the title. */
+.window.algowin .aw-legs { font-size: 11px; color: #6c757d;
+  padding: 3px 8px; border-bottom: 1px solid rgba(128,128,128,.25);
+  line-height: 1.35; }
+.window.algowin .aw-legs .aw-leg { white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+.window.algowin .aw-legs b { color: #212529; margin-right: 2px; }
+
+/* The chart's hover: a crosshair through the candle on both charts, the
+ * level under the pointer on its axis, and a readout of the candle. */
+.win.chartwin .cw-body { position: relative; }
+.win.chartwin .cw-plot { cursor: crosshair; }
+.win.chartwin .cw-xline { position: absolute; width: 0;
+  border-left: 1px dashed rgba(33,37,41,.55); pointer-events: none; }
+.win.chartwin .cw-yline { position: absolute; height: 0;
+  border-top: 1px dashed rgba(33,37,41,.45); pointer-events: none; }
+.win.chartwin .cw-ylabel { position: absolute; left: 2px; padding: 0 3px;
+  font: 600 10px var(--ui); background: #212529; color: #fff;
+  border-radius: 2px; pointer-events: none; }
+.win.chartwin .cw-tip { position: absolute; z-index: 5;
+  pointer-events: none; background: rgba(255,255,255,.97);
+  border: 1px solid rgba(0,0,0,.25); border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.2); padding: 5px 8px;
+  font-size: 11px; min-width: 190px; }
+.win.chartwin .cw-tip .head { font-weight: 700; margin-bottom: 3px; }
+.win.chartwin .cw-tip .sep { font-weight: 700; margin: 4px 0 1px;
+  color: #6c757d; border-top: 1px solid rgba(128,128,128,.25);
+  padding-top: 3px; }
+.win.chartwin .cw-tip table { border-collapse: collapse; width: 100%; }
+.win.chartwin .cw-tip th { text-align: left; font-weight: 400;
+  color: #6c757d; padding: 0 8px 0 0; white-space: nowrap; }
+.win.chartwin .cw-tip td { text-align: right; font-family: var(--mono, monospace);
+  padding: 0 0 0 6px; white-space: nowrap; }
+.win.chartwin .cw-tip td.z { color: #0d6efd; min-width: 52px; }
+.win.chartwin .cw-tip tr.up td:first-of-type { color: #198754; font-weight: 700; }
+.win.chartwin .cw-tip tr.down td:first-of-type { color: #dc3545; font-weight: 700; }
+.win.chartwin .cw-tip tr.mean th, .win.chartwin .cw-tip tr.mean td {
+  color: #fd7e14; font-weight: 700; }
+.win.chartwin .cw-tip tr.entry-up th { color: #dc3545; }
+.win.chartwin .cw-tip tr.entry-down th { color: #198754; }
+.win.chartwin .cw-tip .beyond { margin-top: 3px; font-weight: 700;
+  color: #212529; background: #ffda6a; padding: 1px 4px; border-radius: 2px; }
+.win.chartwin .cw-tip .touched { margin-top: 3px; color: #6c757d; }
+.win.chartwin .cw-tip tr.sep th { font-weight: 700; color: #6c757d;
+  border-top: 1px solid rgba(128,128,128,.25); padding-top: 3px; }
+.win.chartwin .cw-tip tr.cols th, .win.chartwin .cw-tip tr.cols td {
+  font: 600 10px var(--ui); color: #6c757d; text-transform: uppercase;
+  letter-spacing: .03em; }
+
+.win.chartwin .cw-zoom { display: inline-flex; gap: 2px; }
+.win.chartwin .cw-zoom button { font: 700 12px var(--ui); width: 24px; padding: 1px 0; border: 1px solid #adb5bd;
+  background: #fff; border-radius: 3px; cursor: pointer; }
+.win.chartwin .cw-zoom button:hover { background: #e9ecef; }

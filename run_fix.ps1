@@ -29,7 +29,9 @@ $env:PYTHONUNBUFFERED = '1'
 # should have started the engine was gone. So errors are not fatal from
 # here on, and every line is passed on as plain text.
 $ErrorActionPreference = 'Continue'
-& $python start.py --fix --no-browser --config config.tt-uat.json `
+# The terminal opens in a window of its own (Edge's app window, or the
+# ordinary browser where there is no Edge): http://127.0.0.1:8000/
+& $python start.py --fix --config config.tt-uat.json `
     --status (Join-Path $runtimeDirectory 'status.tt-uat.json') `
     --commands (Join-Path $runtimeDirectory 'commands.tt-uat.jsonl') `
     --results (Join-Path $runtimeDirectory 'results.tt-uat.json') `

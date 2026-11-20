@@ -1,8 +1,10 @@
-"""The chart window: W3's charts, on the FIX desk. History is the
-RECORDING — candles of 15m / 1h / 4h built from the mids this system wrote,
-with z the Algo's own measure (EMA(N) middle, population sigma of the last
-N). Before N candles there is no z: None, never 0. The entry levels and the
-z stop are the contract's own; a z stop that is off is not drawn."""
+"""The chart window: the MT5 desk's pair chart on ONE contract — z as
+candles, the price as candles with the Algo's band over them. History is the
+RECORDING: candles of 15m / 1h / 4h of the mids this system wrote (open,
+high, low, close), z by the Algo's own measure (EMA(N) middle, population
+sigma of the last N). Before N candles there is no z candle — a gap, never
+0. The entry levels and the z stop are the contract's own; a z stop that is
+off is not drawn."""
 import json
 import math
 import threading
@@ -38,41 +40,26 @@ def desk(tmp_path, stop_z_on=False, hours=72):
     return app, rows
 
 
-def test_history_is_candles_of_the_recorded_mids_with_the_algos_z(tmp_path):
+def test_the_candles_are_the_recorded_mids_open_high_low_close(tmp_path):
     app, rows = desk(tmp_path)
-    if app.test_client().get('/api/chart/fef?tf=60').get_json().get('entry_z') != 2.25:
+    body = app.test_client().get('/api/chart/fef?tf=60').get_json()
+    assert body['ok'] and body['tf'] == 60
+    if body['entry_z'] != 2.25:
         pytest.skip('this configuration does not carry per-contract overrides this way')
-    body = app.test_client().get('/api/chart/fef?tf=60').get_json()
-    assert body['ok'] and body['tf'] == 60 and body['length'] == 20
-    pts = body['points']
+    assert body['length'] == 20 and body['stop_z'] is None   # z stop off: not drawn
+    hour = {}
+    for at, price in rows:
+        hour.setdefault(bands.bucket_of(at.timestamp(), 3600.0), []).append(price)
+    assert body['candles']
+    for c in body['candles']:
+        mids = hour[c['t']]
+        assert (c['o'], c['h'], c['l'], c['c']) == (mids[0], max(mids), min(mids), mids[-1])
+    # The close is the Algo's: the last mid in the candle.
     closes = bands.candles_from_samples(rows, 3600.0)
-    assert len(pts) == min(150, len(closes))
-    # Each point closes on the LAST mid recorded in its hour.
-    assert [p['mid'] for p in pts] == [c for _, c in closes][-len(pts):]
-    # z, independently: EMA(20) seeded with the SMA, population sigma.
-    vals = [c for _, c in closes]
-    ema, zs = None, []
-    for i, v in enumerate(vals):
-        if i + 1 < 20:
-            zs.append(None)
-            continue
-        ema = sum(vals[:20]) / 20 if ema is None else (2 / 21) * v + (1 - 2 / 21) * ema
-        win = vals[i - 19:i + 1]
-        m = sum(win) / 20
-        sd = math.sqrt(sum((x - m) ** 2 for x in win) / 20)
-        zs.append(round((v - ema) / sd, 3))
-    assert [p['z'] for p in pts] == zs[-len(pts):]
-    assert body['stop_z'] is None                  # the z stop is off: not drawn
+    assert [c['c'] for c in body['candles']] == [c for _, c in closes][-len(body['candles']):]
 
 
-def test_before_n_candles_there_is_no_z_never_zero(tmp_path):
-    app, _ = desk(tmp_path, hours=10)
-    body = app.test_client().get('/api/chart/fef?tf=60').get_json()
-    assert body['ok'] and body['points']
-    assert all(p['z'] is None for p in body['points'])   # 10 hours < 20 candles
-
-
-def test_the_z_stop_is_drawn_only_when_the_contract_has_one(tmp_path):
+def test_the_z_stop_is_sent_only_when_the_contract_has_one(tmp_path):
     app, _ = desk(tmp_path, stop_z_on=True)
     body = app.test_client().get('/api/chart/fef?tf=240').get_json()
     if body['entry_z'] != 2.25:
@@ -88,16 +75,31 @@ def test_nothing_recorded_says_so(tmp_path):
     app = create_app(str(tmp_path / 'config.json'), str(tmp_path / 'status.json'),
                      str(tmp_path / 'c.jsonl'), str(tmp_path / 'r.json'))
     body = app.test_client().get('/api/chart/x?tf=15').get_json()
-    assert body['ok'] and body['points'] == [] and 'no mids recorded' in body['note']
+    assert body['ok'] and body['candles'] == [] and 'no mids recorded' in body['note']
     assert app.test_client().get('/api/chart/nope').status_code == 404
 
 
-def test_the_chart_window_draws_w3s_lines(tmp_path):
-    """Opened from the + menu: the z line in W3's blue, the entry levels
-    dashed green, and — on 1h — the recorded history."""
+def open_chart_page(p, tmp_path, url):
+    from tests.test_ui_browser import _launch
+    browser = _launch(p)
+    page = browser.new_page(viewport={'width': 1400, 'height': 900})
+    errors = []
+    page.on('pageerror', lambda e: errors.append(str(e)))
+    page.goto(url, wait_until='domcontentloaded')
+    page.wait_for_selector('.win', timeout=10000)
+    page.click('#add-panel')
+    page.click('#add-menu [data-panel="__chart__fef"]')
+    page.wait_for_selector('.win.chartwin .cw-spread svg', timeout=8000)
+    return browser, page, errors
+
+
+def test_the_chart_window_is_the_mt5_desks_candles(tmp_path):
+    """z candles with the entry dashed red above and green below; the price
+    candles with the band's mean in orange; the last value tagged; candles
+    that closed beyond the entry band outlined; zoom in, out and back."""
     pw = pytest.importorskip('playwright.sync_api')
     from werkzeug.serving import make_server
-    from tests.test_ui_browser import SNAPSHOT, _launch
+    from tests.test_ui_browser import SNAPSHOT
     app, _ = desk(tmp_path)
     (tmp_path / 'status.json').write_text(json.dumps(
         dict(SNAPSHOT, ts=datetime.now(timezone.utc).isoformat())))
@@ -105,30 +107,46 @@ def test_the_chart_window_draws_w3s_lines(tmp_path):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
         with pw.sync_playwright() as p:
-            browser = _launch(p)
-            page = browser.new_page(viewport={'width': 1400, 'height': 900})
-            errors = []
-            page.on('pageerror', lambda e: errors.append(str(e)))
-            page.goto(f'http://127.0.0.1:{srv.server_port}/', wait_until='domcontentloaded')
-            page.wait_for_selector('.win', timeout=10000)
-            page.click('#add-panel')
-            page.click('#add-menu [data-panel="__chart__fef"]')
-            page.wait_for_selector('.win.chartwin canvas.ch-z', timeout=5000)
-            page.wait_for_function("() => (chartData.fef.live || []).length >= 1", timeout=8000)
-            live = page.evaluate("""() => {
-              const z = chartData.fef.charts.z;
-              return {colour: z.data.datasets[0].borderColor,
-                      entry: z.data.datasets[1].data[0], dash: z.data.datasets[1].borderDash,
-                      price: chartData.fef.charts.p.data.datasets[0].borderColor,
-                      ymin: z.options.scales.y.min, ymax: z.options.scales.y.max};
-            }""")
-            assert live['colour'] == '#0d6efd' and live['price'] == '#6f42c1'
-            assert live['entry'] == 2.0 and live['dash'] == [5, 5]
-            assert (live['ymin'], live['ymax']) == (-5, 5)
-            page.click('.win.chartwin .ch-tf[data-tf="60"]')
+            browser, page, errors = open_chart_page(p, tmp_path, f'http://127.0.0.1:{srv.server_port}/')
+            win = page.locator('.win.chartwin')
+            win.locator('.cw-tfs button[data-tf="60"]').click()
             page.wait_for_function(
-                "() => chartData.fef.hist && chartData.fef.charts.z.data.labels.length > 20",
-                timeout=8000)
+                "() => document.querySelectorAll('.chartwin .cw-z g.cw-candle').length > 20", timeout=8000)
+            drawn = page.evaluate("""() => {
+              const w = document.querySelector('.win.chartwin');
+              return {
+                z: w.querySelectorAll('.cw-z g.cw-candle').length,
+                s: w.querySelectorAll('.cw-spread g.cw-candle').length,
+                up: w.querySelector('.cw-z .cw-entry-up').getAttribute('stroke'),
+                down: w.querySelector('.cw-z .cw-entry-down').getAttribute('stroke'),
+                mean: w.querySelector('.cw-spread .cw-mean').getAttribute('stroke'),
+                tags: w.querySelectorAll('.cw-lasttag').length,
+                beyond: w.querySelectorAll('g.cw-candle.beyond').length,
+                size: w.querySelector('.cw-size').textContent,
+                now: w.querySelector('.cw-now').textContent,
+                min: w.querySelector('.cw-min').textContent,
+              };
+            }""")
+            assert drawn['up'] == '#dc3545' and drawn['down'] == '#198754'
+            assert drawn['mean'] == '#fd7e14'
+            assert drawn['tags'] == 2
+            # Unmeasured is not zero: no z candle before the band has 20.
+            assert drawn['z'] <= drawn['s']
+            assert '1-hour candles' in drawn['size'] and 'shown' in drawn['size']
+            assert drawn['now'].startswith('now: z ') and 'Min: ' in drawn['min']
+            assert page.locator('.chartwin .cw-key-stop').is_hidden()
+            before = drawn['s']
+            win.locator('.cw-in').click()
+            fewer = page.locator('.chartwin .cw-spread g.cw-candle').count()
+            assert fewer < before
+            win.locator('.cw-reset').click()
+            assert page.locator('.chartwin .cw-spread g.cw-candle').count() == before
+            # The hover reads the candle out.
+            box = page.locator('.chartwin .cw-spread').bounding_box()
+            page.mouse.move(box['x'] + box['width'] * 0.8, box['y'] + box['height'] / 2)
+            page.wait_for_selector('.chartwin .cw-tip:not([hidden])', timeout=3000)
+            tip = page.locator('.chartwin .cw-tip').inner_text()
+            assert 'Open' in tip and 'Close' in tip and 'Mean' in tip
             assert errors == []
             browser.close()
     finally:
