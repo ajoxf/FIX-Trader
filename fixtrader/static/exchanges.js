@@ -484,4 +484,18 @@ function prefillFromExplorer() {
   await loadVenues();
   await loadContracts();
   prefillFromExplorer();
+  // A contract added elsewhere (Add instrument, while this window stays
+  // open) shows up here without a reload: the list is read again and
+  // redrawn only when it changed. The form being edited is not touched.
+  let seen = JSON.stringify(state.contracts);
+  setInterval(async () => {
+    if (document.hidden) return;
+    let fresh;
+    try { fresh = await getJSON('/api/contracts'); } catch (e) { return; }
+    const sig = JSON.stringify(fresh);
+    if (sig === seen) return;
+    seen = sig;
+    await loadContracts();
+    paintCounts();
+  }, 3000);
 })();

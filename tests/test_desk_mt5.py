@@ -215,3 +215,26 @@ def test_a_page_window_opens_at_the_size_of_what_it_shows(server):
         assert win_h < desk_h - 100
         assert not frame.locator('header.app-nav').is_visible()
         browser.close()
+
+
+def test_exchanges_shows_a_contract_added_while_it_is_open(server):
+    """Add instrument saves a contract while Exchanges stays open: the list
+    there takes it without a reload."""
+    url, tmp = server
+    manual_desk(tmp)
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin')
+        page.click('#open-exchanges')
+        frame = page.frame_locator('.win.toolwin[data-tool="exchanges"] iframe')
+        frame.locator('#pick-contract').wait_for()
+        page.wait_for_timeout(1000)
+        before = frame.locator('#contract-rows tr').count()
+        res = page.request.post(url.rstrip('/') + '/api/contracts',
+                                data={'symbol': 'GC', 'name': 'GC Feb27',
+                                      'security_id': '27055936'})
+        assert res.json()['ok']
+        frame.locator('#contract-rows tr:has-text("GC Feb27")').wait_for(timeout=8000)
+        assert frame.locator('#contract-rows tr').count() == before + 1
+        browser.close()
