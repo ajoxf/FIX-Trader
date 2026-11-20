@@ -231,7 +231,7 @@
       for(const part of [pick.structure,pick.description,pick.contract_code&&'code '+pick.contract_code,'TT Security ID '+pick.security_id,
                          pick.tick_size&&`tick ${pick.tick_size}`+(pick.tick_value?` = ${pick.tick_value} ${pick.currency||''}`:'')].filter(Boolean))detail.append(' · '+part);
       const next=document.createElement('div');next.className='explore-next';
-      next.innerHTML='<b>Next:</b> <b>Add to the desk</b> — its ladder, Algo window and chart (you check the form and press Save) · or <b>Watch prices here</b> — live prices on this page, to trade from the order ticket.';
+      next.innerHTML='<b>Next:</b> <b>Add to the desk</b> — saved from TT\'s definition; its ladder appears on the desk in a few seconds · or <b>Watch prices here</b> — live prices on this page, to trade from the order ticket.';
       detail.append(next);
     }else detail.textContent=explorer.product&&described.get(explorer.product)?`${explorer.product} — ${described.get(explorer.product)}`:'Select an instrument to see its legs, TT Security ID and tick value.';
     const search=data.search||{}, typeName=(EXPLORER_TYPES.find(t=>t[0]===explorer.type)||[])[1]||explorer.type;
@@ -420,11 +420,41 @@
   }
   $('explore-add').onclick=async()=>{try{await exploreSubscribe();}catch(e){$('explore-status').textContent=e.message;}};
   $('explore-contract').ondblclick=async()=>{explorer.contract=$('explore-contract').value;try{await exploreSubscribe();}catch(e){$('explore-status').textContent=e.message;}};
-  $('explore-algo').onclick=()=>{
+  /* Add to the desk in ONE step: the contract is saved from TT's own
+   * definition (Security ID, tick, tick value) and the engine takes it while
+   * it runs — its ladder appears on the desk. With more than one venue the
+   * trader chooses it on the contract form instead. */
+  async function addToDesk(i){
+    const venues=(await (await fetch('/api/venues',{cache:'no-store'})).json()).filter(v=>v.enabled!==false);
+    if(venues.length!==1){toAlgoDesk(i);$('explore-dialog').close();return;}
+    const contracts=await (await fetch('/api/contracts',{cache:'no-store'})).json();
+    const have=(contracts||[]).find(c=>String(c.security_id||'')===String(i.security_id));
+    const host=window.parent!==window?window.parent:null;
+    if(have){
+      $('explore-status').textContent=`${have.name||have.key} is already on the desk.`;
+      if(host&&host.revealContract)host.revealContract(have.key);
+      return;
+    }
+    const tick=String(i.tick_size||''),dot=tick.indexOf('.');
+    const body={name:i.tt_name||i.display_name||i.symbol,symbol:i.symbol,security_id:i.security_id,
+      security_exchange:i.exchange,venue:venues[0].name,enabled:true,
+      decimals:tick?(dot<0?2:Math.max(2,tick.length-dot-1)):4};
+    for(const [k,v] of [['tick_size',i.tick_size],['tick_value',i.tick_value],['contract_multiplier',i.point_value],['currency',i.currency]])
+      if(v!==undefined&&v!==null&&v!=='')body[k]=k==='currency'?v:Number(v);
+    const r=await fetch('/api/contracts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const out=await r.json();
+    if(!out.ok){$('explore-status').textContent='Not added: '+(out.error||'refused');return;}
+    $('explore-dialog').close();
+    notice(`${body.name} added to the desk — its ladder appears in a few seconds. Set its Algo to SIGNALS on the ladder.`);
+    if(host&&host.revealContract)host.revealContract(out.key);
+    if(host&&host.closeTool&&new URLSearchParams(location.search).get('explore')==='algo')host.closeTool('instruments');
+  }
+  $('explore-algo').onclick=async()=>{
     const i=explorerMatches().contracts.find(c=>c.security_id===explorer.contract);
     if(!i){$('explore-status').textContent='Select an instrument first';return;}
-    toAlgoDesk(i);
-    $('explore-dialog').close();
+    $('explore-algo').disabled=true;
+    try{await addToDesk(i);}catch(e){$('explore-status').textContent='Not added: '+e.message;}
+    finally{$('explore-algo').disabled=!explorer.contract;}
   };
   // Opened from the Exchanges page's "Pick from TT": the explorer, at once,
   // its choice going to the algo desk's contract form.

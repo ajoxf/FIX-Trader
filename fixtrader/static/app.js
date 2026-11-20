@@ -23,6 +23,16 @@ const EMBED = (() => {
 })();
 const LS = EMBED === null ? 'ft.' : 'ft.uat.';
 if (EMBED !== null) document.documentElement.classList.add('embed-uat');
+/* The window places a browser kept from the old grid desk put ladders below
+ * the edge of the MT5 desk (which does not scroll) and gave windows the
+ * old sizes. They are let go ONCE, and a fresh MT5 desk is laid out. */
+const LAYOUT_VERSION = '2';
+try {
+  if (localStorage.getItem(LS + 'layout') !== LAYOUT_VERSION) {
+    ['places', 'min', 'closed', 'tools', 'grid', 'charts'].forEach((k) => localStorage.removeItem(LS + k));
+    localStorage.setItem(LS + 'layout', LAYOUT_VERSION);
+  }
+} catch (e) { /* a private window starts fresh anyway */ }
 const state = {
   refresh: 500,
   timer: null,
@@ -422,6 +432,17 @@ function raise(el) {
   el.style.zIndex = String(++topZ);
 }
 
+/* A place kept from another screen size, or another layout, that would put
+ * the window off the desk is not used: the window opens where a new one
+ * would. */
+function placeOnDesk(place) {
+  if (!place || place.x === undefined) return false;
+  const deskEl = document.getElementById('desktop');
+  const w = deskEl ? deskEl.clientWidth : window.innerWidth;
+  const h = deskEl ? deskEl.clientHeight : window.innerHeight;
+  return place.x >= 0 && place.y >= 0 && place.x < w - 60 && place.y < h - 40;
+}
+
 function placeWindow(el, x, y) {
   document.getElementById('desktop').classList.add('free');
   state.free = true;
@@ -487,7 +508,9 @@ function savePlaces() {
  * table got longer is not remembered at that height. */
 function makeResizable(el, key) {
   const saved = state.places[key];
-  if (saved && saved.w && saved.h) {
+  // A size from another screen that would not fit this one is not used.
+  if (saved && saved.w && saved.h && saved.w <= window.innerWidth - 20 &&
+      saved.h <= window.innerHeight - 60) {
     el.style.width = saved.w + 'px';
     el.style.height = saved.h + 'px';
   }
@@ -1157,7 +1180,7 @@ function ladderFor(key) {
   });
   document.getElementById('desktop').appendChild(el);
   const place = state.places[wkey];
-  if (place) placeWindow(el, place.x, place.y);
+  if (placeOnDesk(place)) placeWindow(el, place.x, place.y);
   return el;
 }
 
@@ -2942,6 +2965,7 @@ async function tick() {
       if (!seen.has(el.dataset.key)) el.remove();
     });
     renderTabs();
+    revealPending();
   } catch (e) {
     const banner = document.getElementById('engine-banner');
     banner.classList.remove('hidden');
@@ -3741,7 +3765,7 @@ function freezeOthers(el) {
  * do: over the ladders, cascaded, never pushing them about. */
 function floatNew(el, key, w, h, side) {
   const place = state.places[key];
-  if (place && place.x !== undefined) {
+  if (placeOnDesk(place)) {
     placeWindow(el, place.x, place.y);
     return;
   }
@@ -3829,6 +3853,24 @@ function openTool(href) {
   renderTabs();
 }
 window.openTool = openTool;
+//: A page window closes itself (Instruments, after adding from Exchanges).
+window.closeTool = (name) => {
+  const el = document.querySelector('.win.toolwin[data-tool="' + name + '"]');
+  if (el) el.querySelector('.close').click();
+};
+//: A contract just added: its ladder is brought forward as soon as the
+//: engine has it — the trader should not have to go looking.
+window.revealContract = (key) => { state.reveal = { key, until: Date.now() + 30000 }; };
+function revealPending() {
+  const r = state.reveal;
+  if (!r) return;
+  if (Date.now() > r.until) { state.reveal = null; return; }
+  const el = document.querySelector('.win[data-key="__ladder__' + CSS.escape(r.key) + '"]');
+  if (!el) return;
+  state.reveal = null;
+  openLadder(r.key);
+  el.classList.remove('revealed'); void el.offsetWidth; el.classList.add('revealed');
+}
 //: A click inside a page window raises it: the iframe swallows the
 //: mousedown the window would otherwise see.
 window.raiseFrame = (frame) => {

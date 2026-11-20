@@ -492,7 +492,10 @@ def test_a_structural_change_is_reported_and_not_half_applied(tmp_path):
     assert snap['engine']['config_reloaded_at'] is not None
 
 
-def test_a_contract_added_or_removed_needs_a_restart(tmp_path):
+def test_a_contract_added_is_taken_at_once_and_one_removed_waits(tmp_path):
+    """Adding has nothing to half-apply — no book, no position, no order — so
+    the new contract is subscribed and gets its window at once. Removing
+    may strand a position, so it still waits for a restart (the control)."""
     from fixtrader.config import ContractConfig
     engine, gw, db, cfg = build(tmp_path)
     warm_the_window(engine, gw)
@@ -502,9 +505,12 @@ def test_a_contract_added_or_removed_needs_a_restart(tmp_path):
     del new.contracts['fef']
     report = engine.apply_config(new)
 
-    assert 'contract other added' in report['restart_needed']
+    assert 'contract other added' in report['changed']
+    assert 'other' in engine.runtimes
     assert 'contract fef removed' in report['restart_needed']
-    assert set(engine.config.contracts) == {'fef'}       # nothing half-done
+    assert 'fef' in engine.runtimes                      # removal not half-done
+    keys = [c['key'] for c in engine.snapshot()['contracts']]
+    assert 'other' in keys and 'fef' in keys
 
 
 def test_a_display_change_is_adopted_live(tmp_path):

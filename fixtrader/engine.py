@@ -1929,8 +1929,23 @@ class Engine:
                 self.config.settings[key] = value
                 changed.append(key)
 
+        # A contract ADDED is taken at once: it has no book, no position and
+        # no order, so there is nothing to half-apply — it is subscribed and
+        # gets its ladder within a pass, as at startup (`add_contract`). One
+        # REMOVED still waits for a restart: it may hold a position.
         for key in sorted(set(new.contracts) - set(self.config.contracts)):
-            restart.append(f'contract {key} added')
+            contract = new.contracts[key]
+            self.config.contracts[key] = contract
+            if not contract.enabled:
+                changed.append(f'contract {key} added (disabled)')
+                continue
+            try:
+                self.add_contract(contract)
+                changed.append(f'contract {key} added')
+                logger.info('contract %s added while running', key)
+            except Exception as e:                           # noqa: BLE001
+                logger.exception('contract %s could not be added', key)
+                restart.append(f'contract {key} added ({e})')
         for key in sorted(set(self.config.contracts) - set(new.contracts)):
             restart.append(f'contract {key} removed')
 

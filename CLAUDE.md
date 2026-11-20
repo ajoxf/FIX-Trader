@@ -162,11 +162,16 @@ the drawing wins.
   in `?embed=1` (no navigation of its own; a link inside it opens that
   page's window), never a second implementation. The look is ported from
   the MT5 desk's `ladder.css`; the bid is blue, the ask red, everywhere.
-- **A contract is PICKED from TT, not typed**: Exchanges' "Pick from TT"
-  opens the Instruments explorer (exchange · type · product · instrument,
-  TT's own catalogue, `?explore=algo`) and the instrument chosen fills the
-  contract form from TT's definition (`prefill`); nothing is saved until
-  Save. One explorer, never a second one.
+- **A contract is PICKED from TT, not typed, in ONE step**: the Instruments
+  explorer (exchange · type · product · instrument, TT's own catalogue; from
+  Exchanges' "Pick from TT" it opens with `?explore=algo`) — "Add to the
+  desk" SAVES the contract from TT's definition (Security ID, tick, tick
+  value) on the one venue, the running engine takes it, and the desk brings
+  its ladder forward (`revealContract`). With more than one venue the form
+  opens (`prefill`) for the trader to choose. One explorer, never a second.
+- **Window places from another layout or screen are not trusted**
+  (`placeOnDesk`, `LAYOUT_VERSION`): a place off the desk, or a size that
+  does not fit, is dropped and the window opens where a new one would.
 - **The catalogue never rides the status snapshot.** TT's search answers
   and the instrument catalogue (thousands of definitions) are written beside
   it (`status.json.instruments.json`, `ManualTerminal.catalogue_frame`) only
@@ -421,8 +426,10 @@ the drawing wins.
   LIVE switch wins over the file (`algo_on` is never adopted, or a reload
   stands down a contract the trader just armed); nothing touches the book, a
   position or an open order; and a change the running engine cannot adopt —
-  a contract added or removed, a tick value, `enabled`, `DATABASE_PATH` — is
-  REPORTED in `config_restart_needed`, never half-applied. A setting that
+  a contract removed, a tick value, `enabled`, `DATABASE_PATH` — is
+  REPORTED in `config_restart_needed`, never half-applied. A contract ADDED
+  is taken at once (`add_contract`, as at startup): it has no book, no
+  position and no order, so there is nothing to half-apply. A setting that
   looks saved and is not in force is worse than one that plainly says it
   needs a restart.
 - **Only one engine may run against a book.** Two trade the same signals on the

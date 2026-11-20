@@ -137,11 +137,11 @@ def test_the_instruments_window_on_the_desk_pulls_them(desk):
         srv.shutdown()
 
 
-def test_a_new_contract_is_picked_from_tt_not_typed(desk):
-    """Exchanges -> Pick from TT: the Instruments explorer (exchange, type,
-    product, instrument — TT's own catalogue) opens, and the instrument
-    chosen fills the contract form from TT's definition. Nothing is saved
-    until Save."""
+def test_a_contract_is_added_to_the_desk_in_one_step_and_its_ladder_appears(desk):
+    """Exchanges -> Pick from TT -> exchange, type, product, instrument ->
+    Add to the desk: the contract is SAVED from TT's own definition, the
+    RUNNING engine takes it (no restart), the explorer's window closes and
+    the new ladder comes forward on the desk with TT's prices on it."""
     pw = pytest.importorskip('playwright.sync_api')
     from werkzeug.serving import make_server
     from tests.test_ui_browser import _launch
@@ -154,7 +154,7 @@ def test_a_new_contract_is_picked_from_tt_not_typed(desk):
             errors = []
             page.on('pageerror', lambda e: errors.append(str(e)))
             page.goto(f'http://127.0.0.1:{srv.server_port}/', wait_until='domcontentloaded')
-            page.wait_for_selector('.win', timeout=10000)
+            page.wait_for_selector('.win.ladderwin', timeout=10000)
             page.click('#open-exchanges')
             ex = page.frame_locator('.win.toolwin[data-tool="exchanges"] iframe')
             ex.locator('#pick-contract').click()
@@ -168,12 +168,26 @@ def test_a_new_contract_is_picked_from_tt_not_typed(desk):
             inst.locator('#explore-contract option[value="CL2"]').wait_for(state='attached', timeout=15000)
             inst.locator('#explore-contract').select_option('CL2')
             inst.locator('#explore-algo').click()
-            ex.locator('#contract-form-card:not([hidden])').wait_for(timeout=10000)
-            assert ex.locator('#c-security_id').input_value() == 'CL2'
-            assert ex.locator('#c-symbol').input_value() == 'CL'
-            assert ex.locator('#c-security_exchange').input_value() == 'CME'
-            assert ex.locator('#c-tick_size').input_value() not in ('', '0')
-            assert 'FROM TT' in ex.locator('#contract-form-title').inner_text().upper()
+            # Saved from TT's definition — nothing typed.
+            deadline = time.monotonic() + 15
+            saved = None
+            while time.monotonic() < deadline and saved is None:
+                rows = desk.d.client.get('/api/contracts').get_json()
+                saved = next((r for r in rows if r.get('security_id') == 'CL2'), None)
+                time.sleep(0.2)
+            assert saved and saved['symbol'] == 'CL' and saved['venue'] == 'TT-UAT'
+            assert float(saved['tick_size']) > 0
+            # The running engine took it: its ladder is on the desk, with prices.
+            key = saved['key']
+            page.wait_for_selector(f'.win.ladderwin[data-key="__ladder__{key}"]', timeout=20000)
+            page.wait_for_function(
+                "(k) => (document.querySelector('.win[data-key=\"__ladder__' + k + '\"] .ld-bk-bid') || {}).textContent === '85.10'",
+                arg=key, timeout=20000)
+            # The explorer opened from Exchanges closed itself.
+            page.wait_for_function(
+                "() => !document.querySelector('.win.toolwin[data-tool=\"instruments\"]')", timeout=5000)
+            snap = desk.d.snapshot()
+            assert key not in ' '.join(snap['engine'].get('config_restart_needed') or [])
             assert errors == []
             browser.close()
     finally:
