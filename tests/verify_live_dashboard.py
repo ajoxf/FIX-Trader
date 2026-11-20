@@ -15,7 +15,7 @@ def main():
         browser = p.chromium.launch(channel='chrome', headless=True)
         page = browser.new_page(viewport={'width': 1440, 'height': 1100})
         page.on('pageerror', lambda error: errors.append(str(error)))
-        page.goto('http://127.0.0.1:8000/', wait_until='domcontentloaded')
+        page.goto('http://127.0.0.1:8765/', wait_until='domcontentloaded')
         expect(page.locator('h1')).to_have_text('FIX connection dashboard')
         expect(page.locator('#environment')).to_have_text('UAT')
         expect(page.locator('#overall-state')).to_have_text('Connected', timeout=45000)

@@ -24,7 +24,7 @@ The imported configuration has no example instruments and has the master algo
 disabled. The backup uses direct TCP; its importer therefore sets `use_tls`
 false. Set this according to the TT-provisioned endpoint, not its port alone.
 
-Open http://127.0.0.1:8000/ for the FIX connection dashboard (also available at
+Open http://127.0.0.1:8765/ for the FIX connection dashboard (also available at
 `/connection`). It shows each session's logon, heartbeat, message counts,
 sequence numbers, and recent activity. Connect FIX, Disconnect and Reconnect
 act on the engine's sessions; reconnection includes a ten-second cooldown.
@@ -40,7 +40,7 @@ backup terminal at the same time.
 Equivalent launch command:
 
 ```powershell
-python start.py --fix --no-browser --config config.tt-uat.json --status status.tt-uat.json --commands commands.tt-uat.jsonl --results results.tt-uat.json --port 8000
+python start.py --fix --no-browser --config config.tt-uat.json --status status.tt-uat.json --commands commands.tt-uat.jsonl --results results.tt-uat.json --port 8765
 ```
 
 The default `start.py` mode remains simulated. Stop the launcher with Ctrl+C.

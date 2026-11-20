@@ -1,6 +1,6 @@
 # Instruments and manual UAT orders
 
-Open **http://localhost:8000/instruments**. Both FIX sessions must be connected.
+Open **http://localhost:8765/instruments**. Both FIX sessions must be connected.
 
 1. Search an exchange and product: for example **CME**, **ES**, **Futures**.
    Optionally restrict expiry using **YYYYMM**. Search results are definitions

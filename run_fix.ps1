@@ -30,10 +30,10 @@ $env:PYTHONUNBUFFERED = '1'
 # here on, and every line is passed on as plain text.
 $ErrorActionPreference = 'Continue'
 # The terminal opens in a window of its own (Edge's app window, or the
-# ordinary browser where there is no Edge): http://127.0.0.1:8000/
+# ordinary browser where there is no Edge): http://127.0.0.1:8765/
 & $python start.py --fix --config config.tt-uat.json `
     --status (Join-Path $runtimeDirectory 'status.tt-uat.json') `
     --commands (Join-Path $runtimeDirectory 'commands.tt-uat.jsonl') `
     --results (Join-Path $runtimeDirectory 'results.tt-uat.json') `
-    --port 8000 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $sessionLog
+    --port 8765 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $sessionLog
 exit $LASTEXITCODE

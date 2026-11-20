@@ -12,11 +12,11 @@ def main():
         browser = p.chromium.launch(channel='chrome', headless=True)
         page = browser.new_page(viewport={'width':1600, 'height':1150})
         page.on('pageerror', lambda e: errors.append(str(e)))
-        page.goto('http://127.0.0.1:8000/instruments', wait_until='domcontentloaded')
+        page.goto('http://127.0.0.1:8765/instruments', wait_until='domcontentloaded')
         expect(page.locator('#session')).to_contain_text('LOGGED_ON', timeout=40000)
         page.locator('#search-form button').click()
         expect(page.locator('#results button').first).to_be_visible(timeout=40000)
-        state = page.request.get('http://127.0.0.1:8000/api/snapshot').json()
+        state = page.request.get('http://127.0.0.1:8765/api/snapshot').json()
         instruments = state['engine']['manual_terminal']['instruments']
         from datetime import datetime
         month = datetime.now().strftime('%Y%m')
@@ -44,7 +44,7 @@ def main():
         page.set_viewport_size({'width':390,'height':844})
         page.screenshot(path=str(artifacts/'instruments-mobile.png'),full_page=True)
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
-        state=page.request.get('http://127.0.0.1:8000/api/snapshot').json()
+        state=page.request.get('http://127.0.0.1:8765/api/snapshot').json()
         terminal=state['engine']['manual_terminal']
         assert not terminal['orders'], 'Read-only check must not create any order'
         print(json.dumps({'search_count':len(instruments), 'instrument':instrument['description'],

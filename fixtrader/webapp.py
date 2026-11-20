@@ -1141,7 +1141,7 @@ def main(argv=None) -> int:
     parser.add_argument('--commands', default='commands.jsonl')
     parser.add_argument('--results', default='results.json')
     parser.add_argument('--host', default='127.0.0.1')
-    parser.add_argument('--port', type=int, default=8000)
+    parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [web] %(message)s")
     app = create_app(args.config, args.status, args.commands, args.results)

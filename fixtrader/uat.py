@@ -153,7 +153,7 @@ class Failed(Exception):
 class HttpDriver:
     """The running program's web process, as the screen talks to it."""
 
-    def __init__(self, base='http://127.0.0.1:8000', timeout=25.0):
+    def __init__(self, base='http://127.0.0.1:8765', timeout=25.0):
         self.base = base.rstrip('/')
         self.timeout = timeout
 
@@ -967,7 +967,7 @@ def report_html(results, contract, path):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description='UAT order tests against the running program')
     ap.add_argument('--contract', required=True, help='the contract key on the desk, e.g. esz6')
-    ap.add_argument('--url', default='http://127.0.0.1:8000')
+    ap.add_argument('--url', default='http://127.0.0.1:8765')
     ap.add_argument('--qty', type=float, default=1)
     ap.add_argument('--away', type=int, default=20,
                     help='ticks away from the market for orders that must NOT fill')
