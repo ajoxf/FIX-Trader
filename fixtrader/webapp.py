@@ -11,6 +11,8 @@ because a masked value is one that gets echoed back into a form and saved over
 the real one.
 """
 
+import logging
+import re
 import os
 import io
 import csv
@@ -1151,9 +1153,52 @@ def _contract_check(gateway, contract, simulated=False):
     return {'check': contract.key, 'ok': True, 'detail': detail, 'fix': ''}
 
 
+_REQUEST_LINE = re.compile(r'"([A-Z]+) (\S+)[^"]*" (\d{3})')
+_ANSI = re.compile(r'\x1b\[[0-9;]*m')
+
+
+class QuietAccessLog(logging.Filter):
+    """The console is for what HAPPENED, not for the page asking.
+
+    The desk polls its snapshot twice a second and every open window polls
+    its own page: a line per request buried the engine's own lines (a fill,
+    a refusal, a session dropping) under thousands of `GET 200`. Kept: what
+    the trader DID (a POST, PUT or DELETE — saving a contract, a command)
+    and any request that FAILED (4xx, 5xx), each as one short line. The
+    development server's banner warning is dropped; where it is listening
+    is kept."""
+
+    def filter(self, record):
+        try:
+            text = _ANSI.sub('', record.getMessage())
+        except Exception:
+            return True
+        if 'This is a development server' in text or 'Press CTRL+C' in text \
+                or text.startswith(' * Serving Flask app') or text.startswith(' * Debug mode'):
+            return False
+        m = _REQUEST_LINE.search(text)
+        if not m:
+            return True
+        method, path, code = m.group(1), m.group(2), int(m.group(3))
+        if code < 400 and method in ('GET', 'HEAD', 'OPTIONS'):
+            return False
+        if path.split('?')[0].endswith('favicon.ico'):
+            return False
+        record.msg = '%s %s -> %d'
+        record.args = (method, path.split('?')[0], code)
+        if code >= 400:
+            record.levelno, record.levelname = logging.WARNING, 'WARNING'
+        return True
+
+
+def quiet_access_log():
+    logger = logging.getLogger('werkzeug')
+    if not any(isinstance(f, QuietAccessLog) for f in logger.filters):
+        logger.addFilter(QuietAccessLog())
+
+
 def main(argv=None) -> int:
     import argparse
-    import logging
     parser = argparse.ArgumentParser(description="FIX-Trader web")
     parser.add_argument('--config', default='config.json')
     parser.add_argument('--status', default='status.json')
@@ -1162,7 +1207,9 @@ def main(argv=None) -> int:
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [web] %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [web] %(message)s",
+                        datefmt="%H:%M:%S")
+    quiet_access_log()
     app = create_app(args.config, args.status, args.commands, args.results)
     app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
     return 0

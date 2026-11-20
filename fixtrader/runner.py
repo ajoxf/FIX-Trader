@@ -293,7 +293,8 @@ def main(argv=None) -> int:
                         help="run against the simulator even if a venue exists")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s [engine] %(message)s")
+                        format="%(asctime)s [engine] %(message)s",
+                        datefmt="%H:%M:%S")
     run(args.config, args.status, args.commands, args.results, args.simulated)
     return 0
 

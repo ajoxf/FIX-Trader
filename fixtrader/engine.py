@@ -474,7 +474,7 @@ class Engine:
         ratio = factor / (stored if stored else 1.0)
         if self.db is not None and (stored is None or abs(ratio - 1.0) > 1e-12):
             n = self.db.rescale_prices(key, ratio, factor)
-            if abs(ratio - 1.0) > 1e-12:
+            if n and abs(ratio - 1.0) > 1e-12:     # nothing moved: nothing to say
                 logger.warning("%s recorded prices rescaled x%g to TT's "
                                "display factor %g (%d samples)", key, ratio,
                                factor, n)
