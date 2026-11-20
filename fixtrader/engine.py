@@ -27,6 +27,24 @@ from . import costs as costs_mod
 from .algodesk import AlgoRun
 from . import slippage as slippage_mod
 from . import marketdata, signals as signals_mod, sizing
+
+
+def display_decimals(contract) -> int:
+    """How many decimals a price of this contract is SHOWN with: as many as
+    its tick has, at least 2 — 3890.85, not 3890.8500 — and never more than
+    the contract's own Decimals. A display rule only: no price is rounded
+    by it."""
+    stored = int(getattr(contract, 'decimals', 4) or 4)
+    tick = getattr(contract, 'tick_size', None)
+    try:
+        tick = float(tick)
+    except (TypeError, ValueError):
+        return stored
+    if not tick > 0:
+        return stored
+    text = ('%.10f' % tick).rstrip('0')
+    places = len(text.split('.')[1]) if '.' in text else 0
+    return max(0, min(stored, max(2, places)))
 from .executor import Executor
 from .marketdata import FeedGuard
 from .models import (ContractState, ExitReason, Fill, Intent, OrderType,
@@ -2118,7 +2136,7 @@ class Engine:
                 'name': contract.name,
                 'symbol': contract.symbol,
                 'venue': contract.venue,
-                'decimals': contract.decimals,
+                'decimals': display_decimals(contract),
                 'tick_size': contract.tick_size,
                 'tick_value': contract.tick_value,
                 'state': self.state_of(rt, now).value,

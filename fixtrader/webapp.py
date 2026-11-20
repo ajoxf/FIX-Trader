@@ -20,6 +20,13 @@ from typing import Any, Dict, List, Optional
 
 from flask import Flask, Response, jsonify, render_template, request
 
+
+def _dp(contract):
+    """Display decimals: the engine's ONE rule (as many as the tick, at
+    least 2, at most the contract's own)."""
+    from .engine import display_decimals
+    return display_decimals(contract)
+
 from . import atomicfile, sizing
 from .commands import CommandBridge
 from .config import TraderConfig
@@ -330,7 +337,7 @@ def create_app(config_path: str = "config.json",
             closed.append({
                 'id': p.id, 'contract_key': p.contract_key,
                 'name': contract.name if contract else p.contract_key,
-                'decimals': contract.decimals if contract else 4,
+                'decimals': _dp(contract) if contract else 4,
                 'side': p.side.value, 'qty': p.opened_qty or p.qty,
                 'opened_at': p.opened_at.isoformat() if p.opened_at else None,
                 'closed_at': p.closed_at.isoformat() if p.closed_at else None,
@@ -462,7 +469,7 @@ def create_app(config_path: str = "config.json",
                 mark(pos.opened_at, pos.avg_price, 'open', pos.side.value)
         return jsonify({'ok': True, 'key': key, 'minutes': minutes,
                         'series': series, 'marks': marks,
-                        'decimals': contract.decimals,
+                        'decimals': _dp(contract),
                         'entry_threshold': settings.get('entry_threshold'),
                         'stop_loss_z': settings.get('stop_loss_z')})
 
@@ -515,7 +522,7 @@ def create_app(config_path: str = "config.json",
         return jsonify({
             'ok': True, 'key': key, 'tf': tf_min, 'length': length,
             'algo_timeframe_min': params['timeframe_min'],
-            'decimals': getattr(contract, 'decimals', 4),
+            'decimals': _dp(contract),
             'entry_z': params['entry_z'],
             'stop_z': params['stop_z'] if params['stop_z_on'] else None,
             'at': time.time(), 'candles': out,
@@ -625,7 +632,7 @@ def create_app(config_path: str = "config.json",
             margin_per_contract=_db(config).margin_per_contract(key))
         out.update({'ok': True, 'key': key, 'symbol': contract.symbol,
                     'period': period, 'samples': len(rows),
-                    'decimals': contract.decimals,
+                    'decimals': _dp(contract),
                     'entry_threshold': settings.get('entry_threshold'),
                     'recorded_from': rows[0][0].isoformat() if rows else None,
                     'recorded_to': rows[-1][0].isoformat() if rows else None})
@@ -1021,7 +1028,7 @@ def _price_fills(config, db, tt, manual):
         contract = config.contracts.get(f.get('contract_key') or
                                         (order or {}).get('contract_key') or '')
         f['name'] = contract.name if contract else (f['symbol'] or f['security_id'])
-        f['decimals'] = contract.decimals if contract else None
+        f['decimals'] = _dp(contract) if contract else None
         f['intent'] = (order or {}).get('intent')
         f['order_type'] = (order or {}).get('order_type')
         f['position_id'] = (order or {}).get('position_id')
