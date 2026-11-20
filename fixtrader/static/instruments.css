@@ -15,3 +15,6 @@ td.slip-better { color: #3f8b52; }
 /* The spread an order is reviewed against — red when over the contract's limit. */
 .spread-line { padding: 5px 8px; border: 1px solid #b9b9b9; background: #f4f4f4; font-family: monospace; }
 .spread-line.wide { border-color: #b03030; background: #f6e2e2; color: #8a1c1c; font-weight: 700; }
+/* Opened from Exchanges' "Pick from TT": the algo-desk button is the one to press. */
+.explore-for-algo #explore-algo{background:#1f7ac2;color:#fff;border-color:#155d91}
+.explore-for-algo #explore-add{background:linear-gradient(#fff,#e4e4e4);color:#1a1a1a;border-color:#a9a9a9}

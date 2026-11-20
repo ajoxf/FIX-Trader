@@ -1393,3 +1393,4 @@ table.keys td { font-size: calc(12px * var(--fs)); padding: 2px 0; }
 .algowin .aw-legs .aw-leg { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .algowin .aw-legs b { color: #212529; margin-right: 2px; }
 .algowin .aw-legs .state { font-size: calc(9px * var(--fs)); padding: 1px 5px; }
+.pick-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; } .pick-row .btn, #pick-contract { white-space: nowrap; flex: none; }

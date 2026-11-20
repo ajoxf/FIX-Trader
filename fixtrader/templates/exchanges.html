@@ -123,7 +123,8 @@
     </div>
     <div class="cb">
       <div class="rowactions">
-        <button id="new-contract" class="btn pri">New contract</button>
+        <button id="pick-contract" class="btn pri" title="Choose the exchange, the type, the product and the instrument from TT's own catalogue — the form is filled from TT's definition (Security ID, tick, tick value)">Pick from TT&hellip;</button>
+        <button id="new-contract" class="btn" title="An empty form, to type a contract in by hand">New contract</button>
         <span class="hint grow">A contract with an open position cannot be
           deleted — the refusal names the position.</span>
       </div>
@@ -134,6 +135,10 @@
   <section class="card" id="contract-form-card" hidden>
     <h5><span id="contract-form-title">Contract</span></h5>
     <div class="cb">
+      <div class="rowactions pick-row">
+        <button type="button" id="c-pick" class="btn pri" title="Exchange · Type · Product · Instrument, from TT's catalogue: fills this form from TT's own definition">Pick from TT&hellip;</button>
+        <span class="hint grow">Exchange &middot; type &middot; product &middot; instrument, from TT &mdash; fills Symbol, SecurityID, tick size and tick value for you. Nothing is saved until you press Save.</span>
+      </div>
       <label class="f"><span>Name</span><input type="text" id="c-name"></label>
       <label class="f"><span>Symbol <small>as the venue names it</small></span>
         <input type="text" id="c-symbol" placeholder="FEFV6-FEFX6"></label>

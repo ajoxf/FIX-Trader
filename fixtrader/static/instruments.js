@@ -402,6 +402,14 @@
     const i=explorerMatches().contracts.find(c=>c.security_id===explorer.contract);
     if(!i){$('explore-status').textContent='Select an instrument first';return;}
     toAlgoDesk(i);
+    $('explore-dialog').close();
   };
+  // Opened from the Exchanges page's "Pick from TT": the explorer, at once,
+  // its choice going to the algo desk's contract form.
+  if(new URLSearchParams(location.search).get('explore')==='algo'){
+    document.documentElement.classList.add('explore-for-algo');
+    $('explore-algo').textContent='Use for the algo desk →';
+    renderExplorer(true);$('explore-dialog').showModal();$('explore-product-input').focus();
+  }
   conditionals();connectQuoteStream();poll();
 })();

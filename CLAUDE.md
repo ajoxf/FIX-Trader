@@ -162,6 +162,11 @@ the drawing wins.
   in `?embed=1` (no navigation of its own; a link inside it opens that
   page's window), never a second implementation. The look is ported from
   the MT5 desk's `ladder.css`; the bid is blue, the ask red, everywhere.
+- **A contract is PICKED from TT, not typed**: Exchanges' "Pick from TT"
+  opens the Instruments explorer (exchange · type · product · instrument,
+  TT's own catalogue, `?explore=algo`) and the instrument chosen fills the
+  contract form from TT's definition (`prefill`); nothing is saved until
+  Save. One explorer, never a second one.
 - **The Market Grid is the MT5 desk's** (Contract, Bid, Ask, Last, Chg,
   Incr, Qty, k $, Net, Work, Avg, Open P&L, Mode, TIF, Feed) and trades
   THROUGH the contract's ladder (`gridTrade` -> `manualOrder`): Bid buys at

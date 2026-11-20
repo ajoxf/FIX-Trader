@@ -126,3 +126,46 @@ def test_the_instruments_window_on_the_desk_pulls_them(desk):
             browser.close()
     finally:
         srv.shutdown()
+
+
+def test_a_new_contract_is_picked_from_tt_not_typed(desk):
+    """Exchanges -> Pick from TT: the Instruments explorer (exchange, type,
+    product, instrument — TT's own catalogue) opens, and the instrument
+    chosen fills the contract form from TT's definition. Nothing is saved
+    until Save."""
+    pw = pytest.importorskip('playwright.sync_api')
+    from werkzeug.serving import make_server
+    from tests.test_ui_browser import _launch
+    srv = make_server('127.0.0.1', 0, desk.app, threaded=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        with pw.sync_playwright() as p:
+            browser = _launch(p)
+            page = browser.new_page(viewport={'width': 1500, 'height': 900})
+            errors = []
+            page.on('pageerror', lambda e: errors.append(str(e)))
+            page.goto(f'http://127.0.0.1:{srv.server_port}/', wait_until='domcontentloaded')
+            page.wait_for_selector('.win', timeout=10000)
+            page.click('#open-exchanges')
+            ex = page.frame_locator('.win.toolwin[data-tool="exchanges"] iframe')
+            ex.locator('#pick-contract').click()
+            inst = page.frame_locator('.win.toolwin[data-tool="instruments"] iframe')
+            inst.locator('#explore-dialog[open]').wait_for(timeout=10000)
+            assert 'algo desk' in inst.locator('#explore-algo').inner_text()
+            inst.locator('#explore-exchange-input').fill('CME')
+            inst.locator('#explore-type').select_option('MLEG')
+            inst.locator('#explore-product-input').fill('CL')
+            inst.locator('#explore-search').click()
+            inst.locator('#explore-contract option[value="CL2"]').wait_for(state='attached', timeout=15000)
+            inst.locator('#explore-contract').select_option('CL2')
+            inst.locator('#explore-algo').click()
+            ex.locator('#contract-form-card:not([hidden])').wait_for(timeout=10000)
+            assert ex.locator('#c-security_id').input_value() == 'CL2'
+            assert ex.locator('#c-symbol').input_value() == 'CL'
+            assert ex.locator('#c-security_exchange').input_value() == 'CME'
+            assert ex.locator('#c-tick_size').input_value() not in ('', '0')
+            assert 'FROM TT' in ex.locator('#contract-form-title').inner_text().upper()
+            assert errors == []
+            browser.close()
+    finally:
+        srv.shutdown()

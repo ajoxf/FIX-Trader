@@ -335,6 +335,17 @@ function showContract(c) {
 }
 
 document.getElementById('new-contract').onclick = () => showContract(null);
+/* Pick a contract from TT's catalogue: the Instruments page's explorer —
+   exchange, type, product, instrument — opened for the algo desk. Its
+   choice comes back here as a filled form (prefillFromExplorer). One
+   explorer, never a second one. */
+function pickFromTT() {
+  const href = '/instruments?explore=algo';
+  if (window.parent !== window && window.parent.openTool) window.parent.openTool(href);
+  else window.location.href = href;
+}
+document.getElementById('pick-contract').onclick = pickFromTT;
+document.getElementById('c-pick').onclick = pickFromTT;
 document.getElementById('c-cancel').onclick = () => {
   document.getElementById('contract-form-card').hidden = true;
 };
