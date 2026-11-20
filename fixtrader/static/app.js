@@ -1372,6 +1372,17 @@ async function closeManual(el, key, price) {
   toast('ORDER', 'CLOSING', lines.join('; '), key);
 }
 
+/* The ladder's row step is whole ticks. A step finer than the contract's
+ * tick made rows no price can ever be on: at 0.01 on GC (tick 0.10) a 3.20
+ * book is 320 rows wide, the bid and the offer far off the screen, and the
+ * ladder looked as if no prices were coming. Rounded to the nearest whole
+ * number of ticks, never below one. */
+function ladderStep(wanted, tick) {
+  if (!(tick > 0)) return wanted > 0 ? wanted : 1;
+  if (!(wanted > 0)) return tick;
+  return Math.max(1, Math.round(wanted / tick)) * tick;
+}
+
 function renderLadder(c, engine) {
   const wkey = '__ladder__' + c.key;
   if (state.closed.has(wkey)) return;
@@ -1379,7 +1390,11 @@ function renderLadder(c, engine) {
   const d = c.decimals === undefined ? 4 : c.decimals;
   const tick = c.tick_size || Math.pow(10, -d);
   const pref = ladderPref(c.key);
-  const inc = pref.increment || tick;
+  const inc = ladderStep(pref.increment, tick);
+  const incBox = el.querySelector('.ld-increment');
+  incBox.placeholder = String(+tick.toFixed(10));
+  if (pref.increment && document.activeElement !== incBox &&
+      Math.abs(inc - pref.increment) > 1e-12) incBox.value = String(+inc.toFixed(10));
   const m = c.market || {};
   const block = c.algo || {};
   const pos = c.position;
