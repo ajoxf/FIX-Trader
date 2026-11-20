@@ -1,3 +1,32 @@
+{% if request.args.get('embed') %}
+{# A window on the desk: the desk's taskbar is the navigation, so this page
+   shows none of its own. The badge elements stay (hidden): the page's
+   script writes to them. A link to another page opens THAT page's window
+   on the desk instead of replacing this one, and a click anywhere in the
+   page brings its window to the front — an iframe swallows the mousedown
+   the desk would otherwise see. #}
+<header class="app-nav" hidden>
+  {% if request.path == '/connection' %}<span id="environment" class="env"></span>
+  {% elif request.path == '/instruments' %}<span id="session" class="env"></span>
+  {% else %}<span id="env-badge" class="env"></span>{% endif %}
+</header>
+<script>
+(function () {
+  document.documentElement.classList.add('embedded');
+  var host = window.parent !== window ? window.parent : null;
+  document.addEventListener('mousedown', function () {
+    try { if (host && host.raiseFrame) host.raiseFrame(window.frameElement); } catch (e) {}
+  }, true);
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a[href^="/"]');
+    if (!a || a.target || !host || !host.openTool) return;
+    if (a.getAttribute('href').indexOf('/api/') === 0) return;
+    e.preventDefault();
+    host.openTool(a.getAttribute('href'));
+  });
+})();
+</script>
+{% else %}
 <header class="app-nav">
   <a class="app-brand" href="/">NEXUS FIX</a>
   <nav aria-label="Main navigation">
@@ -21,3 +50,4 @@
   <span class="env">REDACTED AUDIT</span>
   {% endif %}
 </header>
+{% endif %}

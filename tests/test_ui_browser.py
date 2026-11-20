@@ -25,6 +25,7 @@ from fixtrader.webapp import create_app  # noqa: E402
 #: Where this box keeps its browser. Playwright's own default is tried first.
 BROWSER_CANDIDATES = [
     None,
+    '/opt/pw-browsers/chromium',
     '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
 ]
 
@@ -843,7 +844,7 @@ def overlap_the_windows(page):
       };
       place('__positions__', 0, 0);
       place('__analysis__', 430, 0);
-      document.querySelectorAll('.win.contractwin').forEach((e) => {
+      document.querySelectorAll('.win.contractwin, .win.ladderwin').forEach((e) => {
         e.classList.add('placed'); e.style.left = '0px'; e.style.top = '900px';
       });
     }""")

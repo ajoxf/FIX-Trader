@@ -75,8 +75,9 @@ def create_app(config_path: str = "config.json",
 
     @app.get('/')
     def index():
-        if any(v.host and v.fix_version == 'FIX.4.2' for v in load_config().venues.values()):
-            return render_template('connection.html', asset_version=ASSET_VERSION)
+        # ONE desktop, as on the MT5 desk: every page of the program is a
+        # window on it, opened from the taskbar. The Connection window opens
+        # on it by itself while the FIX session is not logged on.
         return render_template('index.html', asset_version=ASSET_VERSION)
 
     @app.get('/connection')
@@ -464,6 +465,64 @@ def create_app(config_path: str = "config.json",
                         'decimals': contract.decimals,
                         'entry_threshold': settings.get('entry_threshold'),
                         'stop_loss_z': settings.get('stop_loss_z')})
+
+    @app.get('/api/chart/<path:key>')
+    def api_chart(key):
+        """The chart window's history: the contract's MID and its z, on
+        candles of `tf` minutes (15, 60 or 240) built from the mids this
+        system recorded — a FIX session has no bars to ask for. z is the
+        Algo's own measure, TradingView's convention: middle = EMA(N) of
+        the closes, sigma = the POPULATION sigma of the last N, with N this
+        contract's band length. A candle with no recorded mid is not a
+        point (the market was shut, or nobody watched); before N candles
+        there is no z — None, never 0."""
+        from datetime import timedelta
+        from . import algo as algo_mod, bands
+        config = load_config()
+        contract = config.contracts.get(key)
+        if contract is None:
+            return jsonify({'ok': False, 'error': f"no contract {key}"}), 404
+        try:
+            tf_min = int(request.args.get('tf', 15))
+        except ValueError:
+            tf_min = 15
+        if tf_min not in (15, 60, 240):
+            tf_min = 15
+        try:
+            points = max(20, min(400, int(request.args.get('points', 150))))
+        except ValueError:
+            points = 150
+        params = algo_mod.params_from_settings(config.effective(key))
+        length = params['length']
+        tf = tf_min * 60.0
+        since = datetime.now(timezone.utc) - timedelta(seconds=tf * (points + length * 3))
+        closes = bands.candles_from_samples(
+            _db(config).samples_between(key, since=since), tf)
+        out, window, value = [], [], None
+        alpha = 2.0 / (length + 1.0)
+        for i, (at, close) in enumerate(closes):
+            window = (window + [close])[-length:]
+            if i + 1 < length:
+                z = None
+            else:
+                if value is None:
+                    value = sum(c for _, c in closes[:length]) / float(length)
+                else:
+                    value = alpha * close + (1.0 - alpha) * value
+                sigma = bands.population_stdev(window)
+                z = round((close - value) / sigma, 3) if sigma else None
+            out.append({'t': at, 'mid': close, 'z': z})
+        out = out[-points:]
+        return jsonify({
+            'ok': True, 'key': key, 'tf': tf_min, 'length': length,
+            'decimals': getattr(contract, 'decimals', 4),
+            'entry_z': params['entry_z'],
+            'stop_z': params['stop_z'] if params['stop_z_on'] else None,
+            'points': out,
+            'note': (f"{len(out)} candle(s) of {tf_min} min from the recorded mids"
+                     if out else
+                     f"no mids recorded for {key} over this period — the engine "
+                     f"records the mid while it runs")})
 
     @app.get('/api/backtest/<path:key>')
     def api_backtest(key):

@@ -144,6 +144,27 @@ the drawing wins.
   the ladder makes the Algo send its order now (`Engine.uat_order`) and its
   TP / SL manage the result. Keep it that simple.
 - **UAT and PROD are separate venues** and the screen always says which.
+- **ONE desktop, the MT5 desk's** (`/` and `/desk`): the NEXUS name strip,
+  windows on the slate ground, the taskbar with its + menu (Ladders, Algo,
+  Charts, Windows, Program), Sound, Keys, Tidy, Exchanges, ?, KILL ALL.
+  Every page of the program (Instruments & orders, Order tests, Connection,
+  Exchanges, FIX logs, Settings) opens as a WINDOW on it — the page itself
+  in `?embed=1` (no navigation of its own; a link inside it opens that
+  page's window), never a second implementation. The look is ported from
+  the MT5 desk's `ladder.css`; the bid is blue, the ask red, everywhere.
+- **The Market Grid trades THROUGH the contract's ladder** (`gridTrade` ->
+  `manualOrder`): Bid buys at the bid, Ask sells at the offer, with the
+  ladder's quantity, reviewed in the shared modal — never an order path of
+  its own; refused, and said, while that contract's Algo trades it.
+- **A key does what its button does** (B S F X 1-5 0 L M Tab ? Esc, on the
+  focused ladder): it presses the ladder's own button, never while a field
+  has the keyboard, and the Keys button turns them all off.
+- **The chart window is W3's** (Chart.js 4.4.6, bundled in
+  `static/vendor`, no CDN): z in #0d6efd with ±entry dashed #198754 and the
+  z stop dotted #dc3545 only when the contract has one, the mid in #6f42c1.
+  Live is what the window has watched; 15m / 1h / 4h are candles of the
+  RECORDED mids (`/api/chart`), z by the Algo's own convention. A z before
+  N candles is None — a gap, never 0.
 
 ## Conventions that are easy to lose in a refactor
 

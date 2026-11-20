@@ -67,33 +67,56 @@ class Exchange:
         #: FIX Recovery refuses with these words (a Business Reject, j).
         self.recovery_reject = None
         self.recovery_requests = []
+        #: Every Security Definition Request (c) the program sent.
+        self.definition_requests = []
 
     # -- the market ----------------------------------------------------------
 
     def list(self, sid, bid, ask, tick=0.01, size=50, factor=None,
-             symbol='CL', exchange='CME', point_value=1000):
+             symbol='CL', exchange='CME', point_value=1000,
+             security_type='MLEG', maturity='202612', description=None):
         """An instrument, its book in FIX units, its tick (969) in FIX units
         and its DisplayFactor (9787): the exchange's tick is tick x factor."""
         self.books[sid] = {'bid': bid, 'ask': ask, 'bid_size': size,
                            'ask_size': size, 'tick': tick, 'factor': factor,
                            'symbol': symbol, 'exchange': exchange,
-                           'point_value': point_value}
+                           'point_value': point_value,
+                           'security_type': security_type,
+                           'maturity': maturity,
+                           'description': description or symbol + ' spread'}
 
     def define(self, peer, f):
+        """A Security Definition Request (c). By Security ID (48): that
+        instrument. Without one it is a CATALOGUE search, as TT answers it:
+        one Security Definition (d) per instrument listed under that
+        exchange (207) and product (55), of that type (167) when one is
+        asked for — and nothing for a product it does not list."""
         sid = f.get('48', '')
-        book = self.books.get(sid)
-        if book is None:
-            return
-        fields = [('35', 'd'), ('320', f.get('320', '')), ('322', 'D1'),
+        if sid:
+            matches = [sid] if sid in self.books else []
+        else:
+            matches = [k for k, b in self.books.items()
+                       if b['exchange'] == f.get('207', b['exchange'])
+                       and b['symbol'] == f.get('55')
+                       and (not f.get('167') or b['security_type'] == f['167'])
+                       and (not f.get('200') or b['maturity'] == f['200'])]
+        self.definition_requests.append(dict(f))
+        for key in matches:
+            peer.reply(self._definition(f.get('320', ''), key))
+
+    def _definition(self, request_id, sid):
+        book = self.books[sid]
+        fields = [('35', 'd'), ('320', request_id), ('322', 'D1'),
                   ('323', '4'), ('48', sid), ('22', '96'),
                   ('55', book['symbol']), ('207', book['exchange']),
-                  ('167', 'MLEG'), ('200', '202612'), ('107', book['symbol'] + ' spread'),
+                  ('167', book['security_type']), ('200', book['maturity']),
+                  ('107', book['description']),
                   ('15', 'USD'), ('969', repr(book['tick'])),
                   ('16554', str(book['point_value']))]
         if book['factor'] is not None:
             fields += [('9787', repr(book['factor'])),
                        ('16552', format(book['tick'] * book['factor'], 'g'))]
-        peer.reply(fields)
+        return fields
 
     def move(self, sid, bid, ask):
         """The market moves: publish it, and fill what it reached."""

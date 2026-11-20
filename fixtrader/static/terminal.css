@@ -121,7 +121,7 @@ body {
 /* The whole terminal's text size, set from the taskbar's A- / A+ and kept
  * per browser. Every font size in this sheet is multiplied by it, and so are
  * the window widths, so a bigger size gives a bigger window, not a cramped one. */
-:root { --fs: 1.3; }
+:root { --fs: 1; }
 
 .win {
   /* Drag the bottom-right corner to resize. The size is remembered with the
@@ -1041,3 +1041,201 @@ html.embed-uat .app-nav { display: none; }
 .ladderwin .ld-closealert { background: #fff0f0; color: #8d1f1f; border: 2px solid #b03030;
   font: 700 calc(11px * var(--fs))/1.35 var(--ui); padding: 5px 8px; }
 .ladderwin .ld-closealert[hidden] { display: none; }
+
+/* =========================================================================
+ * THE MT5 DESK'S LOOK — ported from the Mirror MT5 desk's ladder.css.
+ * One desktop: the name strip on top, windows on the slate ground, the
+ * taskbar below with its + menu. Every size still scales with --fs (A-/A+).
+ * ========================================================================= */
+:root {
+  --chrome: #d4d0c8;
+  --chrome-dark: #a9a9a9;
+  --frame: #cfcfcf;
+  --frame-dark: #c4c4c4;
+  --frame-line: #9d9d9d;
+  --frame-text: #1c1c1c;
+  --frame-muted: #4c4c4c;
+  --grid-line: #808080;
+  --bid-strong: #1f7ac2;
+  --ask-strong: #a02828;
+  --traded: #4a9c5d;
+  --down: #c0504d;
+  --ui: "Segoe UI", "DejaVu Sans", Tahoma, sans-serif;
+}
+body { background: #8d97a5; color: #1a1a1a; }
+
+#brand {
+  align-items: baseline; gap: 6px; padding: 1px 6px;
+  background: var(--frame-dark); color: var(--frame-text);
+  border-bottom: 1px solid var(--frame-line);
+  user-select: none; white-space: nowrap; overflow: hidden;
+}
+#brand .brand-mark { align-self: center; width: calc(14px * var(--fs)); height: calc(14px * var(--fs)); }
+#brand .brand-name { font: 700 calc(12px * var(--fs))/1.25 var(--ui); letter-spacing: 1.5px; }
+#brand .brand-note { font-size: calc(10px * var(--fs)); color: var(--frame-muted); }
+#brand .env { align-self: center; padding: 1px 8px; font-size: calc(10px * var(--fs)); }
+@media (max-width: 700px) { #brand .brand-note { display: none; } }
+
+.banner { font-weight: 600; background: #e8dcc0; border-bottom: 1px solid #9c8850; color: #1a1a1a; }
+.banner.critical { background: #b83232; color: #fff; border-bottom: 2px solid #000; }
+.banner.warn { background: #e8dcc0; color: #1a1a1a; border-bottom-color: #9c8850; }
+
+#desktop { padding: 2px; gap: 2px; }
+#desktop.dragging iframe { pointer-events: none; }
+
+/* The window: furniture grey, a hairline frame, a 1px drop shadow. */
+.win {
+  background: var(--chrome);
+  border: 1px solid var(--chrome-dark);
+  box-shadow: 1px 1px 0 rgba(0, 0, 0, .3);
+}
+.win.focused { box-shadow: 0 0 0 2px #9ec6e4, 1px 1px 0 rgba(0, 0, 0, .3); }
+.titlebar {
+  gap: 6px; padding: 2px 4px;
+  background: var(--frame-dark); color: var(--frame-text);
+  border-bottom: 0;
+  font-size: calc(11px * var(--fs));
+}
+.win:not(.raised) .titlebar { background: #eaeaea; color: #6e6e6e; }
+.titlebar .swatch { width: calc(9px * var(--fs)); height: calc(9px * var(--fs)); background: #4a9ede; border: 1px solid #fff; }
+.titlebar .title { font-size: calc(11px * var(--fs)); }
+.winbtn { background: var(--chrome); border: 1px solid #666; color: #1a1a1a; }
+.winbtn:hover { background: #e4e4e4; }
+@keyframes reveal-flash { from { box-shadow: 0 0 0 3px #9ec6e4; } to { box-shadow: 1px 1px 0 rgba(0,0,0,.3); } }
+.win.revealed { animation: reveal-flash .9s ease-out; }
+
+/* Buttons: the MT5 desk's raised white-to-grey. */
+.btn {
+  font: 600 calc(12px * var(--fs))/1.2 var(--ui); letter-spacing: 0;
+  padding: 3px 12px;
+  border: 1px solid var(--chrome-dark); border-radius: 2px;
+  background: linear-gradient(#ffffff, #e4e4e4);
+  box-shadow: inset 0 1px 0 #fff, 0 1px 1px rgba(0, 0, 0, .18);
+}
+.btn:hover:not(:disabled) { background: linear-gradient(#ffffff, #dadada); }
+.btn:active:not(:disabled) { transform: translateY(1px); box-shadow: inset 0 2px 3px rgba(0,0,0,.35); }
+.btn.danger { background: #b83232; color: #fff; border-color: #7a1010; }
+.btn.danger:hover:not(:disabled) { background: #c43c3c; }
+
+/* Tables: the MT5 grid — grey heads, ruled cells, mono figures. */
+table.grid th {
+  background: var(--chrome); color: #1a1a1a;
+  border: 1px solid var(--grid-line);
+  font: 600 calc(10px * var(--fs))/1.3 var(--ui);
+  letter-spacing: 0; text-transform: none; padding: 2px 6px;
+}
+table.grid td { border: 1px solid #d5d5d5; font-family: var(--mono); }
+
+/* Toasts: bottom right, above the taskbar. */
+#toasts { right: 8px; bottom: 34px; }
+.toast { background: #fff; border: 1px solid #333; border-left: 4px solid #b83232; box-shadow: 2px 2px 0 rgba(0,0,0,.35); }
+.toast.FILL, .toast.CLOSED, .toast.OK { border-left-color: #1b7a35; }
+.toast.SIGNAL { background: #1d3b6b; color: #fff; border-left-color: #ffcc33; }
+.toast.SIGNAL .kind { color: #ffcc33; }
+
+/* The modal: a white box on a dimmed desk. */
+.modal-box { background: #fff; border: 1px solid #333; box-shadow: 4px 4px 0 rgba(0,0,0,.35); }
+
+/* -- the taskbar ------------------------------------------------------- */
+#taskbar {
+  flex-wrap: nowrap; gap: 3px; min-height: 28px; padding: 2px 4px;
+  background: var(--frame); border-top: 1px solid var(--frame-line);
+}
+#tabs { gap: 3px; flex-wrap: nowrap; overflow-x: auto; min-width: 0; scrollbar-width: none; }
+.tk {
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+  font: 600 calc(11px * var(--fs))/1.2 var(--ui);
+  padding: 2px 8px;
+  border: 1px solid var(--chrome-dark); border-radius: 2px;
+  background: linear-gradient(#ffffff, #e2e2e2);
+  box-shadow: inset 0 1px 0 #fff, 0 1px 1px rgba(0, 0, 0, .2);
+  color: #1a1a1a; text-decoration: none;
+}
+.tk:hover { background: linear-gradient(#ffffff, #d8d8d8); }
+.tk:active { transform: translateY(1px); box-shadow: inset 0 2px 3px rgba(0,0,0,.3); }
+.tk.act { background: #fff; border-color: var(--chrome-dark); }
+.tk.minimised { opacity: .6; font-style: italic; }
+.tk.plus { font-weight: 700; padding: 2px 7px; }
+.tk.sz { padding: 2px 5px; }
+.taskbar-right { gap: 8px; flex: 0 0 auto; }
+.taskbar-right .stat { font: calc(10px * var(--fs)) var(--mono); color: #5a5a5a; }
+.link {
+  padding: 2px 8px; border: 1px solid rgba(0, 0, 0, .35); border-radius: 0;
+  font: 700 calc(11px * var(--fs))/1.2 var(--ui); letter-spacing: 0;
+  color: #fff; background: #6a6a6a; cursor: help; white-space: nowrap;
+}
+.link.ok { background: #1b7a35; color: #fff; }
+.link.part, .link.warn { background: #8a6b1f; color: #fff; }
+.link.bad { background: #b83232; color: #fff; }
+.link.unknown { background: #6a6a6a; color: #fff; }
+.kill {
+  font: 700 calc(11px * var(--fs))/1.2 var(--ui); letter-spacing: 0;
+  background: #b83232; color: #fff; border: 1px solid #7a1010; border-radius: 0;
+  padding: 2px 10px;
+}
+
+/* The + menu: every contract's ladder, Algo and chart, then the windows
+ * and the pages of the program. */
+.menu {
+  position: fixed; bottom: 32px; left: 6px; z-index: 2060;
+  min-width: 280px; max-height: 70vh; overflow: auto; padding: 4px;
+  background: var(--frame); border: 1px solid var(--frame-line);
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, .35);
+}
+.menu-title { padding: 3px 4px; color: var(--frame-muted); font: 700 calc(10px * var(--fs)) var(--ui); text-transform: uppercase; }
+.menu button { padding: 4px 6px; color: var(--frame-text); font: calc(12px * var(--fs)) var(--ui); }
+.menu button small { display: block; color: var(--frame-muted); font-size: calc(10px * var(--fs)); }
+.menu button:hover { background: #4a9ede; color: #fff; }
+.menu button:hover small { color: #f0f0f0; }
+.menu-note { padding: 4px 6px; color: var(--frame-muted); font-size: calc(11px * var(--fs)); }
+
+/* -- a page of the program, as a window on the desk -------------------- */
+.win.toolwin { display: flex; flex-direction: column; overflow: hidden; min-width: 360px; min-height: 160px; }
+.win.toolwin:not(.placed) { grid-column: 1 / -1; height: 640px; }
+.win.toolwin .toolframe { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: #f0f0f0; display: block; }
+
+/* -- the Market Grid ----------------------------------------------------- */
+.win.gridwin { display: flex; flex-direction: column; overflow: hidden; min-width: 520px; }
+.win.gridwin:not(.placed) { grid-column: 1 / -1; }
+.gridwin .mg-body { flex: 1 1 auto; overflow: auto; min-height: 0; background: #fff; }
+table.grid.mg td { white-space: nowrap; padding: 2px 6px; }
+table.grid.mg td.num { text-align: right; }
+table.grid.mg td.mg-name { font-family: var(--ui); font-weight: 600; cursor: pointer; text-decoration: underline dotted; }
+table.grid.mg td.mg-bid, table.grid.mg td.mg-ask { text-align: right; font-weight: 700; color: #fff; cursor: pointer; }
+table.grid.mg td.mg-bid { background: #4a9ede; color: #06304f; }
+table.grid.mg td.mg-ask { background: #b83232; }
+table.grid.mg td.mg-bid:hover, table.grid.mg td.mg-ask:hover { filter: brightness(1.15); }
+table.grid.mg td.stale { background: #b9b9b9; color: #555; }
+table.grid.mg td.mg-long { color: #1f7ac2; font-weight: 700; }
+table.grid.mg td.mg-short { color: #a02828; font-weight: 700; }
+table.grid.mg td.mg-hot { background: #fff1c2; font-weight: 700; }
+table.grid.mg td.up { color: #4a9c5d; }
+table.grid.mg td.down { color: #c0504d; }
+table.grid.mg td.mg-algo { font: 700 calc(10px * var(--fs)) var(--ui); }
+table.grid.mg td.mg-algo.s-PAPER, table.grid.mg td.mg-algo.s-LIVE { color: #1f7ac2; }
+table.grid.mg td.mg-algo.s-DRY { color: #8a6b1f; }
+table.grid.mg td.mg-feed.ok { color: #1b7a35; font-weight: 700; }
+table.grid.mg td.mg-feed.warn { color: #8a6b1f; font-weight: 700; }
+table.grid.mg td.mg-feed.bad { color: #b83232; font-weight: 700; }
+table.grid.mg td.mg-why { font-family: var(--ui); color: #5a5a5a; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+table.grid.mg td.mg-none { font-family: var(--ui); color: #5a5a5a; }
+
+/* -- the keys ------------------------------------------------------------ */
+.help-box { max-width: 520px; }
+table.keys { border-collapse: collapse; margin: 0 0 10px; }
+table.keys th { text-align: left; font: 700 calc(12px * var(--fs)) var(--mono); padding: 2px 14px 2px 0; vertical-align: top; white-space: nowrap; }
+table.keys td { font-size: calc(12px * var(--fs)); padding: 2px 0; }
+
+/* -- the chart window: W3's cards and charts ---------------------------- */
+.win.chartwin { display: flex; flex-direction: column; overflow: hidden; min-width: 340px; min-height: 260px; }
+.win.chartwin:not(.placed) { width: 560px; height: 380px; }
+.chartwin .ch-bar { display: flex; align-items: center; gap: 3px; padding: 3px 4px; background: var(--frame); border-bottom: 1px solid var(--frame-line); }
+.chartwin .ch-bar .tk.act { background: #0d6efd; color: #fff; border-color: #0a58ca; }
+.chartwin .ch-now { margin-left: auto; font: 600 calc(11px * var(--fs)) var(--mono); }
+.chartwin .ch-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; padding: 6px; background: #fff; }
+.w3-card { display: flex; flex-direction: column; min-height: 0; background: #f8f9fa; border: 1px solid rgba(0,0,0,.175); border-radius: 6px; overflow: hidden; }
+.w3-card.ch-zcard { flex: 7 1 0; }
+.w3-card.ch-pcard { flex: 5 1 0; }
+.w3-head { display: flex; justify-content: space-between; padding: 4px 10px; background: #e9ecef; border-bottom: 1px solid rgba(0,0,0,.175); color: #212529; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.w3-head small { font-size: calc(11.5px * var(--fs)); }
+.w3-canvas { position: relative; flex: 1 1 auto; min-height: 60px; padding: 4px; }

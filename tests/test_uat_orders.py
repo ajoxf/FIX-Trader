@@ -117,7 +117,9 @@ def open_desk(tmp_path, monkeypatch, **venue_extra):
         time.sleep(0.1)
     assert (contract.get('market') or {}).get('bid') is not None, contract
     try:
-        yield SimpleDesk(tt, driver)
+        simple = SimpleDesk(tt, driver)
+        simple.app = app                  # for a browser on a real port
+        yield simple
     finally:
         stop.set()
         thread.join(timeout=20)

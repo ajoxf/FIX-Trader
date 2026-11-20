@@ -80,17 +80,20 @@ function beep(freqs, duration) {
     });
   } catch (e) { /* a browser that will not make sound is not a broken screen */ }
 }
+/* The MT5 desk's sounds: a blip when an order is placed, two rising notes
+ * when one fills, a low note when one is cancelled, a long low one on a
+ * refusal — and the Algo's own chime in SIGNALS, rising for an entry,
+ * falling for an exit on the trader's position. */
 const SOUNDS = {
-  ORDER: () => beep([660], 0.06),
-  FILL: () => beep([660, 880], 0.08),
-  OPEN: () => beep([660, 880], 0.08),
-  CLOSED: () => beep([880, 660], 0.08),
-  REJECT: () => beep([220], 0.18),
-  GUARD: () => beep([220], 0.14),
-  // SIGNALS mode: the Algo calls a trade for the trader to take — a chime
-  // of its own, rising for an entry, falling for an exit on their position.
-  SIGNAL: () => beep([523, 659, 784, 1047], 0.09),
-  EXIT_SIGNAL: () => beep([1047, 784, 659, 523], 0.09),
+  ORDER: () => beep([880], 0.07),
+  FILL: () => beep([660, 1040], 0.08),
+  OPEN: () => beep([660, 1040], 0.08),
+  CLOSED: () => beep([1040, 660], 0.08),
+  CANCEL: () => beep([320], 0.1),
+  REJECT: () => beep([180], 0.2),
+  GUARD: () => beep([180], 0.14),
+  SIGNAL: () => beep([523, 659, 784], 0.11),
+  EXIT_SIGNAL: () => beep([784, 659, 523], 0.11),
 };
 
 /* -- toasts: errors stay until dismissed --------------------------------- */
@@ -425,6 +428,11 @@ function makeDraggable(el, key) {
   const bar = el.querySelector('.titlebar');
   bar.addEventListener('mousedown', (down) => {
     if (down.target.closest('.winbtn, .algo-switch')) return;
+    // The title bar takes the keyboard back from any box: the drag's
+    // preventDefault would otherwise leave the caret in a quantity field,
+    // and the next key typed a digit there instead of acting on the ladder.
+    if (document.activeElement && document.activeElement !== document.body &&
+        document.activeElement.blur) document.activeElement.blur();
     const rect = el.getBoundingClientRect();
     const desk = document.getElementById('desktop').getBoundingClientRect();
     const dx = down.clientX - rect.left;
@@ -448,10 +456,13 @@ function makeDraggable(el, key) {
     const up = () => {
       document.removeEventListener('mousemove', move);
       document.removeEventListener('mouseup', up);
+      document.getElementById('desktop').classList.remove('dragging');
       state.places[key] = Object.assign({}, state.places[key],
         { x: parseFloat(el.style.left), y: parseFloat(el.style.top) });
       savePlaces();
     };
+    // A page window's iframe would swallow the mouse on its way past.
+    document.getElementById('desktop').classList.add('dragging');
     document.addEventListener('mousemove', move);
     document.addEventListener('mouseup', up);
     down.preventDefault();
@@ -2394,6 +2405,9 @@ async function getAnalysis(url) {
 function renderTabs() {
   const host = document.getElementById('tabs');
   host.innerHTML = '';
+  // The ladder the keys act on is marked, as on the MT5 desk.
+  document.querySelectorAll('.win.ladderwin').forEach((w) =>
+    w.classList.toggle('focused', w === focusedLadder()));
   document.querySelectorAll('.win').forEach((el) => {
     const b = document.createElement('button');
     b.className = 'tk' + (state.focused === el.dataset.key ? ' act' : '');
@@ -2854,6 +2868,21 @@ async function tick() {
       renderContract(c);
     });
     renderPositions(snap);
+    if (EMBED === null) {
+      renderTools();
+      state.tools.forEach((t) => seen.add('__tool__' + t));
+      if (typeof renderGrid === 'function') { renderGrid(snap); seen.add('__grid__'); }
+      if (typeof renderCharts === 'function') {
+        renderCharts(snap).forEach((k) => seen.add(k));
+      }
+      // A fresh desk on a FIX venue that is not logged on opens its
+      // Connection window: the first thing to do is to connect.
+      const sess = (snap.engine || {}).session || {};
+      if (!state.toolsSaved && sess.state && sess.state !== 'LOGGED_ON' &&
+          !(snap.engine || {}).simulated) {
+        openTool('/connection');
+      }
+    }
     if (EMBED !== null) {
       // Order tests: the ladder and the Algo window first, the monitor below.
       const desk = document.getElementById('desktop');
@@ -2883,6 +2912,641 @@ async function tick() {
 function restartTimer() {
   if (state.timer) clearInterval(state.timer);
   state.timer = setInterval(tick, state.refresh);
+}
+
+/* -- the Market Grid --------------------------------------------------------
+ *
+ * The MT5 desk's Market Grid: every contract on one row — the touch, the
+ * spread, z, what is open and working, the Algo's state and the feed. A click
+ * on the Contract opens its ladder; a click on Bid BUYS at the bid and on Ask
+ * SELLS at the offer — THROUGH that contract's ladder (`manualOrder`), with
+ * its quantity, reviewed in the shared modal, so there is never a second
+ * order path. While a contract's Algo trades it, the click is refused there
+ * and says so, exactly as on its ladder.
+ */
+state.gridOpen = (() => {
+  try { return localStorage.getItem(LS + 'grid') === '1'; } catch (e) { return false; }
+})();
+function setGridOpen(on) {
+  state.gridOpen = on;
+  try { localStorage.setItem(LS + 'grid', on ? '1' : '0'); } catch (e) { /* forgets */ }
+}
+
+const GRID_COLS = [
+  ['Contract', 'the contract — click to open its ladder'],
+  ['Bid', 'the best bid — click to BUY at it (through the ladder)'],
+  ['Ask', 'the best offer — click to SELL at it (through the ladder)'],
+  ['Sprd', 'ask − bid'],
+  ['Mid', 'the mid of the book: the price the Algo reads'],
+  ['z', 'the Algo\'s z at the mid'],
+  ['H', 'today\'s high mid'],
+  ['L', 'today\'s low mid'],
+  ['Net', 'what is open: the Algo\'s position and your hand positions, + long / − short'],
+  ['Avg', 'the average entry of what is open'],
+  ['Open P&L', 'marked at the price each position would close at'],
+  ['Work', 'working orders: the Algo\'s and yours'],
+  ['Today', 'the Algo\'s P&L today, and its trades'],
+  ['Algo', 'this contract\'s Algo switch'],
+  ['Feed', 'whether prices are arriving, and why not'],
+  ['Why', 'what holds the Algo\'s next entry'],
+];
+
+function gridWindow() {
+  let el = document.querySelector('.win[data-key="__grid__"]');
+  if (el) return el;
+  el = document.createElement('section');
+  el.className = 'win gridwin';
+  el.dataset.key = '__grid__';
+  el.innerHTML = '<div class="titlebar"><span class="swatch"></span>' +
+    '<span class="title">Market Grid</span><span class="winbtns">' +
+    '<button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button>' +
+    '<button class="winbtn close" title="Close this window">&times;</button></span></div>' +
+    '<div class="mg-body"><table class="grid mg"><thead><tr></tr></thead><tbody></tbody></table></div>' +
+    '<div class="wfoot"><span>Click Bid to buy at the bid, Ask to sell at the offer — each reviewed before it is sent, with the ladder\'s quantity.</span></div>';
+  const head = el.querySelector('thead tr');
+  GRID_COLS.forEach(([name, title]) => {
+    const th = document.createElement('th');
+    th.textContent = name; th.title = title;
+    head.appendChild(th);
+  });
+  el.querySelector('.close').onclick = () => { setGridOpen(false); el.remove(); renderTabs(); };
+  el.querySelector('.min').onclick = () => setMinimised(el, true);
+  if (state.minimised.has('__grid__')) el.classList.add('minimised');
+  el.onmousedown = () => { state.focused = '__grid__'; raise(el); };
+  makeDraggable(el, '__grid__');
+  document.getElementById('desktop').appendChild(el);
+  floatNew(el, '__grid__', 1180, 260);
+  return el;
+}
+
+function openGrid() {
+  setGridOpen(true);
+  const el = gridWindow();
+  if (window.__lastSnapshot) renderGrid(window.__lastSnapshot);
+  if (el.classList.contains('minimised')) setMinimised(el, false);
+  state.focused = '__grid__';
+  raise(el);
+  renderTabs();
+}
+
+/* A click in the grid trades through the contract's own ladder. */
+async function gridTrade(key, side, price) {
+  let el = document.querySelector('.win[data-key="__ladder__' + key + '"]');
+  if (!el) {
+    openLadder(key);
+    await tick();
+    el = document.querySelector('.win[data-key="__ladder__' + key + '"]');
+  }
+  if (!el) return;
+  if (!el.classList.contains('manual-on')) {
+    toast('GUARD', 'NOT SENT', 'this contract\'s Algo is trading it — hand orders are off ' +
+      'on it. Set its Algo to Off or Signals to trade it by hand.', key);
+    return;
+  }
+  if (price === null || price === undefined) {
+    toast('REJECT', 'NOT SENT', 'no ' + (side === 'BUY' ? 'bid' : 'offer') + ' to price it at', key);
+    return;
+  }
+  return manualOrder(el, key, side, price);
+}
+
+function renderGrid(snap) {
+  if (!state.gridOpen) return;
+  const el = gridWindow();
+  if (el.classList.contains('minimised')) return;
+  const body = el.querySelector('tbody');
+  const contracts = snap.contracts || [];
+  const manual = ((((snap.engine || {}).manual_terminal || {}).pnl || {}).positions) || [];
+  const working = (((snap.engine || {}).manual_terminal || {}).orders || []).filter((o) =>
+    ['PENDING', 'NEW', 'PARTIALLY_FILLED', 'REPLACED'].includes(o.status));
+  if (!contracts.length) {
+    body.innerHTML = '<tr><td colspan="' + GRID_COLS.length + '" class="mg-none">no contracts — add one on the Exchanges page</td></tr>';
+    return;
+  }
+  // Rebuilt only when the set of contracts changes: a row rebuilt twice a
+  // second loses the click that was on its way to it.
+  const keys = contracts.map((c) => c.key).join('|');
+  if (body.dataset.keys !== keys) {
+    body.dataset.keys = keys;
+    body.innerHTML = '';
+    contracts.forEach((c) => {
+      const tr = document.createElement('tr');
+      tr.dataset.key = c.key;
+      GRID_COLS.forEach(() => tr.appendChild(document.createElement('td')));
+      const [name, bid, ask] = tr.children;
+      name.className = 'mg-name'; name.title = 'open the ladder';
+      name.onclick = () => openLadder(c.key);
+      bid.className = 'mg-bid'; bid.title = 'BUY at the bid';
+      bid.onclick = () => gridTrade(c.key, 'BUY', (ladderData[c.key] || { c }).c.market.bid);
+      ask.className = 'mg-ask'; ask.title = 'SELL at the offer';
+      ask.onclick = () => gridTrade(c.key, 'SELL', (ladderData[c.key] || { c }).c.market.ask);
+      body.appendChild(tr);
+    });
+  }
+  contracts.forEach((c) => {
+    const tr = body.querySelector('tr[data-key="' + CSS.escape(c.key) + '"]');
+    if (!tr) return;
+    const d = c.decimals === undefined ? 4 : c.decimals;
+    const m = c.market || {};
+    const has = (v) => v !== null && v !== undefined;
+    const sid = String(c.security_id || '');
+    const mine = manual.filter((p) => sid && String(p.security_id) === sid);
+    let net = 0, cost = 0, qtyAll = 0, pnl = null;
+    const pos = c.position;
+    if (pos && pos.side) {
+      net += pos.side === 'BUY' ? pos.qty : -pos.qty;
+      cost += pos.avg_price * pos.qty; qtyAll += pos.qty;
+      if (has(pos.open_pnl)) pnl = (pnl || 0) + pos.open_pnl;
+    }
+    mine.forEach((p) => {
+      const q = Number(p.quantity) || 0;
+      net += p.side === 'BUY' ? q : -q;
+      if (has(p.entry_price)) { cost += Number(p.entry_price) * q; qtyAll += q; }
+      if (has(p.floating_pnl)) pnl = (pnl || 0) + Number(p.floating_pnl);
+    });
+    const work = (c.orders || []).length + working.filter((o) =>
+      o.ticket && sid && String(o.ticket.security_id) === sid).length;
+    const hlo = c.hlo || {};
+    const z = (c.stats || {}).z;
+    const md = c.md || null;
+    const feed = c.feed || {};
+    const feedWord = md && !['LIVE', 'ONE_SIDED'].includes(md.state) ? md.state
+      : feed.stale ? 'STALE' : has(m.bid) || has(m.ask) ? 'LIVE' : '—';
+    const algo = c.algo || {};
+    const why = c.manual_block ? '' : (algo.blocked || (c.filters || {}).blocked_by || '');
+    const cells = tr.children;
+    const put = (i, text, cls, title) => {
+      cells[i].textContent = text;
+      if (cls !== undefined) cells[i].className = cls;
+      if (title !== undefined) cells[i].title = title;
+    };
+    put(0, c.name || c.key, 'mg-name', (c.symbol || '') + ' — open the ladder');
+    put(1, num(m.bid, d), 'mg-bid' + (feed.stale ? ' stale' : ''));
+    put(2, num(m.ask, d), 'mg-ask' + (feed.stale ? ' stale' : ''));
+    put(3, has(m.bid) && has(m.ask) ? (m.ask - m.bid).toFixed(d) : DASH, 'num');
+    put(4, num(m.mid, d), 'num');
+    put(5, signed(z, 2), 'num' + (has(z) && Math.abs(z) >= ((c.settings || {}).entry_threshold || 99) ? ' mg-hot' : ''));
+    put(6, num(hlo.high, d), 'num');
+    put(7, num(hlo.low, d), 'num');
+    put(8, net === 0 && !(pos && pos.side) && !mine.length ? DASH : (net > 0 ? '+' : '') + net,
+      'num ' + (net > 0 ? 'mg-long' : net < 0 ? 'mg-short' : ''));
+    put(9, qtyAll ? num(cost / qtyAll, d) : DASH, 'num');
+    put(10, pnl === null ? DASH : money(pnl), 'num ' + (pnl > 0 ? 'up' : pnl < 0 ? 'down' : ''));
+    put(11, work ? String(work) : DASH, 'num');
+    put(12, money(c.pnl_today) + ' · ' + (c.trades_today || 0), 'num ' + (c.pnl_today > 0 ? 'up' : c.pnl_today < 0 ? 'down' : ''));
+    const st = c.algo_state || 'OFF';
+    put(13, 'ALGO ' + (st === 'DRY' ? 'SIGNALS' : st === 'LIVE' ? sendWord() : st), 'mg-algo s-' + st);
+    put(14, feedWord, 'mg-feed ' + (feedWord === 'LIVE' ? 'ok' : feedWord === 'WAITING' ? 'warn' : 'bad'),
+      md ? md.text : '');
+    put(15, why || '', 'mg-why', why || '');
+  });
+}
+
+/* -- the chart window, W3's charts -------------------------------------------
+ *
+ * One per contract, drawn as the W3 / OKX dashboard draws them (Chart.js):
+ * the Algo's Z-SCORE as a blue line with the entry levels dashed green either
+ * side and the z stop dotted red when the contract has one; under it the
+ * contract's PRICE — the mid of the book — in W3's purple. "Live" is what
+ * the desk has watched since this window opened (the last 100 points);
+ * 15m / 1h / 4h are candles built from the mids this system RECORDED (a FIX
+ * session has no bars to backfill from). A missing z is a gap, never 0.
+ */
+state.charts = (() => {
+  try { return JSON.parse(localStorage.getItem(LS + 'charts') || '[]'); } catch (e) { return []; }
+})();
+const chartData = {};         // key -> {tf, live: [{t, z, mid}], hist, lastAt, charts}
+function saveCharts() {
+  try { localStorage.setItem(LS + 'charts', JSON.stringify(state.charts)); } catch (e) { /* forgets */ }
+}
+const W3 = {
+  z: '#0d6efd', entry: '#198754', stop: '#dc3545', price: '#6f42c1',
+  grid: 'rgba(0,0,0,0.1)', ticks: '#212529',
+};
+function w3Options(yMin, yMax) {
+  const o = {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false } },
+    scales: {
+      x: { display: false },
+      y: { grid: { color: W3.grid }, ticks: { color: W3.ticks, font: { size: 10 } } },
+    },
+    elements: { point: { radius: 0 } },
+  };
+  if (yMin !== undefined) { o.scales.y.min = yMin; o.scales.y.max = yMax; }
+  return o;
+}
+function chartWindow(key) {
+  const wkey = '__chart__' + key;
+  let el = document.querySelector('.win[data-key="' + CSS.escape(wkey) + '"]');
+  if (el) return el;
+  el = document.createElement('section');
+  el.className = 'win chartwin';
+  el.dataset.key = wkey;
+  el.dataset.contract = key;
+  el.innerHTML = '<div class="titlebar"><span class="swatch"></span>' +
+    '<span class="title"></span><span class="winbtns">' +
+    '<button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button>' +
+    '<button class="winbtn close" title="Close this window">&times;</button></span></div>' +
+    '<div class="ch-bar">' +
+    ['live', '15', '60', '240'].map((tf) => '<button type="button" class="tk ch-tf" data-tf="' + tf + '">' +
+      ({ live: 'Live', 15: '15m', 60: '1h', 240: '4h' })[tf] + '</button>').join('') +
+    '<span class="ch-now"></span></div>' +
+    '<div class="ch-body">' +
+    '<div class="w3-card ch-zcard"><div class="w3-head"><small>&#9889; Z-Score History</small>' +
+    '<small class="ch-zlegend"></small></div><div class="w3-canvas"><canvas class="ch-z"></canvas></div></div>' +
+    '<div class="w3-card ch-pcard"><div class="w3-head"><small>&#8776; Price History (mid)</small>' +
+    '<small class="ch-plegend"></small></div><div class="w3-canvas"><canvas class="ch-p"></canvas></div></div>' +
+    '</div><div class="wfoot"><span class="ch-note grow"></span></div>';
+  el.querySelector('.close').onclick = () => {
+    state.charts = state.charts.filter((k) => k !== key);
+    saveCharts();
+    const d = chartData[key];
+    if (d && d.charts) { d.charts.z.destroy(); d.charts.p.destroy(); d.charts = null; }
+    el.remove();
+    renderTabs();
+  };
+  el.querySelector('.min').onclick = () => setMinimised(el, true);
+  if (state.minimised.has(wkey)) el.classList.add('minimised');
+  el.onmousedown = () => { state.focused = wkey; raise(el); };
+  el.querySelectorAll('.ch-tf').forEach((b) => {
+    b.onclick = () => {
+      const d = chartData[key];
+      d.tf = b.dataset.tf;
+      try { localStorage.setItem(LS + 'chart.tf.' + key, d.tf); } catch (e) { /* forgets */ }
+      d.hist = null;
+      loadChartHistory(key);
+      paintChart(key);
+    };
+  });
+  makeDraggable(el, wkey);
+  document.getElementById('desktop').appendChild(el);
+  floatNew(el, wkey, 560, 380);
+  let tf = 'live';
+  try { tf = localStorage.getItem(LS + 'chart.tf.' + key) || 'live'; } catch (e) { /* default */ }
+  chartData[key] = chartData[key] || { live: [], lastAt: 0 };
+  chartData[key].tf = tf;
+  if (window.Chart) {
+    const z = new Chart(el.querySelector('.ch-z'), {
+      type: 'line',
+      data: { labels: [], datasets: [
+        { label: 'Z-Score', data: [], borderColor: W3.z, borderWidth: 2, tension: 0.1, pointRadius: 0, spanGaps: false },
+        { label: '+Entry', data: [], borderColor: W3.entry, borderWidth: 2, borderDash: [5, 5], pointRadius: 0 },
+        { label: '-Entry', data: [], borderColor: W3.entry, borderWidth: 2, borderDash: [5, 5], pointRadius: 0 },
+        { label: '+Stop', data: [], borderColor: W3.stop, borderWidth: 1, borderDash: [2, 2], pointRadius: 0 },
+        { label: '-Stop', data: [], borderColor: W3.stop, borderWidth: 1, borderDash: [2, 2], pointRadius: 0 },
+      ] },
+      options: w3Options(-5, 5),
+    });
+    const p = new Chart(el.querySelector('.ch-p'), {
+      type: 'line',
+      data: { labels: [], datasets: [
+        { label: 'Mid', data: [], borderColor: W3.price, borderWidth: 2, tension: 0.1, pointRadius: 0, spanGaps: false },
+      ] },
+      options: w3Options(),
+    });
+    chartData[key].charts = { z, p };
+  } else {
+    el.querySelector('.ch-note').textContent = 'the chart library did not load';
+  }
+  if (tf !== 'live') loadChartHistory(key);
+  return el;
+}
+
+function openChart(key) {
+  if (state.charts.indexOf(key) < 0) { state.charts.push(key); saveCharts(); }
+  const el = chartWindow(key);
+  if (window.__lastSnapshot) renderCharts(window.__lastSnapshot);
+  if (el.classList.contains('minimised')) setMinimised(el, false);
+  state.focused = el.dataset.key;
+  raise(el);
+  renderTabs();
+}
+
+async function loadChartHistory(key) {
+  const d = chartData[key];
+  if (!d || d.tf === 'live') return;
+  const tf = d.tf;
+  try {
+    const r = await fetch('/api/chart/' + encodeURIComponent(key) + '?tf=' + tf, { cache: 'no-store' });
+    const body = await r.json();
+    if (d.tf !== tf) return;          // the trader moved on meanwhile
+    d.hist = body;
+    d.histAt = Date.now();
+  } catch (e) {
+    d.hist = { ok: false, error: 'the history could not be read' };
+  }
+  paintChart(key);
+}
+
+function chartLevels(c) {
+  const algo = (c && c.algo) || {};
+  const params = algo.params || {};
+  const entry = params.entry_z !== undefined ? params.entry_z : ((c && c.settings) || {}).entry_threshold;
+  const stop = params.stop_z_on ? (params.stop_z !== undefined ? params.stop_z : ((c && c.settings) || {}).stop_loss_z) : null;
+  return { entry: entry === undefined ? null : entry, stop: stop === undefined ? null : stop };
+}
+
+function paintChart(key) {
+  const d = chartData[key];
+  const el = document.querySelector('.win[data-key="' + CSS.escape('__chart__' + key) + '"]');
+  if (!d || !el) return;
+  el.querySelectorAll('.ch-tf').forEach((b) => b.classList.toggle('act', b.dataset.tf === d.tf));
+  const c = d.contract || {};
+  const dec = c.decimals === undefined ? 4 : c.decimals;
+  let pts, entry, stop, note;
+  if (d.tf === 'live') {
+    pts = d.live;
+    ({ entry, stop } = chartLevels(c));
+    note = pts.length ? 'live: the last ' + pts.length + ' point(s) watched since this window opened'
+      : 'live: waiting for the first price';
+  } else if (!d.hist) {
+    pts = []; ({ entry, stop } = chartLevels(c)); note = 'reading the recorded mids…';
+  } else if (!d.hist.ok) {
+    pts = []; ({ entry, stop } = chartLevels(c)); note = d.hist.error || 'no history';
+  } else {
+    pts = d.hist.points || [];
+    entry = d.hist.entry_z; stop = d.hist.stop_z;
+    note = d.hist.note + ' · z over ' + d.hist.length + ' candles';
+  }
+  el.querySelector('.ch-note').textContent = note;
+  const last = pts.length ? pts[pts.length - 1] : null;
+  el.querySelector('.ch-now').textContent = last
+    ? 'z ' + signed(last.z, 2) + ' · mid ' + num(last.mid, dec) : '';
+  el.querySelector('.ch-zlegend').textContent = entry !== null && entry !== undefined
+    ? 'entry ±' + entry + (stop !== null && stop !== undefined ? ' · stop ±' + stop : ' · z stop off') : '';
+  el.querySelector('.ch-plegend').textContent = last ? num(last.mid, dec) : '';
+  if (!d.charts) return;
+  const labels = pts.map((p) => {
+    const t = new Date(typeof p.t === 'number' ? p.t * 1000 : p.t);
+    return d.tf === 'live' ? t.toLocaleTimeString([], { hour12: false })
+      : t.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+  });
+  const n = pts.length;
+  const fill = (v) => (v === null || v === undefined ? Array(n).fill(null) : Array(n).fill(v));
+  const z = d.charts.z;
+  z.data.labels = labels;
+  z.data.datasets[0].data = pts.map((p) => (p.z === null || p.z === undefined ? null : p.z));
+  z.data.datasets[1].data = fill(entry);
+  z.data.datasets[2].data = fill(entry === null || entry === undefined ? null : -entry);
+  z.data.datasets[3].data = fill(stop);
+  z.data.datasets[4].data = fill(stop === null || stop === undefined ? null : -stop);
+  // W3 fixes the axis at ±5; a z stop beyond it widens it so the line shows.
+  const reach = Math.max(5, Math.ceil(Math.abs(stop || 0) + 0.5));
+  z.options.scales.y.min = -reach; z.options.scales.y.max = reach;
+  z.update('none');
+  const p = d.charts.p;
+  p.data.labels = labels;
+  p.data.datasets[0].data = pts.map((q) => (q.mid === null || q.mid === undefined ? null : q.mid));
+  p.update('none');
+}
+
+/* Every open chart: fed the snapshot (live points, at most one a second)
+ * and repainted. Returns the window keys it holds, for the desk's sweep. */
+function renderCharts(snap) {
+  const keys = [];
+  const byKey = {};
+  (snap.contracts || []).forEach((c) => { byKey[c.key] = c; });
+  state.charts = state.charts.filter((k) => byKey[k]);
+  state.charts.forEach((key) => {
+    const c = byKey[key];
+    const el = chartWindow(key);
+    keys.push(el.dataset.key);
+    el.querySelector('.title').textContent = (c.name || key) + ' · Chart';
+    const d = chartData[key];
+    d.contract = c;
+    const now = Date.now();
+    const mid = (c.market || {}).mid;
+    const algo = c.algo || {};
+    const z = algo.z_mid !== undefined && algo.z_mid !== null ? algo.z_mid : (c.stats || {}).z;
+    if (now - d.lastAt >= 1000 && (mid !== null && mid !== undefined)) {
+      d.lastAt = now;
+      d.live.push({ t: now / 1000, z: z === undefined ? null : z, mid });
+      if (d.live.length > 100) d.live.shift();
+    }
+    // History refreshes itself every minute: a candle closes on its own clock.
+    if (d.tf !== 'live' && d.hist && now - (d.histAt || 0) > 60000) loadChartHistory(key);
+    if (!el.classList.contains('minimised')) paintChart(key);
+  });
+  return keys;
+}
+
+/* -- the pages of the program, as windows on the one desk -------------------
+ *
+ * As on the MT5 desk, there is ONE screen: the ladders, the Algo windows, the
+ * charts, the Market Grid, the Trading Monitor — and every page of the
+ * program (Instruments & orders, Order tests, Connection, Exchanges, FIX
+ * logs, Settings) as a window opened from the taskbar's + menu. A page window
+ * holds the page itself (`?embed=1`: no navigation of its own), so it is the
+ * same page, with the same commands, never a second implementation.
+ */
+const TOOLS = {
+  instruments: { title: 'Instruments & orders', url: '/instruments',
+                 note: 'find a contract, the watchlist, manual tickets' },
+  'order-tests': { title: 'Order tests', url: '/order-tests',
+                   note: 'every order path, run on TT UAT' },
+  connection: { title: 'Connection', url: '/connection',
+                note: 'FIX sessions: connect, reconnect, disconnect' },
+  exchanges: { title: 'Exchanges', url: '/exchanges',
+               note: 'venues, FIX sessions and contracts' },
+  logs: { title: 'FIX logs', url: '/logs', note: 'every FIX message, searchable' },
+  settings: { title: 'Settings', url: '/settings', note: 'how the system runs' },
+};
+//: The page windows open on this desk, in the order they were opened.
+state.tools = (() => {
+  try { return JSON.parse(localStorage.getItem(LS + 'tools') || '[]').filter((t) => TOOLS[t]); }
+  catch (e) { return []; }
+})();
+state.toolsSaved = localStorage.getItem(LS + 'tools') !== null;
+function saveTools() {
+  try { localStorage.setItem(LS + 'tools', JSON.stringify(state.tools)); }
+  catch (e) { /* a private window forgets; the desk still works */ }
+  state.toolsSaved = true;
+}
+
+/* Every other window keeps the place it has before one leaves the grid —
+ * or the ones still in the grid jump to the corner. */
+function freezeOthers(el) {
+  const deskEl = document.getElementById('desktop');
+  const desk = deskEl.getBoundingClientRect();
+  document.querySelectorAll('.win').forEach((other) => {
+    if (other === el || other.classList.contains('placed') ||
+        other.classList.contains('minimised')) return;
+    const r = other.getBoundingClientRect();
+    placeWindow(other, r.left - desk.left + deskEl.scrollLeft,
+      r.top - desk.top + deskEl.scrollTop);
+    state.places[other.dataset.key] = Object.assign({},
+      state.places[other.dataset.key],
+      { x: parseFloat(other.style.left), y: parseFloat(other.style.top) });
+  });
+}
+
+/* A window that FLOATS when it first opens, as the MT5 desk's tool windows
+ * do: over the ladders, cascaded, never pushing them about. */
+function floatNew(el, key, w, h) {
+  const place = state.places[key];
+  if (place && place.x !== undefined) {
+    placeWindow(el, place.x, place.y);
+    return;
+  }
+  freezeOthers(el);
+  const deskEl = document.getElementById('desktop');
+  const n = document.querySelectorAll('.win.floated').length;
+  const width = Math.min(w, deskEl.clientWidth - 20);
+  const height = Math.min(h, deskEl.clientHeight - 20);
+  const x = Math.max(4, Math.min(40 + n * 26, deskEl.clientWidth - width - 4));
+  const y = Math.max(4, Math.min(24 + n * 26, deskEl.clientHeight - height - 4));
+  placeWindow(el, x + deskEl.scrollLeft, y + deskEl.scrollTop);
+  el.classList.add('floated');
+  if (!el.style.width) { el.style.width = width + 'px'; el.style.height = height + 'px'; }
+  state.places[key] = Object.assign({}, state.places[key],
+    { x: parseFloat(el.style.left), y: parseFloat(el.style.top) });
+  savePlaces();
+}
+
+function toolWindow(name, href) {
+  const key = '__tool__' + name;
+  const tool = TOOLS[name];
+  let el = document.querySelector('.win[data-key="' + key + '"]');
+  const src = (href || tool.url) + ((href || tool.url).indexOf('?') >= 0 ? '&' : '?') + 'embed=1';
+  if (el) {
+    if (href) el.querySelector('iframe').src = src;
+    return el;
+  }
+  el = document.createElement('section');
+  el.className = 'win toolwin';
+  el.dataset.key = key;
+  el.dataset.tool = name;
+  el.innerHTML = '<div class="titlebar"><span class="swatch"></span>' +
+    '<span class="title"></span><span class="winbtns">' +
+    '<button class="winbtn reload" title="Reload this page">&#8635;</button>' +
+    '<button class="winbtn pop" title="Open this page on its own, in a browser tab">&#8599;</button>' +
+    '<button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button>' +
+    '<button class="winbtn close" title="Close this window">&times;</button></span></div>' +
+    '<iframe class="toolframe" title=""></iframe>';
+  el.querySelector('.title').textContent = tool.title;
+  el.querySelector('iframe').title = tool.title;
+  el.querySelector('iframe').src = src;
+  el.querySelector('.reload').onclick = () => {
+    try { el.querySelector('iframe').contentWindow.location.reload(); }
+    catch (e) { el.querySelector('iframe').src = src; }
+  };
+  el.querySelector('.pop').onclick = () => window.open(href || tool.url, '_blank', 'noopener');
+  el.querySelector('.close').onclick = () => {
+    state.tools = state.tools.filter((t) => t !== name);
+    saveTools();
+    el.remove();
+    renderTabs();
+  };
+  const min = el.querySelector('.min');
+  min.onclick = () => setMinimised(el, true);
+  if (state.minimised.has(key)) el.classList.add('minimised');
+  el.onmousedown = () => { state.focused = key; raise(el); renderTabs(); };
+  makeDraggable(el, key);
+  document.getElementById('desktop').appendChild(el);
+  floatNew(el, key, 1180, 680);
+  return el;
+}
+
+/* Open (or bring forward) the window for a page of the program. Called by
+ * the + menu, the taskbar, and by a link inside a page window. */
+function openTool(href) {
+  const path = String(href || '').split('?')[0].replace(/\/+$/, '') || '/';
+  if (path === '/' || path === '/desk') return;
+  if (path === '/account') { openWindow('__positions__'); return; }
+  const name = Object.keys(TOOLS).find((t) => TOOLS[t].url === path);
+  if (!name) { window.open(href, '_blank', 'noopener'); return; }
+  if (state.tools.indexOf(name) < 0) { state.tools.push(name); saveTools(); }
+  const el = toolWindow(name, String(href).indexOf('?') >= 0 ? href : null);
+  if (el.classList.contains('minimised')) setMinimised(el, false);
+  state.focused = el.dataset.key;
+  raise(el);
+  renderTabs();
+}
+window.openTool = openTool;
+//: A click inside a page window raises it: the iframe swallows the
+//: mousedown the window would otherwise see.
+window.raiseFrame = (frame) => {
+  const el = frame && frame.closest ? frame.closest('.win') : null;
+  if (!el) return;
+  state.focused = el.dataset.key;
+  raise(el);
+  renderTabs();
+};
+
+function renderTools() {
+  state.tools.forEach((name) => toolWindow(name));
+}
+
+/* Reopen a window the trader closed, or bring an open one forward. */
+function openWindow(key) {
+  if (state.closed.has(key)) {
+    state.closed.delete(key);
+    localStorage.setItem(LS + 'closed', JSON.stringify([...state.closed]));
+    tick().then(() => openWindow(key));
+    return;
+  }
+  const el = document.querySelector('.win[data-key="' + key + '"]');
+  if (!el) return;
+  if (el.classList.contains('minimised')) setMinimised(el, false);
+  state.focused = key;
+  raise(el);
+  renderTabs();
+}
+
+/* The + menu: every contract's ladder, Algo and chart, then the desk's
+ * windows and the program's pages — as the MT5 desk's lists its ladders and
+ * windows. One click opens it, or brings it forward when it is open. */
+function renderAddMenu() {
+  const menu = document.getElementById('add-menu');
+  menu.innerHTML = '';
+  const snap = window.__lastSnapshot || {};
+  const contracts = (snap.contracts || []);
+  const title = (text) => {
+    const t = document.createElement('div');
+    t.className = 'menu-title';
+    t.textContent = text;
+    menu.appendChild(t);
+  };
+  const item = (label, small, key, open) => {
+    const b = document.createElement('button');
+    b.dataset.panel = key;
+    b.textContent = label;
+    const el = document.querySelector('.win[data-key="' + key + '"]');
+    const sm = document.createElement('small');
+    sm.textContent = small + (el ? (el.classList.contains('minimised') ? ' · minimised' : ' · open') : '');
+    b.appendChild(sm);
+    b.onclick = () => { menu.classList.add('hidden'); open(); };
+    menu.appendChild(b);
+  };
+  title('Ladders');
+  if (!contracts.length) {
+    const n = document.createElement('div');
+    n.className = 'menu-note';
+    n.textContent = 'no contracts yet — add one on the Exchanges page';
+    menu.appendChild(n);
+  }
+  contracts.forEach((c) => item(c.name || c.key, (c.symbol || c.key) + ' · ladder',
+    '__ladder__' + c.key, () => openLadder(c.key)));
+  if (contracts.length) title('Algo');
+  contracts.forEach((c) => item((c.name || c.key) + ' · Algo', 'bands, signal, position',
+    c.key, () => openWindow(c.key)));
+  if (contracts.length && typeof chartWindow === 'function') title('Charts');
+  if (typeof chartWindow === 'function') {
+    contracts.forEach((c) => item((c.name || c.key) + ' · Chart', 'z-score and price, live and history',
+      '__chart__' + c.key, () => openChart(c.key)));
+  }
+  title('Windows');
+  if (typeof gridWindow === 'function') {
+    item('Market Grid', 'every contract on one row each', '__grid__', () => openGrid());
+  }
+  item('Trading Monitor', 'positions, orders, fills, slippage, accounts', '__positions__',
+    () => openWindow('__positions__'));
+  item('Analysis', 'the touch study, costs, journal, replay', '__analysis__',
+    () => openWindow('__analysis__'));
+  title('Program');
+  Object.keys(TOOLS).forEach((name) => item(TOOLS[name].title, TOOLS[name].note,
+    '__tool__' + name, () => openTool(TOOLS[name].url)));
 }
 
 /* -- wiring --------------------------------------------------------------- */
@@ -2940,47 +3604,156 @@ document.getElementById('tidy').onclick = () => {
 function setTextSize(scale) {
   const fs = Math.round(Math.min(2.2, Math.max(0.9, scale)) * 10) / 10;
   document.documentElement.style.setProperty('--fs', String(fs));
-  try { localStorage.setItem('ft.fs', String(fs)); } catch (e) { /* forgets */ }
+  try { localStorage.setItem('ft.textsize', String(fs)); } catch (e) { /* forgets */ }
   const label = document.getElementById('text-size');
   if (label) label.textContent = 'Text ' + Math.round(fs * 100) + '%';
 }
 function textSize() {
   return parseFloat(getComputedStyle(document.documentElement)
-    .getPropertyValue('--fs')) || 1.3;
+    .getPropertyValue('--fs')) || 1;
 }
 document.getElementById('text-smaller').onclick = () => setTextSize(textSize() - 0.1);
 document.getElementById('text-bigger').onclick = () => setTextSize(textSize() + 0.1);
 setTextSize(textSize());
 
-document.getElementById('add-panel').onclick = () => {
+document.getElementById('add-panel').onclick = (e) => {
+  e.stopPropagation();
   const menu = document.getElementById('add-menu');
-  menu.innerHTML = '';
-  if (state.closed.size === 0) {
-    const b = document.createElement('button');
-    b.textContent = 'every window is already open';
-    b.disabled = true;
-    menu.appendChild(b);
-  }
-  state.closed.forEach((key) => {
-    const b = document.createElement('button');
-    b.textContent = key === '__positions__' ? 'Trading Monitor'
-      : key === '__analysis__' ? 'Analysis' : key;
-    b.onclick = () => {
-      state.closed.delete(key);
-      localStorage.setItem(LS + 'closed', JSON.stringify([...state.closed]));
-      menu.classList.add('hidden');
-      tick();
-    };
-    menu.appendChild(b);
-  });
+  if (menu.classList.contains('hidden')) renderAddMenu();
   menu.classList.toggle('hidden');
 };
+document.addEventListener('mousedown', (e) => {
+  const menu = document.getElementById('add-menu');
+  if (!menu.classList.contains('hidden') && !e.target.closest('#add-menu, #add-panel')) {
+    menu.classList.add('hidden');
+  }
+});
+document.getElementById('open-exchanges').onclick = () => openTool('/exchanges');
+
+/* -- one key, one action: the MT5 desk's shortcuts -------------------------
+ *
+ * On the FOCUSED ladder (the one last clicked; Tab moves along), and never
+ * while a field has the keyboard — a figure typed into a box is never an
+ * order. Each key presses the ladder's own button, so a key does exactly
+ * what the click does: BUY / SELL go to the review, F asks before it closes,
+ * and a ladder whose Algo trades it refuses as its buttons do.
+ */
+state.keys = (() => { try { return localStorage.getItem(LS + 'keys') !== '0'; } catch (e) { return true; } })();
+const KEYS_HELP = [
+  ['B', 'buy, at the offer, on the focused ladder (reviewed before it is sent)'],
+  ['S', 'sell, at the bid'],
+  ['F', 'flatten this contract — CLOSE ALL (asks once)'],
+  ['X', 'cancel every working order on this ladder'],
+  ['1 2 3 4 5', 'arm 1 / 5 / 10 / 50 / 100 contracts'],
+  ['0', 'clear the armed quantity'],
+  ['L', 'lock the ladder so it stops re-centring under your click'],
+  ['M', 'switch this ladder between LIMIT and MARKET'],
+  ['Tab', 'focus the next ladder'],
+  ['?', 'this list'],
+  ['Esc', 'close this, or any open dialog or menu'],
+  ['Work', 'your RESTING orders at their price; click a cell in Bids to buy there, in Asks to sell there'],
+  ['Drag', 'move a window by its title bar — it stays where you put it. Tidy puts them all back in a row'],
+];
+function renderKeysToggle() {
+  const b = document.getElementById('keys-toggle');
+  if (b) b.textContent = 'Keys: ' + (state.keys ? 'on' : 'off');
+}
+function showHelp() {
+  let m = document.getElementById('help-modal');
+  if (!m) {
+    m = document.createElement('div');
+    m.id = 'help-modal';
+    m.className = 'modal';
+    m.setAttribute('role', 'dialog');
+    m.innerHTML = '<div class="modal-box help-box"><h2>One key, one action</h2>' +
+      '<table class="keys"></table><p class="hint">Keys are off while you type in a box, ' +
+      'and the Keys button on the taskbar turns them off altogether. A key does what ' +
+      'the button does: an order is reviewed before it is sent.</p>' +
+      '<div class="modal-actions"><button class="btn help-close">Close</button></div></div>';
+    const t = m.querySelector('table.keys');
+    KEYS_HELP.forEach(([k, v]) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<th></th><td></td>';
+      tr.firstChild.textContent = k; tr.lastChild.textContent = v;
+      t.appendChild(tr);
+    });
+    m.querySelector('.help-close').onclick = () => m.classList.add('hidden');
+    m.onclick = (e) => { if (e.target === m) m.classList.add('hidden'); };
+    document.body.appendChild(m);
+  }
+  m.classList.remove('hidden');
+}
+function ladders() {
+  return [...document.querySelectorAll('.win.ladderwin')].filter((w) => !w.classList.contains('minimised'));
+}
+function focusedLadder() {
+  const f = state.focused && document.querySelector('.win.ladderwin[data-key="' + CSS.escape(state.focused) + '"]');
+  if (f && !f.classList.contains('minimised')) return f;
+  return ladders()[0] || null;
+}
+function focusLadder(el) {
+  state.focused = el.dataset.key;
+  raise(el);
+  renderTabs();
+}
+function pressOn(el, selector, what) {
+  const b = el.querySelector(selector);
+  if (!b) return;
+  if (b.disabled) {
+    toast('GUARD', 'NOT SENT', what + ' is off on this ladder — ' +
+      (el.classList.contains('manual-on') ? 'nothing to act on' : 'its Algo is trading it'),
+      el.querySelector('.title').textContent);
+    return;
+  }
+  b.click();
+}
+document.getElementById('keys-toggle').onclick = () => {
+  state.keys = !state.keys;
+  try { localStorage.setItem(LS + 'keys', state.keys ? '1' : '0'); } catch (e) { /* forgets */ }
+  renderKeysToggle();
+};
+document.getElementById('help').onclick = showHelp;
+renderKeysToggle();
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     document.getElementById('modal').classList.add('hidden');
     document.getElementById('add-menu').classList.add('hidden');
+    const h = document.getElementById('help-modal');
+    if (h) h.classList.add('hidden');
+    return;
   }
+  if (!state.keys || e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  if (t && (t.closest('input, select, textarea, [contenteditable="true"]'))) return;
+  if (!document.getElementById('modal').classList.contains('hidden')) return;
+  if (e.key === '?') { e.preventDefault(); showHelp(); return; }
+  if (e.key === 'Tab') {
+    const all = ladders();
+    if (!all.length) return;
+    e.preventDefault();
+    const at = all.indexOf(focusedLadder());
+    focusLadder(all[(at + (e.shiftKey ? all.length - 1 : 1)) % all.length]);
+    return;
+  }
+  const el = focusedLadder();
+  if (!el) return;
+  const k = e.key.toLowerCase();
+  const pad = [...el.querySelectorAll('.ld-keypad button')];
+  if (k === 'b') pressOn(el, '.ld-buy', 'BUY');
+  else if (k === 's') pressOn(el, '.ld-sell', 'SELL');
+  else if (k === 'f') pressOn(el, '.ld-flatten', 'CLOSE ALL');
+  else if (k === 'x') pressOn(el, '.ld-cxl-all', 'Cancel all');
+  else if ('12345'.includes(k) && k.length === 1) { if (pad[Number(k) - 1] && !pad[Number(k) - 1].disabled) pad[Number(k) - 1].click(); }
+  else if (k === '0') { const clr = pad.find((b) => b.textContent === 'CLR'); if (clr && !clr.disabled) clr.click(); }
+  else if (k === 'l') {
+    const box = el.querySelector('.ld-lockscroll');
+    if (box) { box.checked = !box.checked; box.dispatchEvent(new Event('change')); }
+  } else if (k === 'm') {
+    const ot = el.querySelector('.ld-ot');
+    if (ot && !ot.disabled) { ot.value = ot.value === 'LIMIT' ? 'MARKET' : 'LIMIT'; ot.dispatchEvent(new Event('change')); }
+  } else return;
+  e.preventDefault();
 });
 
 tick();

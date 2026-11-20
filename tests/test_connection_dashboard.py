@@ -7,13 +7,22 @@ from fixtrader.atomicfile import write_json
 from fixtrader.webapp import create_app
 
 
-def test_tt_landing_page_is_connection_dashboard_and_desk_is_available(tmp_path):
+def test_the_landing_page_is_the_one_desk_and_connection_is_a_page_on_it(tmp_path):
     path = tmp_path / 'config.json'
     cfg = TraderConfig(path=str(path))
     cfg.venues['TT-UAT'] = VenueConfig(name='TT-UAT', host='example.invalid', fix_version='FIX.4.2')
     cfg.save()
     client = create_app(str(path)).test_client()
-    for route in ('/', '/connection'):
+    # ONE desktop, as on the MT5 desk: `/` is the desk, with the MT5 name
+    # strip and no second navigation; every page opens as a window on it.
+    home = client.get('/')
+    assert b'id="brand"' in home.data and b'contract-template' in home.data
+    assert b'class="app-nav"' not in home.data
+    # A page in a desk window (?embed=1) shows no navigation of its own.
+    embedded = client.get('/connection?embed=1')
+    assert b'FIX connection dashboard' in embedded.data
+    assert b'<nav' not in embedded.data and b'openTool' in embedded.data
+    for route in ('/connection',):
         page = client.get(route)
         assert page.status_code == 200
         assert b'FIX connection dashboard' in page.data
@@ -37,7 +46,7 @@ def test_fix_pages_share_one_navigation_and_visual_skin(tmp_path):
     cfg = TraderConfig(path=str(path))
     cfg.save()
     client = create_app(str(path)).test_client()
-    routes = ('/', '/connection', '/instruments', '/account', '/logs', '/settings', '/exchanges')
+    routes = ('/connection', '/instruments', '/account', '/logs', '/settings', '/exchanges')
     nav_targets = ('/desk', '/instruments', '/account', '/connection', '/exchanges', '/logs', '/settings')
 
     for route in routes:

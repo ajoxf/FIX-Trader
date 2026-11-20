@@ -81,3 +81,45 @@ td, th { border-color: #b9b9b9; }
   .topbar { align-items: flex-start; flex-wrap: wrap; }
   .topbar > .tag { margin-left: 0; }
 }
+
+/* -- the MT5 desk's look, for every page of the program ------------------
+ * The same furniture as the desk's windows: compact headings, the raised
+ * white-to-grey button, plain bordered fields, the grey ruled table head.
+ * In a desk window (html.embedded) the page sits on the window's chrome. */
+html.embedded, html.embedded body { background: #d4d0c8; }
+html.embedded main { padding: 6px 8px; }
+html.embedded .heading { margin-bottom: 6px; }
+html.embedded .eyebrow { display: none; }
+h1 { font: 700 15px/1.3 "Segoe UI", "DejaVu Sans", Tahoma, sans-serif; letter-spacing: 0; }
+h2 { font: 700 13px/1.3 "Segoe UI", "DejaVu Sans", Tahoma, sans-serif; }
+h3 { font: 700 12px/1.3 "Segoe UI", "DejaVu Sans", Tahoma, sans-serif; }
+.subtitle, .muted { font-size: 11px; color: #5a5a5a; }
+.summary, .session-card, .availability, .activity-panel, .panel, .controls, .logtable {
+  background: #f0f0f0; border: 1px solid #a9a9a9; box-shadow: 1px 1px 0 rgba(0, 0, 0, .15);
+}
+button {
+  font: 600 12px/1.2 "Segoe UI", "DejaVu Sans", Tahoma, sans-serif;
+  padding: 3px 12px; color: #1a1a1a;
+  border: 1px solid #a9a9a9; border-radius: 2px;
+  background: linear-gradient(#ffffff, #e4e4e4);
+  box-shadow: inset 0 1px 0 #fff, 0 1px 1px rgba(0, 0, 0, .18);
+}
+button:hover:not(:disabled) { filter: none; background: linear-gradient(#ffffff, #dadada); }
+button:active:not(:disabled) { transform: translateY(1px); box-shadow: inset 0 2px 3px rgba(0, 0, 0, .35); }
+button.primary { color: #fff; background: #1f7ac2; border-color: #155d91; }
+button.primary:hover:not(:disabled) { background: #2585d0; }
+button.danger, .danger-btn { color: #fff; background: #b83232; border-color: #7a1010; }
+input, select, textarea {
+  font: 12px/1.3 "Segoe UI", "DejaVu Sans", Tahoma, sans-serif;
+  padding: 2px 4px; border: 1px solid #a9a9a9; border-radius: 0; background: #fff; color: #1a1a1a;
+}
+label { font-size: 11px; font-weight: 600; color: #1a1a1a; }
+table { border-collapse: collapse; background: #fff; }
+th {
+  background: #d4d0c8; color: #1a1a1a; border: 1px solid #808080;
+  font: 600 10px/1.3 "Segoe UI", "DejaVu Sans", Tahoma, sans-serif;
+  letter-spacing: 0; text-transform: none; padding: 2px 4px; text-align: left;
+}
+td { border: 1px solid #d5d5d5; font: 11px/1.35 Consolas, "DejaVu Sans Mono", monospace; padding: 2px 4px; }
+.feedback, .feed-status, .mode-bar { font-size: 12px; }
+.panel p, .panel li, .summary p, .availability p { font-size: 12px; line-height: 1.4; }

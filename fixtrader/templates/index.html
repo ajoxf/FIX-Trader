@@ -8,13 +8,25 @@
      network is what failed. -->
 <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='terminal.css') }}?v={{ asset_version }}">
-<script>try{var fs=localStorage.getItem('ft.fs');if(fs)document.documentElement.style.setProperty('--fs',fs);}catch(e){}</script>
+<script>try{var fs=localStorage.getItem('ft.textsize');if(fs)document.documentElement.style.setProperty('--fs',fs);}catch(e){}</script>
 <link rel="stylesheet" href="{{ url_for('static', filename='app_nav.css') }}?v={{ asset_version }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='monitor.css') }}?v={{ asset_version }}">
 </head>
 <body>
 
-{% include "_topnav.html" %}
+<!-- The MT5 desk's name strip: one title-bar height, top left. Every page
+     of this program is a window on this one desk, opened from the taskbar's
+     + menu — there is no second navigation to find. -->
+<div id="brand" class="app-brand-strip" title="Nexus FIX — spread terminal">
+  <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+    <rect x="6.5" y="10.9" width="11" height="2.2" fill="#1c1c1c"/>
+    <circle cx="7" cy="12" r="3.4" fill="#5a9bd8"/>
+    <circle cx="17" cy="12" r="3.4" fill="#c0342f"/>
+  </svg>
+  <span class="brand-name">NEXUS FIX</span>
+  <span class="brand-note">spread terminal &middot; TT FIX</span>
+  <span id="env-badge" class="env">&mdash;</span>
+</div>
 
 <!-- A dead engine must never be mistaken for a quiet market. -->
 <div id="engine-banner" class="banner hidden" role="status"></div>
@@ -27,20 +39,22 @@
 <div id="toasts" aria-live="polite"></div>
 
 <div id="taskbar">
-  <button id="add-panel" class="tk" title="Open a window">+</button>
+  <button id="add-panel" class="tk plus" title="Open a ladder, an Algo, a chart, the Market Grid, the Trading Monitor or any page of the program">+</button>
+  <!-- Every contract's ladder, Algo and chart, and every page of the
+       program, in one list: each one is a window on this desktop. -->
   <div id="add-menu" class="menu hidden"></div>
   <div id="tabs"></div>
   <div class="taskbar-right">
     <span id="link-badge" class="link unknown" title="The venue session, and whether prices are arriving">checking&hellip;</span>
-    <a class="tk" href="/desk" title="Open the algorithm desk">Algo desk</a>
     <button id="master-toggle" class="tk" title="The one switch that stands every contract's algo down at once">Master: &mdash;</button>
     <button id="execution-toggle" class="tk hidden" title="Where the Algo's orders go: PAPER fills them here; UAT (or LIVE on a live venue) sends them to TT">Orders: &mdash;</button>
-    <button id="sound-toggle" class="tk" title="A blip when an order is sent, two rising notes on a fill, a low note on a reject">Sound: on</button>
+    <button id="sound-toggle" class="tk" title="A blip when an order is placed, two rising notes when one fills, a low note when one is cancelled">Sound: on</button>
+    <button id="keys-toggle" class="tk" title="Turn the one-key shortcuts (B, S, F, X…) off or on">Keys: on</button>
     <button id="tidy" class="tk" title="Put every window back in a row">Tidy</button>
-    <button id="text-smaller" class="tk" title="Smaller text">A&minus;</button><span id="text-size" class="stat" title="Text size — kept in this browser">Text 130%</span><button id="text-bigger" class="tk" title="Bigger text">A+</button>
-    <a class="tk" href="/settings" title="How the system runs">Settings</a>
-    <a class="tk" href="/exchanges" title="Venues, FIX sessions and contracts">Exchanges</a>
+    <button id="open-exchanges" class="tk" title="Venues, FIX sessions and contracts">Exchanges</button>
+    <button id="text-smaller" class="tk sz" title="Smaller text">A&minus;</button><span id="text-size" class="stat" title="Text size — kept in this browser">Text 100%</span><button id="text-bigger" class="tk sz" title="Bigger text">A+</button>
     <span id="loop-stat" class="stat" title="The engine's achieved loop, and how old this snapshot is">&mdash;</span>
+    <button id="help" class="tk" title="Keyboard shortcuts (?)">?</button>
     <button id="kill" class="kill" title="Stand every algo down and cancel our working orders">KILL ALL</button>
   </div>
 </div>
@@ -416,6 +430,8 @@
   </section>
 </template>
 
+<!-- Chart.js 4.4.6 (MIT), bundled with the program: no CDN. -->
+<script src="{{ url_for('static', filename='vendor/chart.umd.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='monitor.js') }}?v={{ asset_version }}"></script>
 <script src="{{ url_for('static', filename='app.js') }}?v={{ asset_version }}"></script>
 </body>

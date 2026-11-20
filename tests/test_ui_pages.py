@@ -17,7 +17,7 @@ from playwright.sync_api import sync_playwright  # noqa: E402
 from fixtrader.config import ContractConfig, TraderConfig, VenueConfig  # noqa: E402
 from fixtrader.webapp import create_app  # noqa: E402
 
-BROWSER_CANDIDATES = [None, '/opt/pw-browsers/chromium-1194/chrome-linux/chrome']
+BROWSER_CANDIDATES = [None, '/opt/pw-browsers/chromium', '/opt/pw-browsers/chromium-1194/chrome-linux/chrome']
 
 
 def _launch(p):

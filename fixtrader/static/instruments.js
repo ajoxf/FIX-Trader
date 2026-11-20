@@ -198,7 +198,7 @@
   function toAlgoDesk(i){
     const q=new URLSearchParams({prefill:'1',name:i.tt_name||i.display_name||i.symbol,symbol:i.symbol,security_id:i.security_id,
       security_exchange:i.exchange,tick_size:i.tick_size||'',tick_value:i.tick_value||'',contract_multiplier:i.point_value||'',currency:i.currency||''});
-    window.location.href='/exchanges?'+q.toString();
+    if(window.parent!==window&&window.parent.openTool){window.parent.openTool('/exchanges?'+q.toString());}else{window.location.href='/exchanges?'+q.toString();}
   }
   function renderExplorer(force=false) {
     const {catalogue,onVenue,inProduct,contracts}=explorerMatches();
