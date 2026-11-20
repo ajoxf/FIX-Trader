@@ -49,17 +49,21 @@ def _catalogue():
     define([('CL', '202611', '1'), ('BZ', '202612', '2')], 'Crude | Brent')
     define([('CL', '202611', '1'), ('BZ', '202611', '2')], 'Crude | Brent')
     define([('CL', '202611', '1'), ('CL', '202612', '2')], 'Crude calendar')
-    return t.snapshot()
+    return t
 
 
 @pytest.fixture
 def server(tmp_path):
     status = tmp_path / 'status.json'
+    terminal = _catalogue()
+    # The catalogue rides its own file, as the runner writes it.
+    (tmp_path / 'status.json.instruments.json').write_text(
+        json.dumps(terminal.catalogue_frame()))
     status.write_text(json.dumps({
         'ts': datetime.now(timezone.utc).isoformat(),
         'engine': {'alive': True, 'refresh_sec': 30, 'environment': 'UAT',
                    'session': {'state': 'LOGGED_ON'},
-                   'manual_terminal': _catalogue()},
+                   'manual_terminal': terminal.snapshot()},
         'contracts': []}))
     app = create_app(str(tmp_path / 'config.json'), str(status),
                      str(tmp_path / 'commands.jsonl'),

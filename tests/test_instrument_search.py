@@ -27,7 +27,15 @@ def desk(tmp_path, monkeypatch):
 
 
 def terminal(d):
-    return (d.d.snapshot().get('engine') or {}).get('manual_terminal') or {}
+    """The terminal's snapshot, with the search answers and the catalogue
+    read where the screen reads them: their own file (/api/instruments),
+    never the twice-a-second snapshot."""
+    t = dict((d.d.snapshot().get('engine') or {}).get('manual_terminal') or {})
+    frame = d.d._get('/api/instruments') or {}
+    same = (frame.get('search') or {}).get('request_id') == (t.get('search') or {}).get('request_id')
+    t['instruments'] = (frame.get('instruments') or []) if same else []
+    t['catalogue'] = frame.get('catalogue') or []
+    return t
 
 
 def search(d, timeout=10, **args):
@@ -38,7 +46,8 @@ def search(d, timeout=10, **args):
     while time.monotonic() < deadline:
         t = terminal(d)
         found = sorted(i['security_id'] for i in t.get('instruments') or [])
-        if (t.get('search') or {}).get('request_id') == res['request_id'] and found:
+        if (t.get('search') or {}).get('request_id') == res['request_id'] and found \
+                and len(found) == t.get('instruments_count'):
             return t, found
         time.sleep(0.1)
     return terminal(d), found
@@ -69,7 +78,7 @@ def test_a_product_tt_does_not_list_finds_nothing(desk):
     res = desk.d.command('terminal_search', '', {
         'exchange': 'CME', 'symbol': 'ZZ', 'security_type': 'FUT'})
     assert res.get('ok'), res
-    time.sleep(1.0)
+    time.sleep(3.0)
     assert terminal(desk).get('instruments') == []
 
 
@@ -151,7 +160,7 @@ def test_a_new_contract_is_picked_from_tt_not_typed(desk):
             ex.locator('#pick-contract').click()
             inst = page.frame_locator('.win.toolwin[data-tool="instruments"] iframe')
             inst.locator('#explore-dialog[open]').wait_for(timeout=10000)
-            assert 'algo desk' in inst.locator('#explore-algo').inner_text()
+            assert inst.locator('#explore-algo').is_disabled()       # nothing picked yet
             inst.locator('#explore-exchange-input').fill('CME')
             inst.locator('#explore-type').select_option('MLEG')
             inst.locator('#explore-product-input').fill('CL')
@@ -169,3 +178,21 @@ def test_a_new_contract_is_picked_from_tt_not_typed(desk):
             browser.close()
     finally:
         srv.shutdown()
+
+
+def test_thousands_of_definitions_never_ride_the_status_snapshot(desk):
+    """A product with thousands of contracts made the twice-a-second status
+    file megabytes; the engine stalled and Market Data dropped. The answers
+    go to their own file, written when they change; the status stays small."""
+    for i in range(2500):
+        desk.tt.list(f'Q{i}', 9050, 9052, tick=1, factor=0.01, symbol='CL',
+                     security_type='FUT', description=f'CL {i}')
+    t, found = search(desk, timeout=20, exchange='CME', symbol='CL', security_type='FUT')
+    assert len(found) >= 2000
+    import os
+    status = os.path.join(os.path.dirname(desk.d.client.application.config.get('STATUS_PATH', '')) or '.', 'x')
+    snap = desk.d.snapshot()
+    import json as _json
+    assert len(_json.dumps(snap)) < 300_000
+    assert 'instruments' not in snap['engine']['manual_terminal']
+    assert 'catalogue' not in snap['engine']['manual_terminal']

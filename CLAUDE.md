@@ -167,6 +167,13 @@ the drawing wins.
   TT's own catalogue, `?explore=algo`) and the instrument chosen fills the
   contract form from TT's definition (`prefill`); nothing is saved until
   Save. One explorer, never a second one.
+- **The catalogue never rides the status snapshot.** TT's search answers
+  and the instrument catalogue (thousands of definitions) are written beside
+  it (`status.json.instruments.json`, `ManualTerminal.catalogue_frame`) only
+  when `catalogue_version` moves, at most every 2 s, and read by the
+  Instruments page from `/api/instruments` only then. In the snapshot they
+  made a 4 MB file rewritten twice a second: the engine stalled and Market
+  Data dropped its heartbeats.
 - **The Market Grid is the MT5 desk's** (Contract, Bid, Ask, Last, Chg,
   Incr, Qty, k $, Net, Work, Avg, Open P&L, Mode, TIF, Feed) and trades
   THROUGH the contract's ladder (`gridTrade` -> `manualOrder`): Bid buys at

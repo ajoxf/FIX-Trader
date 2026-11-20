@@ -18,3 +18,7 @@ td.slip-better { color: #3f8b52; }
 /* Opened from Exchanges' "Pick from TT": the algo-desk button is the one to press. */
 .explore-for-algo #explore-algo{background:#1f7ac2;color:#fff;border-color:#155d91}
 .explore-for-algo #explore-add{background:linear-gradient(#fff,#e4e4e4);color:#1a1a1a;border-color:#a9a9a9}
+/* The explorer's next step, said where the eye is. */
+#explore-status.next-step{color:#1a1a1a;font-weight:600;background:#fff6d6;border:1px solid #e0c46e;padding:4px 8px}
+.explore-next{margin-top:6px;color:#1a1a1a}
+#explore-dialog .actions button:disabled{opacity:.45;cursor:default}

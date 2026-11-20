@@ -42,7 +42,7 @@ def test_catalogue_keeps_products_from_previous_searches(terminal):
     terminal.lookup({'exchange':'CME','symbol':'CL','security_type':'FUT'})
     assert not terminal.instruments
     assert terminal.catalogue['101']['symbol']=='ES'
-    assert any(i['symbol']=='ES' for i in terminal.snapshot()['catalogue'])
+    assert any(i['symbol']=='ES' for i in terminal.catalogue_frame()['catalogue'])
 
 
 def test_multi_action_message_uses_positions_before_message(terminal):

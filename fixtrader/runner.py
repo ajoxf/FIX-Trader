@@ -185,6 +185,17 @@ def run(config_path: str = "config.json", status_path: str = "status.json",
         published['at'] = time.monotonic()
         try:
             atomicfile.write_json(status_path, engine.snapshot())
+            # The Instruments page's catalogue: its own file, written only
+            # when a search answer changed it — never twice a second.
+            terminal = getattr(gateway, 'terminal', None)
+            if terminal is not None and hasattr(terminal, 'catalogue_frame') and \
+                    published.get('catalogue') != terminal.catalogue_version and \
+                    time.monotonic() - published.get('catalogue_at', 0.0) >= 2.0:
+                published['catalogue_at'] = time.monotonic()
+                frame = terminal.catalogue_frame()
+                atomicfile.write_json(str(status_path) + '.instruments.json', frame,
+                                      indent=None, durable=False)
+                published['catalogue'] = frame['version']
             if published['failures']:
                 logger.info("snapshot published again after %d failed "
                             "attempts", published['failures'])

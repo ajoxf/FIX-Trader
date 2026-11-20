@@ -95,6 +95,14 @@ def create_app(config_path: str = "config.json",
     def desk():
         return render_template('index.html', asset_version=ASSET_VERSION)
 
+    @app.get('/api/instruments')
+    def api_instruments():
+        """The search answers and the catalogue the engine wrote beside the
+        status file — read only when its version moves, so the screen never
+        carries thousands of TT definitions twice a second."""
+        frame = atomicfile.read_json(str(status_path) + '.instruments.json', default=None)
+        return jsonify(frame or {'version': 0, 'search': {}, 'instruments': [], 'catalogue': []})
+
     @app.get('/instruments')
     def instruments():
         return render_template('instruments.html', asset_version=ASSET_VERSION)

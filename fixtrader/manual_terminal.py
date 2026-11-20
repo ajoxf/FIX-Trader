@@ -151,6 +151,12 @@ class ManualTerminal:
         self.db.commit()
         self.instruments = {}
         self.catalogue = {}
+        #: Moves whenever a search answer or the catalogue changes. The
+        #: catalogue and the search results are NOT in the twice-a-second
+        #: snapshot: thousands of TT definitions made it megabytes, rewritten
+        #: and re-read twice a second, and the engine stalled. They are
+        #: written beside it only when this moves (`catalogue_frame`).
+        self.catalogue_version = 0
         self.search = {'status': 'Idle', 'request_id': '', 'error': ''}
         #: Every search whose answers are still wanted. An inter-commodity
         #: product is searched once per leg product, and the second search
@@ -172,6 +178,7 @@ class ManualTerminal:
         for instrument in self.watch.values():
             self._enrich(instrument)
             self.catalogue[instrument['security_id']] = copy.deepcopy(instrument)
+        self.catalogue_version += 1
         self.orders = self._load('order')
         saved_risk = self._load('risk').get('manual', {})
         self.risk = dict(DEFAULT_RISK)
@@ -469,6 +476,7 @@ class ManualTerminal:
             else:
                 self.instruments.clear()
                 self._search_ids = {request_id}
+            self.catalogue_version += 1
             fields = [('320', request_id), ('321', '3'), ('207', exchange), ('55', symbol), ('167', security_type), ('17000', 'Y')]
             if maturity:
                 fields.append(('200', maturity))
@@ -623,6 +631,7 @@ class ManualTerminal:
                         instrument['legs'].append(leg)
                     self._enrich(instrument)
                     self.instruments[key] = instrument
+                    self.catalogue_version += 1
                     if len(self.catalogue) < 5000 or key in self.catalogue:
                         self.catalogue[key] = copy.deepcopy(instrument)
                     stale_subscription = False
@@ -1419,6 +1428,17 @@ class ManualTerminal:
                     'status': ('Unavailable from this TT FIX Order Routing / Market Data session. '
                                'Tag 1 identifies the order account but is not an account-balance feed.')}}
 
+    def catalogue_frame(self):
+        """The search answers and the catalogue, for the Instruments page —
+        written beside the status file only when `catalogue_version` moves,
+        never in the twice-a-second snapshot."""
+        with self.lock:
+            return copy.deepcopy({
+                'version': self.catalogue_version, 'search': self.search,
+                'instruments': list(self.instruments.values())[:2000],
+                'catalogue': [{k: i.get(k, '') for k in CATALOGUE_FIELDS}
+                              for i in self.catalogue.values()]})
+
     def snapshot(self):
         with self.lock:
             rows = []
@@ -1435,9 +1455,9 @@ class ManualTerminal:
                 book['feed_status'] = self.feed_status(key)
                 rows.append({'instrument': instrument, 'quote': book})
             pnl = self._pnl_snapshot(rows)
-            return copy.deepcopy({'search': self.search, 'instruments': list(self.instruments.values())[:2000],
-                'catalogue': [{k: i.get(k, '') for k in CATALOGUE_FIELDS}
-                              for i in self.catalogue.values()],
+            return copy.deepcopy({'search': self.search,
+                'catalogue_version': self.catalogue_version,
+                'instruments_count': len(self.instruments),
                 'watchlist': rows, 'orders': [dict(o, close_available=float(self.closeable(o)),
                     closed_qty=sum(float(c['filled_qty']) for c in self.orders.values() if c.get('close_of') == o['id']))
                     for o in list(self.orders.values())[-200:][::-1]],

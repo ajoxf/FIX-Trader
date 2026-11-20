@@ -72,7 +72,7 @@ def test_the_catalogue_carries_the_tt_name_and_product(terminal):
     definition(terminal, rid, '9001', 'CL',
                [('CL', '202611', '1'), ('BZ', '202611', '2')],
                **{'107': 'Crude Oil Futures | Brent Last Day Financial'})
-    row = terminal.snapshot()['catalogue'][0]
+    row = terminal.catalogue_frame()['catalogue'][0]
     assert row['tt_name'] == '+1xCL Nov26:-1xBZ Nov26'
     assert row['product_key'] == 'CL|BZ'
     assert row['structure'] == 'Inter-commodity'

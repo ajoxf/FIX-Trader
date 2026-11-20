@@ -1,6 +1,7 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
+  let catalogueFrame = {version: null, instruments: [], catalogue: []};
   let snapshot = {}, data = {}, selected = null, optionSignature = '', confirmation = null, searchRequest = '';
   let explorerSignature = '', streamState = 'connecting', streamLatency = null, latestReceived = 0;
   const EXPLORER_TYPES=[['FUT','Future'],['MLEG','Spread'],['OPT','Option'],['CS','Stock'],['FOR','Forward'],['SPOT','Spot']];
@@ -229,12 +230,17 @@
       detail.append(text('b',pick.tt_name||pick.display_name));
       for(const part of [pick.structure,pick.description,pick.contract_code&&'code '+pick.contract_code,'TT Security ID '+pick.security_id,
                          pick.tick_size&&`tick ${pick.tick_size}`+(pick.tick_value?` = ${pick.tick_value} ${pick.currency||''}`:'')].filter(Boolean))detail.append(' · '+part);
+      const next=document.createElement('div');next.className='explore-next';
+      next.innerHTML='<b>Next:</b> <b>Add to the desk</b> — its ladder, Algo window and chart (you check the form and press Save) · or <b>Watch prices here</b> — live prices on this page, to trade from the order ticket.';
+      detail.append(next);
     }else detail.textContent=explorer.product&&described.get(explorer.product)?`${explorer.product} — ${described.get(explorer.product)}`:'Select an instrument to see its legs, TT Security ID and tick value.';
     const search=data.search||{}, typeName=(EXPLORER_TYPES.find(t=>t[0]===explorer.type)||[])[1]||explorer.type;
     let status;
-    if(!explorer.product)status=`${counts.size} ${typeName.toLowerCase()} products cached for ${explorer.exchange}. Choose one, or type a product and press Search TT.`;
-    else if(!inProduct.length)status=`No ${explorer.product} ${typeName.toLowerCase()}s cached for ${explorer.exchange} yet. Press Search TT to fetch them`+(explorer.product.includes('|')?` (asks TT for the product ${explorer.product}, then for ${explorer.product.split('|').join(' and ')}).`:'.');
-    else status=`${contracts.length} of ${inProduct.length} ${explorer.product} contracts`+(contracts.length>2000?' · showing the first 2000; type in the filter':'')+'. Double-click an instrument to subscribe.';
+    if(!explorer.product)status=`3. Choose a product below (${counts.size} ${typeName.toLowerCase()} products loaded for ${explorer.exchange}), or type one — e.g. CL — and press Search TT.`;
+    else if(!inProduct.length)status=(search.status==='Searching'||search.status==='Receiving results')&&search.symbol&&explorer.product.split('|').concat([explorer.product]).includes(search.symbol)
+      ?`Searching TT for ${explorer.product}… the instruments appear in 4. as TT answers.`
+      :`3. ${explorer.product} ${typeName.toLowerCase()}s are not loaded yet for ${explorer.exchange} — press Search TT for ${explorer.product} (or Enter)`+(explorer.product.includes('|')?` (asks TT for the product ${explorer.product}, then for ${explorer.product.split('|').join(' and ')}).`:'.');
+    else status=`4. Pick an instrument: ${contracts.length} of ${inProduct.length} ${explorer.product} contracts`+(contracts.length>2000?' · showing the first 2000; type in the filter':'')+'.';
     // TT never says a search has finished, so its status is shown only while
     // one is recent enough to still be arriving.
     if(search.started&&Date.now()/1000-search.started<60){
@@ -243,6 +249,13 @@
       if(search.error)status+=` · TT said: ${search.error}`;
     }
     $('explore-status').textContent=status;
+    // The flow, on the buttons themselves: Search TT is THE step while the
+    // product typed is not loaded; the two last steps wait for an instrument.
+    const needSearch=!!explorer.product&&!inProduct.length;
+    $('explore-search').textContent=explorer.product?`Search TT for ${explorer.product}`:'Search TT';
+    $('explore-search').classList.toggle('primary',needSearch);
+    $('explore-algo').disabled=!pick;$('explore-add').disabled=!pick;
+    $('explore-status').classList.toggle('next-step',needSearch||(!!inProduct.length&&!pick));
   }
   function renderOrders() {
     const rows=document.createDocumentFragment();
@@ -338,6 +351,15 @@
     try{
       const streamed=new Map((data.watchlist||[]).map(row=>[row.instrument.security_id,row.quote]));
       snapshot=await request('/api/snapshot');const engine=snapshot.engine||{};data=engine.manual_terminal||{};
+      // The catalogue and the search answers: fetched only when the engine
+      // says they changed — never carried in the twice-a-second snapshot.
+      if(data.catalogue_version!==undefined&&data.catalogue_version!==catalogueFrame.version){
+        try{const frame=await request('/api/instruments');if(frame&&frame.version!==undefined)catalogueFrame=frame;}catch(e){}
+      }
+      // Results belong to the search the engine is on now; a file written
+      // before it answered is the previous search, not this one.
+      data.instruments=(catalogueFrame.search||{}).request_id===(data.search||{}).request_id?(catalogueFrame.instruments||[]):[];
+      data.catalogue=catalogueFrame.catalogue||[];
       for(const row of data.watchlist||[]) {
         const newer=streamed.get(row.instrument.security_id);
         if(newer?.timestamp&&(!row.quote.timestamp||Date.parse(newer.timestamp)>Date.parse(row.quote.timestamp)))row.quote={...newer,feed_status:row.quote.feed_status};
@@ -408,7 +430,6 @@
   // its choice going to the algo desk's contract form.
   if(new URLSearchParams(location.search).get('explore')==='algo'){
     document.documentElement.classList.add('explore-for-algo');
-    $('explore-algo').textContent='Use for the algo desk →';
     renderExplorer(true);$('explore-dialog').showModal();$('explore-product-input').focus();
   }
   conditionals();connectQuoteStream();poll();
