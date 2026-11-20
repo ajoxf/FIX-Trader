@@ -1559,19 +1559,28 @@ function renderLadder(c, engine) {
   // The footer: the feed, the contract's own book, the two directions.
   const feed = c.feed || {};
   const fe = el.querySelector('.ld-feed');
-  fe.textContent = feed.stale ? 'STALE (' + (has(feed.age_sec) ? feed.age_sec + 's' : 'no quote') + ')'
+  const md = c.md || null;
+  // "Stale" is the price not MOVING, not the line being down: on a quiet
+  // market TT sends nothing until the book changes, and the session's
+  // heartbeats are what say it is up. Said as what it is — UNCHANGED, in
+  // amber — while Market Data is connected and TT has answered; entries
+  // wait for a move either way.
+  const quiet = !!(feed.stale && md && md.state === 'LIVE');
+  fe.textContent = quiet ? 'LIVE · unchanged ' + Math.round(feed.age_sec) + 's'
+    : feed.stale ? 'STALE (' + (has(feed.age_sec) ? feed.age_sec + 's' : 'no quote') + ')'
     : feed.settling ? 'SETTLING after a jump' : has(feed.age_sec) ? 'OK (quote ' + feed.age_sec + 's)' : 'no quote yet';
-  fe.className = 'ld-feed ' + (feed.stale ? 'bad' : feed.settling ? 'warn' : 'ok');
+  fe.className = 'ld-feed ' + (quiet || feed.settling ? 'warn' : feed.stale ? 'bad' : 'ok');
   // Why there are no prices, when there are none: TT refused (permissions),
   // nobody quotes it, or TT has not answered — the engine's words.
-  const md = c.md || null;
   if (md && !['LIVE', 'ONE_SIDED'].includes(md.state)) {
     fe.textContent = ({ REFUSED: 'REFUSED by TT', NO_ANSWER: 'NO ANSWER from TT',
       EMPTY: 'NO QUOTES on UAT', WAITING: 'requesting…', NO_SESSION: 'MD not connected',
       NOT_REQUESTED: 'not requested', NO_ID: 'no Security ID' })[md.state] || md.state;
     fe.className = 'ld-feed ' + (md.state === 'WAITING' ? 'warn' : 'bad');
   }
-  fe.title = md ? md.text : '';
+  fe.title = md ? md.text + (quiet
+    ? '. The price has not changed for ' + Math.round(feed.age_sec) + 's; the Algo\'s entries wait for a move (closes never do).'
+    : '') : '';
   el.querySelector('.ld-bk-sym').textContent = c.symbol || c.name;
   el.querySelector('.ld-bk-bid').textContent = num(m.bid, d);
   el.querySelector('.ld-bk-ask').textContent = num(m.ask, d);
@@ -2972,9 +2981,13 @@ async function tick() {
       if (!seen.has(el.dataset.key)) el.remove();
     });
     renderTabs();
+    keepTitlesOnDesk();
     revealPending();
     addedSetupPending(snap);
   } catch (e) {
+    // Said in the console too: a fault in drawing the desk is otherwise
+    // indistinguishable from the web process being gone.
+    console.error('desk tick failed:', e);
     const banner = document.getElementById('engine-banner');
     banner.classList.remove('hidden');
     banner.classList.add('critical');
@@ -3168,6 +3181,7 @@ function renderGrid(snap) {
       ? ({ REFUSED: 'REFUSED by TT', NO_ANSWER: 'NO ANSWER from TT', EMPTY: 'NO QUOTES',
         WAITING: 'requesting…', NO_SESSION: 'MD not connected', NOT_REQUESTED: 'not requested',
         NO_ID: 'no Security ID' })[md.state] || md.state
+      : feed.stale && md && md.state === 'LIVE' ? 'LIVE · unchanged ' + Math.round(feed.age_sec) + 's'
       : feed.stale ? 'STALE (' + (has(feed.age_sec) ? feed.age_sec + 's' : 'no quote') + ')'
       : has(feed.age_sec) ? 'OK (quote ' + feed.age_sec + 's)' : 'no quote yet';
     const why = c.manual_block ? '' : ((c.algo || {}).blocked || (c.filters || {}).blocked_by || '');
@@ -3962,6 +3976,7 @@ function fitMaximized(el) {
   el.style.top = deskEl.scrollTop + 'px';
   el.style.width = deskEl.clientWidth + 'px';
   el.style.height = deskEl.clientHeight + 'px';
+  el.style.maxHeight = '';
 }
 
 /* Every window has the button, next to its close: windows are made in many
@@ -3977,9 +3992,39 @@ function addMaxButton(el) {
   btns.insertBefore(b, btns.querySelector('.winbtn.close'));
 }
 
+/* A title bar is never out of reach. The desk scrolls sideways only, but
+ * the browser still scrolls it DOWN when something inside a window is
+ * brought into view or takes the focus — and with no vertical scrollbar
+ * nothing could scroll it back: the title bar sat under the banners, with
+ * no way to drag, close or restore the window. So the desk is put back at
+ * the top whenever it moves, and a floating window is kept on the desk:
+ * its top inside it, its height no more than the room below that. */
+function keepTitlesOnDesk() {
+  const deskEl = document.getElementById('desktop');
+  if (!deskEl) return;
+  if (deskEl.scrollTop) deskEl.scrollTop = 0;
+  const room = deskEl.clientHeight;
+  if (!room) return;
+  deskEl.querySelectorAll(':scope > .win').forEach((el) => {
+    if (el.classList.contains('minimised') || el.classList.contains('maximized')) return;
+    if (el.classList.contains('placed')) {
+      const top = parseFloat(el.style.top) || 0;
+      const fit = Math.max(0, Math.min(top, room - 32));
+      if (fit !== top) el.style.top = fit + 'px';
+      el.style.maxHeight = Math.max(120, room - fit - 2) + 'px';
+    } else {
+      el.style.maxHeight = Math.max(120, room - 4) + 'px';
+    }
+  });
+}
+
 function initMaximize() {
   const deskEl = document.getElementById('desktop');
   if (!deskEl) return;
+  deskEl.addEventListener('scroll', () => {
+    if (deskEl.scrollTop) deskEl.scrollTop = 0;
+  });
+  window.addEventListener('resize', keepTitlesOnDesk);
   deskEl.querySelectorAll('.win').forEach(addMaxButton);
   new MutationObserver((list) => list.forEach((m) => m.addedNodes.forEach(addMaxButton)))
     .observe(deskEl, { childList: true });

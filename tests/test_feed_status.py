@@ -81,3 +81,16 @@ def test_a_contract_added_before_tt_is_ready_waits_and_is_subscribed_after(tmp_p
     ready['now'] = True
     gw.subscribe(contract)                    # the control: ready, it goes at once
     assert sent == ['GC1']
+
+
+def test_live_says_when_tt_last_sent_a_price(terminal):
+    """A quiet market sends nothing: the screen says when TT last did, so an
+    unchanged price is not taken for a dead feed — and not the other way."""
+    request = terminal.subscriptions['CL1']
+    terminal.on_message('Market Data', {'35': 'W'},
+                        f'35=W\x01262={request}\x01268=2\x01269=0\x01270=9050\x01271=3\x01'
+                        f'269=1\x01270=9052\x01271=4\x01')
+    terminal.books['CL1']['received_ms'] -= 70_000
+    s = status(terminal)
+    assert s['state'] == 'LIVE' and 69 <= s['last_msg_sec'] <= 72
+    assert 'last price message 70s ago' in s['text']

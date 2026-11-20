@@ -1080,7 +1080,17 @@ class ManualTerminal:
             if bid is None or ask is None:
                 return {'state': 'ONE_SIDED', 'text': 'TT is sending only ' +
                         ('an offer' if bid is None else 'a bid') + ' — nobody on the other side'}
-            return {'state': 'LIVE', 'text': 'prices arriving from TT'}
+            heard = book.get('received_ms')
+            last = (round(time.time() - heard / 1000.0, 1)
+                    if heard is not None else None)
+            # TT sends a price message only when the book CHANGES: a quiet
+            # market is a silent one, and the heartbeats are what say the
+            # line is up. So the age of TT's last message is said as it is,
+            # never read as a dead feed.
+            return {'state': 'LIVE', 'last_msg_sec': last,
+                    'text': 'prices arriving from TT' + (
+                        f' — last price message {last:.0f}s ago (TT sends one '
+                        'only when the book changes)' if last is not None else '')}
 
     def closeable(self, order):
         """Unclosed fills in this ticket's ledger, with outstanding closes reserved."""

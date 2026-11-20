@@ -1354,7 +1354,7 @@ table.keys td { font-size: calc(12px * var(--fs)); padding: 2px 0; }
 #desktop > .win.placed { position: absolute; margin: 0; }
 
 /* The ladder: 390 wide, as tall as the desk lets it be; the grid scrolls. */
-.win.ladderwin, .win.ladderwin.placed { width: calc(390px * var(--fs)); min-width: 240px; min-height: 420px; resize: both; overflow: hidden; }
+.win.ladderwin, .win.ladderwin.placed { width: calc(390px * var(--fs)); min-width: 240px; min-height: 200px; resize: both; overflow: hidden; }
 #desktop > .win.ladderwin:not([style*="height"]) { height: calc(100% - 4px); }
 .ladderwin .ld-grid { max-height: none; }
 .ladderwin .ld-rail { width: calc(116px * var(--fs)); }
