@@ -7,3 +7,6 @@
 .app-nav nav a.active{background:#eaf3fb;border-color:#2780c2;color:#155b8d}
 .app-nav>.env{margin-left:auto;padding:3px 7px;border:1px solid #aaa;background:#eee;color:#333;white-space:nowrap;font-size:11px}
 @media(max-width:700px){.app-nav{align-items:flex-start;flex-wrap:wrap}.app-nav>.env{margin-left:0}.app-nav nav{order:3;width:100%}}
+/* A page shown as a window on the desk keeps no navigation of its own: the
+ * hidden attribute must win over the bar's own display. */
+.app-nav[hidden]{display:none!important}

@@ -1406,6 +1406,10 @@ table.keys td { font-size: calc(12px * var(--fs)); padding: 2px 0; }
 .ai-status { padding: 5px 8px; font-size: calc(11.5px * var(--fs)); background: #edeae0; border-bottom: 1px solid #a9a9a9; }
 .ai-status .bad { color: #b83232; font-weight: 700; }
 .ai-table { overflow: auto; max-height: calc(100vh - 210px); background: #fff; }
+/* In a window on the desk the window grows with the list, then the page
+ * scrolls with the header held: no second scroll box inside the page. */
+html.embedded .ai-table { max-height: none; overflow: visible; }
+html.embedded table.ai-results thead th { position: sticky; top: 0; z-index: 1; }
 table.ai-results { width: 100%; }
 table.ai-results td { padding: 3px 6px; vertical-align: middle; }
 table.ai-results td.nm { font-weight: 600; }
@@ -1417,3 +1421,8 @@ table.ai-results .btn.on-desk { background: #e9e9e9; color: #5a5a5a; border-colo
 table.ai-results td.more { font-family: var(--ui); color: #5a5a5a; text-align: center; }
 .ai-foot { padding: 4px 8px; font-size: calc(10.5px * var(--fs)); color: #4c4c4c; background: #edeae0; border-top: 1px solid #a9a9a9; }
 .ai .btn.pri { background: #1f7ac2; color: #fff; border-color: #155d91; }
+
+/* Full screen: the window fills the desk over everything on it. */
+#desktop > .win.maximized { position: absolute; margin: 0; resize: none; box-shadow: none; }
+.win.maximized .titlebar { cursor: default; }
+.winbtn.max { font-size: 11px; }

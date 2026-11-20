@@ -166,3 +166,52 @@ def test_ask_before_sending_puts_the_yes_back(server):
         page.wait_for_function("() => window.__sent.length >= 2")
         assert page.evaluate("window.__sent") == ['terminal_preview', 'terminal_submit']
         browser.close()
+
+
+def test_every_window_goes_full_screen_and_comes_back(server):
+    """The ⛶ button (and a double click on the title bar) fills the desk;
+    the same again puts the window back where it was, at its size."""
+    url, tmp = server
+    manual_desk(tmp)
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin .winbtn.max')
+        box = lambda: page.evaluate(
+            "(()=>{const e=document.querySelector('.ladderwin');"
+            "const d=document.getElementById('desktop');"
+            "return [e.offsetWidth,e.offsetHeight,d.clientWidth,d.clientHeight]})()")
+        w0, h0, dw, dh = box()
+        assert w0 < dw
+        page.click('.ladderwin .winbtn.max')
+        w1, h1, _, _ = box()
+        assert (w1, h1) == (dw, dh)
+        page.click('.ladderwin .winbtn.max')
+        assert box()[:2] == [w0, h0]
+        page.dblclick('.ladderwin .titlebar .title')
+        assert box()[:2] == [dw, dh]
+        page.dblclick('.ladderwin .titlebar .title')
+        assert box()[:2] == [w0, h0]
+        assert not errors
+        browser.close()
+
+
+def test_a_page_window_opens_at_the_size_of_what_it_shows(server):
+    """Exchanges is a short form: its window is as tall as the form, not a
+    fixed box of empty desk — and the page inside has no navigation strip."""
+    url, tmp = server
+    manual_desk(tmp)
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin')
+        page.click('#open-exchanges')
+        frame = page.frame_locator('.win.toolwin[data-tool="exchanges"] iframe')
+        frame.locator('#pick-contract').wait_for()
+        page.wait_for_timeout(2500)
+        win_h, desk_h = page.evaluate(
+            "(()=>[document.querySelector('.win.toolwin[data-tool=exchanges]').offsetHeight,"
+            "document.getElementById('desktop').clientHeight])()")
+        assert win_h < desk_h - 100
+        assert not frame.locator('header.app-nav').is_visible()
+        browser.close()

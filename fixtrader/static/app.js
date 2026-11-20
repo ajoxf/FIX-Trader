@@ -455,6 +455,7 @@ function makeDraggable(el, key) {
   const bar = el.querySelector('.titlebar');
   bar.addEventListener('mousedown', (down) => {
     if (down.target.closest('.winbtn, .algo-switch')) return;
+    if (el.classList.contains('maximized')) return;
     // The title bar takes the keyboard back from any box: the drag's
     // preventDefault would otherwise leave the caret in a quantity field,
     // and the next key typed a digit there instead of acting on the ladder.
@@ -509,7 +510,11 @@ function savePlaces() {
 function makeResizable(el, key) {
   const saved = state.places[key];
   // A size from another screen that would not fit this one is not used.
-  if (saved && saved.w && saved.h && saved.w <= window.innerWidth - 20 &&
+  // A page window keeps only a size the TRADER gave it (`user`): one it
+  // was opened at fits the page it shows, which may have grown since.
+  const pageWin = el.classList.contains('toolwin');
+  if (saved && saved.w && saved.h && (!pageWin || saved.user) &&
+      saved.w <= window.innerWidth - 20 &&
       saved.h <= window.innerHeight - 60) {
     el.style.width = saved.w + 'px';
     el.style.height = saved.h + 'px';
@@ -518,10 +523,12 @@ function makeResizable(el, key) {
   let timer = null;
   new ResizeObserver(() => {
     if (!el.style.width && !el.style.height) return;
+    // Full screen is not a size to remember, nor a size the desk gave it.
+    if (el.classList.contains('maximized') || el.dataset.autosize === '1') return;
     clearTimeout(timer);
     timer = setTimeout(() => {
       state.places[key] = Object.assign({}, state.places[key],
-        { w: el.offsetWidth, h: el.offsetHeight });
+        { w: el.offsetWidth, h: el.offsetHeight, user: true });
       savePlaces();
     }, 250);
   }).observe(el);
@@ -3836,9 +3843,161 @@ function toolWindow(name, href) {
   el.onmousedown = () => { state.focused = key; raise(el); renderTabs(); };
   makeDraggable(el, key);
   document.getElementById('desktop').appendChild(el);
-  if (name === 'add-instrument') floatNew(el, key, 1000, 460);
-  else floatNew(el, key, 1180, 700);
+  const size = TOOL_SIZE[name] || TOOL_SIZE.other;
+  const saved = state.places[key] || {};
+  const own = !!(saved.user && el.style.height);
+  floatNew(el, key, size.w, own ? null : 300);
+  if (!own) {
+    // Sized by the desk until the trader drags the corner (the corner is
+    // the window itself, never a child).
+    el.dataset.autosize = '1';
+    el.addEventListener('mousedown', (e) => {
+      if (e.target === el) delete el.dataset.autosize;
+    });
+    const frame = el.querySelector('iframe');
+    const fit = () => fitTool(el, size.fill);
+    frame.addEventListener('load', () => {
+      fit();
+      // A page fills its tables after it loads.
+      setTimeout(fit, 700);
+      setTimeout(fit, 2000);
+    });
+    fit();
+    // A form that grows (TT's answer arriving) takes the room it needs,
+    // up to the desk; past that the page scrolls.
+    const grow = setInterval(() => {
+      if (!el.isConnected || el.dataset.autosize !== '1') { clearInterval(grow); return; }
+      fit();
+    }, 1000);
+  }
   return el;
+}
+
+/* How wide a page window opens, and whether it takes the desk's height (a
+ * list) or the height of what it shows (a form). */
+const TOOL_SIZE = {
+  'add-instrument': { w: 1000, fill: false },
+  instruments: { w: 1180, fill: true },
+  'order-tests': { w: 1180, fill: true },
+  logs: { w: 1180, fill: true },
+  exchanges: { w: 1060, fill: false },
+  settings: { w: 980, fill: false },
+  connection: { w: 1100, fill: false },
+  other: { w: 1100, fill: false },
+};
+
+/* The height of what a page shows: the bottom of its last block. The page
+ * body is a column stretched to the frame, so the stretched part is read
+ * by its own contents. */
+function pageContentHeight(doc) {
+  const body = doc && doc.body;
+  if (!body) return null;
+  let bottom = 0;
+  Array.from(body.children).forEach((child) => {
+    const cs = doc.defaultView.getComputedStyle(child);
+    if (cs.display === 'none' || cs.position === 'fixed' || child.hidden) return;
+    let b = child.getBoundingClientRect().bottom;
+    if (child.classList.contains('pagebody')) {
+      b = child.getBoundingClientRect().top;
+      Array.from(child.children).forEach((inner) => {
+        b = Math.max(b, inner.getBoundingClientRect().bottom);
+      });
+      b += 14;
+    }
+    bottom = Math.max(bottom, b);
+  });
+  return Math.ceil(bottom + (doc.defaultView.scrollY || 0));
+}
+
+function fitTool(el, fill) {
+  if (el.dataset.autosize !== '1' || el.classList.contains('maximized') ||
+      el.classList.contains('minimised')) return;
+  const deskEl = document.getElementById('desktop');
+  const top = parseFloat(el.style.top) - deskEl.scrollTop || 0;
+  const room = Math.max(200, deskEl.clientHeight - top - 8);
+  let want = room;
+  if (!fill) {
+    let doc = null;
+    try { doc = el.querySelector('iframe').contentDocument; } catch (e) { doc = null; }
+    const content = doc && doc.readyState !== 'loading' ? pageContentHeight(doc) : null;
+    if (!content) return;
+    want = Math.min(room, content + el.querySelector('.titlebar').offsetHeight + 4);
+  }
+  el.style.height = Math.max(160, want) + 'px';
+}
+
+/* Full screen: the window fills the desk, and the same button (or a double
+ * click on its title bar) puts it back where it was. */
+function setMaximized(el, on) {
+  const deskEl = document.getElementById('desktop');
+  if (on === el.classList.contains('maximized')) return;
+  if (on) {
+    el.dataset.premax = JSON.stringify({
+      left: el.style.left, top: el.style.top, width: el.style.width,
+      height: el.style.height, placed: el.classList.contains('placed'),
+    });
+    el.classList.add('maximized', 'placed');
+    fitMaximized(el);
+    raise(el);
+  } else {
+    let prev = {};
+    try { prev = JSON.parse(el.dataset.premax || '{}'); } catch (e) { prev = {}; }
+    el.classList.remove('maximized');
+    ['left', 'top', 'width', 'height'].forEach((k) => { el.style[k] = prev[k] || ''; });
+    if (!prev.placed) el.classList.remove('placed');
+    delete el.dataset.premax;
+  }
+  const btn = el.querySelector('.winbtn.max');
+  if (btn) {
+    btn.innerHTML = on ? '&#10697;' : '&#9974;';
+    btn.title = on ? 'Restore — back to its size and place (or double-click the title bar)'
+      : 'Full screen — fill the desk (or double-click the title bar)';
+  }
+  window.dispatchEvent(new Event('resize'));
+}
+
+function fitMaximized(el) {
+  const deskEl = document.getElementById('desktop');
+  el.style.left = deskEl.scrollLeft + 'px';
+  el.style.top = deskEl.scrollTop + 'px';
+  el.style.width = deskEl.clientWidth + 'px';
+  el.style.height = deskEl.clientHeight + 'px';
+}
+
+/* Every window has the button, next to its close: windows are made in many
+ * places, so it is added as each one reaches the desk. */
+function addMaxButton(el) {
+  if (!el.classList || !el.classList.contains('win')) return;
+  const btns = el.querySelector('.titlebar .winbtns');
+  if (!btns || btns.querySelector('.winbtn.max')) return;
+  const b = document.createElement('button');
+  b.className = 'winbtn max';
+  b.innerHTML = '&#9974;';
+  b.title = 'Full screen — fill the desk (or double-click the title bar)';
+  btns.insertBefore(b, btns.querySelector('.winbtn.close'));
+}
+
+function initMaximize() {
+  const deskEl = document.getElementById('desktop');
+  if (!deskEl) return;
+  deskEl.querySelectorAll('.win').forEach(addMaxButton);
+  new MutationObserver((list) => list.forEach((m) => m.addedNodes.forEach(addMaxButton)))
+    .observe(deskEl, { childList: true });
+  deskEl.addEventListener('click', (e) => {
+    const b = e.target.closest('.winbtn.max');
+    if (!b) return;
+    const el = b.closest('.win');
+    setMaximized(el, !el.classList.contains('maximized'));
+  });
+  deskEl.addEventListener('dblclick', (e) => {
+    const bar = e.target.closest('.titlebar');
+    if (!bar || e.target.closest('.winbtn, .algo-switch, button, input, select')) return;
+    const el = bar.closest('.win');
+    setMaximized(el, !el.classList.contains('maximized'));
+  });
+  window.addEventListener('resize', () => {
+    deskEl.querySelectorAll('.win.maximized').forEach(fitMaximized);
+  });
 }
 
 /* Open (or bring forward) the window for a page of the program. Called by
@@ -4188,5 +4347,6 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
 });
 
+initMaximize();
 tick();
 restartTimer();

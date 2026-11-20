@@ -173,6 +173,12 @@ the drawing wins.
   already on the desk says On desk ✓. One explorer, never a second: the old
   Instruments page is the "Order ticket (advanced)" and its Add instrument
   button opens this window.
+- **A page window opens at the size of what it shows** (`TOOL_SIZE`,
+  `fitTool`): a form is as tall as the form and grows with TT's answer, up
+  to the desk; a list (logs, tests, the ticket) takes the desk's height.
+  Only a size the TRADER dragged is kept (`user`). Every window has a full
+  screen button beside × (and a double click on its title bar): it fills
+  the desk and the same again puts it back — never a remembered size.
 - **Window places from another layout or screen are not trusted**
   (`placeOnDesk`, `LAYOUT_VERSION`): a place off the desk, or a size that
   does not fit, is dropped and the window opens where a new one would.
