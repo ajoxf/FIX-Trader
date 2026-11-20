@@ -44,6 +44,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional
 
+from . import atomicfile
+
 WORKING = ('PENDING', 'NEW', 'PARTIALLY_FILLED', 'REPLACED')
 DONE = ('FILLED', 'CANCELED', 'REJECTED', 'EXPIRED')
 
@@ -249,8 +251,7 @@ class HandChecks:
 
     def all(self) -> Dict[str, Any]:
         try:
-            with open(self.path, encoding='utf-8') as f:
-                return json.load(f)
+            return atomicfile.read_json(self.path, default=None) or {}
         except (OSError, ValueError):
             return {}
 
@@ -264,8 +265,9 @@ class HandChecks:
                                'at': time.strftime('%Y-%m-%d %H:%M:%S')}
             else:
                 checks.pop(sid, None)
-            with open(self.path, 'w', encoding='utf-8') as f:
-                json.dump(checks, f, indent=1)
+            # Written whole, never truncated in place: a read in between saw
+            # an empty file, and the next mark wrote that back over every tick.
+            atomicfile.write_json(self.path, checks, indent=1)
             return checks
 
 
@@ -284,8 +286,7 @@ class OrderTestRun:
 
     def last(self) -> Optional[Dict[str, Any]]:
         try:
-            with open(self.results_path, encoding='utf-8') as f:
-                return json.load(f)
+            return atomicfile.read_json(self.results_path, default=None)
         except (OSError, ValueError):
             return None
 
@@ -360,8 +361,7 @@ class OrderTestRun:
                                                  at=record['finished'])
                 record['latest'] = latest
                 try:
-                    with open(self.results_path, 'w', encoding='utf-8') as f:
-                        json.dump(record, f, indent=1)
+                    atomicfile.write_json(self.results_path, record, indent=1)
                 except OSError:
                     pass
 

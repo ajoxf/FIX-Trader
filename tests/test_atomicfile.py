@@ -77,3 +77,35 @@ def test_a_failure_that_is_not_a_lock_is_not_retried(tmp_path):
         atomicfile.write_text(path, 'hello', replace=broken,
                               sleep=lambda s: None)
     assert attempts['n'] == 1
+
+
+def test_a_read_during_the_windows_swap_waits_for_it(tmp_path):
+    """Windows refuses to open a file for the instant another process
+    renames over it. The web process read status.json then and answered the
+    page with a 500. The read now retries until the swap is done."""
+    from fixtrader import atomicfile
+    path = tmp_path / 'status.json'
+    path.write_text('{"ok": 1}')
+    refusals = {'left': 3}
+
+    def opener(*a, **kw):
+        if refusals['left']:
+            refusals['left'] -= 1
+            raise PermissionError(13, 'Permission denied')
+        return open(*a, **kw)
+    assert atomicfile.read_json(str(path), opener=opener,
+                                sleep=lambda s: None) == {'ok': 1}
+
+
+def test_a_lock_that_never_clears_is_still_raised(tmp_path):
+    """The control: retrying is bounded — a file that stays locked is an
+    error, said, not an empty status."""
+    import pytest
+    from fixtrader import atomicfile
+    path = tmp_path / 'status.json'
+    path.write_text('{"ok": 1}')
+
+    def opener(*a, **kw):
+        raise PermissionError(13, 'Permission denied')
+    with pytest.raises(PermissionError):
+        atomicfile.read_json(str(path), opener=opener, sleep=lambda s: None)

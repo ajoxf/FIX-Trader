@@ -77,7 +77,30 @@ def write_json(path: str, data: Any, indent: int = 2,
                                 default=str) + "\n", durable=durable)
 
 
-def read_json(path: str, default: Any = None) -> Any:
+def read_text(path: str, encoding: str = "utf-8",
+              attempts: int = REPLACE_ATTEMPTS, opener=open,
+              sleep=time.sleep) -> str:
+    """Read `path`, retrying the instant a writer is swapping it in.
+
+    The other side of the rename above: on Windows, while the engine replaces
+    `status.json`, an open of it fails with `PermissionError: [Errno 13]`
+    for a moment. The web process read it then and answered the page with a
+    500. The swap takes microseconds, so short retries clear it; anything
+    else is not a lock and is raised at once.
+    """
+    last = None
+    for attempt in range(max(1, attempts)):
+        try:
+            with opener(path, "r", encoding=encoding) as fh:
+                return fh.read()
+        except PermissionError as e:
+            last = e
+            sleep(REPLACE_BACKOFF_SEC * (attempt + 1))
+    raise last
+
+
+def read_json(path: str, default: Any = None, opener=open,
+              sleep=time.sleep) -> Any:
     """Read, returning `default` when the file is missing.
 
     A file that exists but will not parse RAISES: a corrupt config that reads
@@ -86,8 +109,7 @@ def read_json(path: str, default: Any = None) -> Any:
     """
     if not os.path.exists(path):
         return default
-    with open(path, "r", encoding="utf-8") as fh:
-        text = fh.read()
+    text = read_text(path, opener=opener, sleep=sleep)
     if not text.strip():
         return default
     return json.loads(text)
