@@ -113,3 +113,56 @@ def test_question_mark_lists_the_keys_and_escape_closes_it(server):
         assert not page.locator('#help-modal').is_visible()
         browser.close()
     assert errors == []
+
+
+SPY = """() => {
+  window.__sent = [];
+  window.command = async (action, contract, args) => {
+    window.__sent.push(action);
+    if (action === 'terminal_preview') {
+      return {ok: true, token: 'T1', ticket: {quantity: '5', price: '0.49',
+              order_type: 'LIMIT', tif: 'DAY', account: 'ACC1'}};
+    }
+    if (action === 'terminal_submit') return {ok: true, order_id: 'FTM-1'};
+    return {ok: true};
+  };
+}"""
+
+
+def test_one_click_is_one_order_as_on_the_mt5_desk(server):
+    """BUY: the engine's review (limits, the Algo's lock), then straight to
+    TT — no dialog, as on the MT5 desk."""
+    url, tmp = server
+    manual_desk(tmp)
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin.manual-on')
+        page.evaluate(SPY)
+        page.locator('.ladderwin .ld-buy').click()
+        page.wait_for_function("() => window.__sent.length >= 2")
+        assert page.evaluate("window.__sent") == ['terminal_preview', 'terminal_submit']
+        assert page.locator('#modal').is_hidden()
+        browser.close()
+
+
+def test_ask_before_sending_puts_the_yes_back(server):
+    """The control: with the desk's 'ask before sending' on, the same click
+    stops at the dialog and nothing is submitted until the trader says yes."""
+    url, tmp = server
+    manual_desk(tmp)
+    snap = json.loads((tmp / 'status.json').read_text())
+    snap['engine']['confirm_clicks'] = True
+    (tmp / 'status.json').write_text(json.dumps(snap))
+    errors = []
+    with sync_playwright() as p:
+        browser, page = open_page(p, url, errors)
+        page.wait_for_selector('.ladderwin.manual-on')
+        page.evaluate(SPY)
+        page.locator('.ladderwin .ld-buy').click()
+        page.wait_for_selector('#modal:not(.hidden)')
+        assert page.evaluate("window.__sent") == ['terminal_preview']
+        page.locator('#modal-confirm').click()
+        page.wait_for_function("() => window.__sent.length >= 2")
+        assert page.evaluate("window.__sent") == ['terminal_preview', 'terminal_submit']
+        browser.close()

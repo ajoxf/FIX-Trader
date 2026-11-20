@@ -87,15 +87,21 @@ the drawing wins.
     automatic trading off, i.e. every armed Algo in Signals.
   - Closes and cancels are never refused. A manual order recovered as
     UNKNOWN after a restart is named, not counted as open.
-- **The Algo desk is a ladder and an Algo window per contract**, each with
-  a taskbar button that minimises and restores it. The desk ladder is the
+- **The Algo desk is the MT5 desk: a ladder per contract, and an Algo
+  window while that contract's Algo is ON** (Signals, Paper, UAT/LIVE —
+  gone when Off, as on the MT5 desk), floating at the desk's right edge;
+  each with a taskbar button that minimises and restores it. The desk ladder is the
   MT5 desk's ladder on ONE contract (Work / Bids / Price / Asks / LTQ, the
-  rail, the B/S/W bar, the footer book): it shows the book, our working
+  rail, the B/S/W bar, the footer book; in its title bar the Algo badge,
+  Chart and the gear): it shows the book, our working
   orders and the Algo's levels against it. With its Algo Off or in Signals
   it trades by hand THROUGH `ManualTerminal` — BUY / SELL, or a click in Bids (buys at that
-  price) / Asks (sells), each a `terminal_preview` reviewed in the shared
-  modal before `terminal_submit`, an `FTM-` ticket flagged 77=O with the
-  manual safety limits; never an order path of its own. While its Algo
+  price) / Asks (sells), each a `terminal_preview` (the engine's check:
+  limits, the Algo's lock, the price) then `terminal_submit`, an `FTM-`
+  ticket flagged 77=O with the manual safety limits; never an order path of
+  its own. **One click is one order, as on the MT5 desk**: no dialog unless
+  the desk's `CONFIRM_CLICKS` ("Ladder clicks: ask before sending") is on.
+  While its Algo
   trades, its order controls are off and the lock banner says so
   (ManualTerminal refuses regardless). CLOSE ALL and Close @ LMT always close — a manual position by
   `preview_close` (77=C, capped at the ticket's open fills; a price makes it
@@ -145,17 +151,24 @@ the drawing wins.
   TP / SL manage the result. Keep it that simple.
 - **UAT and PROD are separate venues** and the screen always says which.
 - **ONE desktop, the MT5 desk's** (`/` and `/desk`): the NEXUS name strip,
-  windows on the slate ground, the taskbar with its + menu (Ladders, Algo,
-  Charts, Windows, Program), Sound, Keys, Tidy, Exchanges, ?, KILL ALL.
+  one-line banners, the ladders in a row from the left on the slate
+  ground, floating windows over them (the Algo window and the chart at the
+  right; the Trading Monitor, Market Grid, Analysis and the program's pages
+  large over the desk — closed until opened from the + menu), the taskbar
+  with its + menu (Ladders, Algo, Charts, Windows, Program), Sound, Keys,
+  Tidy, Exchanges, ?, KILL ALL.
   Every page of the program (Instruments & orders, Order tests, Connection,
   Exchanges, FIX logs, Settings) opens as a WINDOW on it — the page itself
   in `?embed=1` (no navigation of its own; a link inside it opens that
   page's window), never a second implementation. The look is ported from
   the MT5 desk's `ladder.css`; the bid is blue, the ask red, everywhere.
-- **The Market Grid trades THROUGH the contract's ladder** (`gridTrade` ->
-  `manualOrder`): Bid buys at the bid, Ask sells at the offer, with the
-  ladder's quantity, reviewed in the shared modal — never an order path of
-  its own; refused, and said, while that contract's Algo trades it.
+- **The Market Grid is the MT5 desk's** (Contract, Bid, Ask, Last, Chg,
+  Incr, Qty, k $, Net, Work, Avg, Open P&L, Mode, TIF, Feed) and trades
+  THROUGH the contract's ladder (`gridTrade` -> `manualOrder`): Bid buys at
+  the bid, Ask sells at the offer, with the ladder's quantity; its Incr,
+  Qty, Mode and TIF write the LADDER's own controls — never an order path
+  or a setting of its own; refused, and said, while that contract's Algo
+  trades it.
 - **A key does what its button does** (B S F X 1-5 0 L M Tab ? Esc, on the
   focused ladder): it presses the ladder's own button, never while a field
   has the keyboard, and the Keys button turns them all off.
@@ -252,9 +265,9 @@ the drawing wins.
   function the engine and the backtest price with. The levels gate is per
   direction (`levels_gate`): a side that cannot price its own levels holds
   only itself.
-- **One settings window per contract**, opened from the Algo window's gear
-  — the ladder has none, so there is never a second door to the same
-  settings. The Algo window's ladder button reopens / restores the ladder.
+- **One settings window per contract**, opened from the ladder's gear or
+  the Algo window's — both open the SAME window, never a second one. A
+  closed ladder comes back from the + menu.
 - **Levels are from BREAK-EVEN and frozen at entry**: the target is
   `profit_target_pct` % of the margin the trader ENTERS (or `atr_target_mult`
   x the ATR at entry), the stop loss `stop_loss_pct` % (or `atr_stop_mult` x

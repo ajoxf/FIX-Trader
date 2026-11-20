@@ -78,3 +78,41 @@
 .tmon .pad{padding:6px 10px}
 
 .tmon .mon-check.mon-closealert{font-weight:700;font-size:13px;border-width:2px;border-color:#b03030}
+
+/* =========================================================================
+ * The desk's Trading Monitor IS the MT5 desk's (ladder.css "the positions
+ * monitor"): plain tabs on the chrome, grey ruled heads right-aligned with
+ * the first column left, mono 11px cells, the note on its parchment strip.
+ * ========================================================================= */
+.win.tmonwin { display: flex; flex-direction: column; overflow: hidden; }
+.tmonwin .tmon { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; background: #d4d0c8; }
+.tmonwin .tmon .mon-tabs { display: flex; flex-wrap: nowrap; gap: 2px; padding: 2px; background: #d4d0c8; border-bottom: 0; }
+.tmonwin .tmon .mon-tabs button { font: 11px "Segoe UI", "DejaVu Sans", Tahoma, sans-serif; border: 1px solid #a9a9a9;
+  background: #f0f0f0; color: #1a1a1a; cursor: pointer; padding: 2px 8px; border-radius: 0; top: 0; }
+.tmonwin .tmon .mon-tabs button.on { background: #fff; font-weight: 600; top: 0; }
+.tmonwin .tmon .mon-tabs sup { color: #b83232; font-size: 9px; }
+.tmonwin .tmon .mon-pane { flex: 1 1 auto; min-height: 0; max-height: none; overflow: auto; background: #d4d0c8; }
+.tmonwin .tmon table.mon { border-collapse: collapse; width: max-content; min-width: 100%; table-layout: auto;
+  background: #d4d0c8; font: 11px Consolas, "DejaVu Sans Mono", monospace; }
+.tmonwin .tmon table.mon th { position: sticky; top: 0; background: #d4d0c8; color: #1a1a1a; border: 1px solid #808080;
+  font: 600 10px "Segoe UI", "DejaVu Sans", Tahoma, sans-serif; padding: 2px 4px; text-align: right; white-space: nowrap; }
+.tmonwin .tmon table.mon td { border: 1px solid #d5d5d5; padding: 1px 4px; font: 11px Consolas, "DejaVu Sans Mono", monospace;
+  text-align: right; white-space: nowrap; vertical-align: middle; }
+.tmonwin .tmon table.mon th:first-child, .tmonwin .tmon table.mon td:first-child { text-align: left; }
+.tmonwin .tmon table.mon tr.detail td { background: #fafafa; font-size: 10px; color: #1a1a1a; text-align: left; }
+.tmonwin .tmon table.mon tfoot td { background: #e4e1db; border-top: 1px solid #808080; }
+.tmonwin .tmon table.mon button { font: 600 12px "Segoe UI", "DejaVu Sans", Tahoma, sans-serif; padding: 3px 12px;
+  border: 1px solid #a9a9a9; border-radius: 2px; background: linear-gradient(#ffffff, #e4e4e4); color: #1a1a1a; }
+.tmonwin .tmon table.mon .empty, .tmonwin .tmon .mon-pane > .empty { font: 11px Consolas, monospace; color: #1a1a1a; padding: 2px 4px; }
+.tmonwin .tmon .up { color: #4a9c5d; font-weight: 600; }
+.tmonwin .tmon .dn { color: #c0504d; font-weight: 600; }
+.tmonwin .tmon .mon-note { padding: 4px 6px; background: #edeae0; border-top: 1px solid #a9a9a9;
+  font: 10px "Segoe UI", "DejaVu Sans", Tahoma, sans-serif; color: #1a1a1a; }
+.tmonwin .tmon .mon-check { margin: 0; padding: 4px 6px; font: 10px "Segoe UI", "DejaVu Sans", Tahoma, sans-serif;
+  border: 0; border-top: 1px solid #a9a9a9; background: #edeae0; color: #1a1a1a; }
+.tmonwin .tmon .mon-check.bad, .tmonwin .tmon .mon-check.mon-closealert { background: #b83232; color: #fff; font-weight: 700; }
+.tmonwin .tmon .mon-tools { padding: 4px 6px; background: #d4d0c8; border-bottom: 1px solid #a9a9a9; font-size: 11px; }
+.tmonwin .tmon .mon-sum { padding: 3px 6px; font: 11px Consolas, monospace; background: #f0f0f0; border-bottom: 1px solid #a9a9a9; }
+.tmonwin .tmon .acct-cards { margin: 2px; }
+.tmonwin .tmon .acct-card { background: #fff; border: 1px solid #a9a9a9; }
+.tmonwin .tmon table.mon button.danger-btn, .tmonwin .tmon .danger-btn { background: linear-gradient(#ffffff, #e4e4e4) !important; color: #1a1a1a !important; border-color: #a9a9a9 !important; }

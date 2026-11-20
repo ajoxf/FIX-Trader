@@ -2259,6 +2259,7 @@ class Engine:
                 'refresh_sec': self.config.settings.get('PRICE_REFRESH_SEC', 0.5),
                 'sound': self.config.settings.get('SOUND_ENABLED', True),
                 'confirm_close': self.config.settings.get('CONFIRM_CLOSE', True),
+                'confirm_clicks': self.config.settings.get('CONFIRM_CLICKS', False),
                 'notify': {
                     'orders': self.config.settings.get('NOTIFY_ORDERS', False),
                     'fills': self.config.settings.get('NOTIFY_FILLS', True),

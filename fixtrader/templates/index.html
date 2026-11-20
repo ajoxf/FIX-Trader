@@ -46,13 +46,13 @@
   <div id="tabs"></div>
   <div class="taskbar-right">
     <span id="link-badge" class="link unknown" title="The venue session, and whether prices are arriving">checking&hellip;</span>
-    <button id="master-toggle" class="tk" title="The one switch that stands every contract's algo down at once">Master: &mdash;</button>
+    <button id="master-toggle" class="tk hidden" title="The one switch that stands every contract's algo down at once">Master: &mdash;</button>
     <button id="execution-toggle" class="tk hidden" title="Where the Algo's orders go: PAPER fills them here; UAT (or LIVE on a live venue) sends them to TT">Orders: &mdash;</button>
     <button id="sound-toggle" class="tk" title="A blip when an order is placed, two rising notes when one fills, a low note when one is cancelled">Sound: on</button>
     <button id="keys-toggle" class="tk" title="Turn the one-key shortcuts (B, S, F, X…) off or on">Keys: on</button>
     <button id="tidy" class="tk" title="Put every window back in a row">Tidy</button>
     <button id="open-exchanges" class="tk" title="Venues, FIX sessions and contracts">Exchanges</button>
-    <button id="text-smaller" class="tk sz" title="Smaller text">A&minus;</button><span id="text-size" class="stat" title="Text size — kept in this browser">Text 100%</span><button id="text-bigger" class="tk sz" title="Bigger text">A+</button>
+    <button id="text-smaller" class="tk sz hidden" title="Smaller text">A&minus;</button><span id="text-size" class="stat hidden" title="Text size — kept in this browser">Text 100%</span><button id="text-bigger" class="tk sz hidden" title="Bigger text">A+</button>
     <span id="loop-stat" class="stat" title="The engine's achieved loop, and how old this snapshot is">&mdash;</span>
     <button id="help" class="tk" title="Keyboard shortcuts (?)">?</button>
     <button id="kill" class="kill" title="Stand every algo down and cancel our working orders">KILL ALL</button>
@@ -80,10 +80,10 @@
 <template id="positions-template">
   <section class="win winwide tmonwin" data-key="__positions__">
     <div class="titlebar">
-      <span class="swatch" style="background:#1c1c1c"></span>
+      <span class="swatch"></span>
       <span class="title">Trading Monitor</span>
       <span class="venue tm-count"></span>
-      <span class="winbtns"><button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button><button class="winbtn close" title="Close this window">&times;</button></span>
+      <span class="winbtns"><button class="winbtn close" title="Close this window">&times;</button></span>
     </div>
     <div class="wbody tmon" style="padding:0">
       <div class="mon-tabs" role="tablist">
@@ -298,12 +298,16 @@
     <div class="titlebar">
       <span class="swatch"></span>
       <span class="title"></span>
-      <span class="winbtns"><button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button><button class="winbtn open-ladder" title="Open this contract's ladder — to trade by hand (MANUAL mode) or read the book"><svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><rect x="1.5" y="1" width="9" height="10" fill="none" stroke="currentColor" stroke-width="1.2"/><line x1="1.5" y1="4.3" x2="10.5" y2="4.3" stroke="currentColor"/><line x1="1.5" y1="7.6" x2="10.5" y2="7.6" stroke="currentColor"/><line x1="6" y1="1" x2="6" y2="11" stroke="currentColor"/></svg></button><button class="winbtn cog" title="This contract's Algo settings">&#9881;</button><button class="winbtn close" title="Close this window">&times;</button></span>
+      <span class="algo-switch aw-switch" title="This contract's Algo — Off (you trade it by hand), Signals (the Algo signals and watches your position's TP/SL — you trade it on the ladder), Paper (the Algo trades it, filled here) or UAT / LIVE (the Algo trades it, orders sent to TT)"><button type="button" class="algo-btn off">ALGO OFF</button><span class="algo-menu" hidden><button type="button" data-algo="OFF">Off — trade by hand</button><button type="button" data-algo="DRY">Signals — the Algo signals, you trade</button><button type="button" data-algo="PAPER">Paper — the Algo trades it, filled here, nothing sent</button><button type="button" data-algo="SEND" class="live">UAT — the Algo trades it, orders sent to TT UAT</button></span></span>
+      <span class="winbtns"><button class="winbtn cog" title="This contract's Algo settings">&#9881;</button><button class="winbtn close" title="Close this window — the Algo keeps its state; the ladder's switch turns it off">&times;</button></span>
     </div>
-    <div class="badgebar">
+    <!-- The contract, under the title, as the MT5 desk shows each leg's
+         account: which instrument, its TT Security ID, the venue — and the
+         Algo's state. -->
+    <div class="aw-legs badgebar">
+      <span class="aw-leg"></span>
       <span class="state">&mdash;</span>
       <span class="dirbadge hidden" title="This contract enters in one direction only; exits are never restricted"></span>
-      <span class="algo-switch" title="This contract's Algo — Off (you trade it by hand), Signals (the Algo signals and watches your position's TP/SL — you trade it on the ladder), Paper (the Algo trades it, filled here) or UAT / LIVE (the Algo trades it, orders sent to TT)"><button type="button" class="algo-btn off">ALGO OFF</button><span class="algo-menu" hidden><button type="button" data-algo="OFF">Off — trade by hand</button><button type="button" data-algo="DRY">Signals — the Algo signals, you trade</button><button type="button" data-algo="PAPER">Paper — the Algo trades it, filled here, nothing sent</button><button type="button" data-algo="SEND" class="live">UAT — the Algo trades it, orders sent to TT UAT</button></span></span>
     </div>
     <div class="wbody aw-body">
       <div class="aw-section aw-signal"></div>
@@ -346,7 +350,8 @@
       <span class="ld-route" title="TT Security ID"></span>
       <span class="ld-ordtype" title="How the Algo sends its orders — set in this contract's settings"></span>
       <span class="algo-switch" title="This contract's Algo — Off (you trade it by hand), Signals (the Algo signals and watches your position's TP/SL — you trade it on the ladder), Paper (the Algo trades it, filled here) or UAT / LIVE (the Algo trades it, orders sent to TT)"><button type="button" class="algo-btn off">ALGO OFF</button><span class="algo-menu" hidden><button type="button" data-algo="OFF">Off — trade by hand</button><button type="button" data-algo="DRY">Signals — the Algo signals, you trade</button><button type="button" data-algo="PAPER">Paper — the Algo trades it, filled here, nothing sent</button><button type="button" data-algo="SEND" class="live">UAT — the Algo trades it, orders sent to TT UAT</button></span></span>
-      <span class="winbtns"><button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button><button class="winbtn close" title="Close this window">&times;</button></span>
+      <button type="button" class="chart-btn" title="Open or close this contract&#8217;s chart: the Algo&#8217;s z with its entry and stop lines, and the price">Chart</button>
+      <span class="winbtns"><button class="winbtn ladder-cog" title="This contract's own settings — the Algo, its exits, costs">&#9881;</button><button class="winbtn close" title="Close this ladder">&times;</button></span>
     </div>
     <div class="ld-quotestrip">
       <span class="ld-netchg" title="The mid against today's open, in price">&mdash;</span>

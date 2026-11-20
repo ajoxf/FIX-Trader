@@ -158,6 +158,13 @@ def server(tmp_path):
     srv.shutdown()
 
 
+def show(page, key):
+    """Open a desk window the way a trader does: from the + menu."""
+    page.click('#add-panel')
+    page.click('#add-menu [data-panel="' + key + '"]')
+    page.wait_for_selector('.win[data-key="' + key + '"]')
+
+
 def open_page(p, url, errors):
     browser = _launch(p)
     page = browser.new_page(viewport={'width': 1400, 'height': 900})
@@ -400,9 +407,11 @@ def test_the_taskbar_minimises_and_restores_a_window(server):
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
         ladder = page.locator('.ladderwin')
-        ladder.locator('.min').click()
-        assert not ladder.is_visible()
+        # As on any taskbar: the window in front goes down on its button.
+        page.locator('.ladderwin .titlebar .title').click()
         tab = page.locator('#tabs .tk', has_text='Iron ore Oct/Nov').first
+        tab.click()
+        assert not ladder.is_visible()
         assert 'minimised' in tab.get_attribute('class')
         page.reload(wait_until='domcontentloaded')
         page.wait_for_selector('.contractwin')
@@ -454,6 +463,7 @@ def test_the_trading_monitor_lists_every_open_position_with_its_tickets(server):
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
+        show(page, '__positions__')
         page.wait_for_selector(POS_ROW)
         tabs = page.locator('.tmonwin .mon-tabs button').all_inner_texts()
         # the MT5 Trading Monitor's own tabs, in its own order
@@ -483,6 +493,7 @@ def test_both_sides_open_is_called_out_and_never_netted_to_flat(server):
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
+        show(page, '__positions__')
         page.wait_for_selector(POS_ROW)
         page.wait_for_timeout(900)
         row = page.locator(POS_ROW).first
@@ -502,6 +513,7 @@ def test_an_unreadable_venue_says_so_instead_of_showing_an_empty_table(server):
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
+        show(page, '__positions__')
         page.wait_for_selector(POS_ROW)
         page.wait_for_timeout(900)
         check = page.locator('.tmonwin .mon-check')
@@ -516,6 +528,7 @@ def test_closing_from_the_trading_monitor_asks_and_then_sends(server):
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
+        show(page, '__positions__')
         page.wait_for_selector(POS_ROW)
         page.locator(POS_ROW + ' .close-pos').first.click()
         page.wait_for_selector('#modal:not(.hidden)')
@@ -716,7 +729,7 @@ def open_analysis(p, url, errors, mode='live'):
     watched. The fixture's rows are live, so these tests say so.
     """
     browser, page = open_page(p, url, errors)
-    page.wait_for_selector('.win[data-key="__analysis__"]')
+    show(page, '__analysis__')
     page.select_option('.an-mode', mode)
     page.wait_for_timeout(400)
     page.wait_for_selector('.an-tiles .tile')
@@ -835,6 +848,8 @@ def test_simulated_trades_are_not_shown_in_a_live_figure(analysis_server):
 def overlap_the_windows(page):
     """Put Analysis squarely on top of Positions, as a desk ends up after a
     few drags."""
+    if not page.locator('.win[data-key="__positions__"]').count():
+        show(page, '__positions__')
     page.evaluate("""() => {
       document.getElementById('desktop').classList.add('free');
       const place = (k, x, y) => {
@@ -844,6 +859,7 @@ def overlap_the_windows(page):
       };
       place('__positions__', 0, 0);
       place('__analysis__', 430, 0);
+      raise(document.querySelector('.win[data-key="__analysis__"]'));
       document.querySelectorAll('.win.contractwin, .win.ladderwin').forEach((e) => {
         e.classList.add('placed'); e.style.left = '0px'; e.style.top = '900px';
       });
@@ -1178,35 +1194,33 @@ def test_the_flash_fades_rather_than_leaving_the_window_coloured(server):
     assert errors == []
 
 
-def test_text_size_and_window_size_are_the_traders_and_are_kept(server):
-    """A- / A+ scale every font on the desk, and a window dragged to a size
-    keeps it across a reload. Neither may lay one window over another."""
+def test_a_fresh_desk_is_the_mt5_desks_and_a_window_size_is_kept(server):
+    """A fresh desk shows what the MT5 desk shows: the ladders in a row, the
+    Algo window of a contract whose Algo is on floating at the right — and
+    the Trading Monitor and Analysis closed, opened from the + menu. A
+    window dragged to a size keeps it across a reload."""
     url, _ = server
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
-        size = lambda: page.evaluate(
-            "parseFloat(getComputedStyle(document.querySelector('.win .title')).fontSize)")
-        before = size()
-        page.locator('#text-bigger').click()
-        page.locator('#text-bigger').click()
-        assert size() > before * 1.1
-        assert 'Text ' in page.inner_text('#text-size')
-
-        # windows in the grid do not overlap, however large the text
-        boxes = [page.locator(f'.win[data-key="{k}"]').bounding_box()
-                 for k in ('fef', '__analysis__')]
-        assert boxes[0]['y'] + boxes[0]['height'] <= boxes[1]['y'] + 1
+        page.wait_for_timeout(600)
+        assert page.locator('.win[data-key="__positions__"]').count() == 0
+        assert page.locator('.win[data-key="__analysis__"]').count() == 0
+        ladder = page.locator('.ladderwin').bounding_box()
+        algo = page.locator('.contractwin').bounding_box()
+        assert ladder['x'] < 10                       # the row starts at the left
+        assert algo['x'] > ladder['x'] + ladder['width']   # floats at the right
+        assert page.locator('#master-toggle').is_hidden()
+        assert page.locator('#text-bigger').is_hidden()
 
         # a size set by the trader survives a reload
         page.evaluate("""() => { const w = document.querySelector('.win[data-key="fef"]');
-                                w.style.width = '520px'; w.style.height = '380px'; }""")
+                                w.style.width = '380px'; w.style.height = '380px'; }""")
         page.wait_for_timeout(600)                  # the observer's debounce
         page.reload(wait_until='domcontentloaded')
         page.wait_for_selector('.win[data-key="fef"]')
         box = page.locator('.win[data-key="fef"]').bounding_box()
-        assert abs(box['width'] - 520) < 2 and abs(box['height'] - 380) < 2
-        assert size() > before * 1.1               # and so does the text size
+        assert abs(box['width'] - 380) < 2 and abs(box['height'] - 380) < 2
         browser.close()
     assert errors == []
 
@@ -1282,28 +1296,31 @@ def test_the_execution_button_says_PAPER_or_LIVE_and_the_waiver(server):
     assert errors == []
 
 
-def test_the_algo_windows_ladder_button_brings_the_ladder_back(server):
-    """No chart button: the Algo window opens its contract's LADDER — from
-    minimised or closed — and there is ONE settings gear per contract, on the
-    Algo window, not a second one on the ladder."""
+def test_the_ladder_carries_chart_and_the_gear_as_on_the_mt5_desk(server):
+    """The MT5 ladder's title bar: the Algo badge, Chart (opens and closes
+    this contract's chart) and the gear — the same ONE settings window the
+    Algo window's gear opens. A closed ladder comes back from the + menu."""
     url, _ = server
     errors = []
     with sync_playwright() as p:
         browser, page = open_page(p, url, errors)
-        win = page.locator('.contractwin')
-        assert win.locator('.winbtn.chart').count() == 0
-        assert page.locator('.ladderwin .cog, .ladderwin .ld-cog').count() == 0
-        assert win.locator('.winbtn.cog').count() == 1
         ladder = page.locator('.ladderwin')
-        ladder.locator('.min').click()
-        assert not ladder.is_visible()
-        win.locator('.open-ladder').click()
-        assert page.locator('.ladderwin').is_visible()
+        assert ladder.locator('.titlebar .chart-btn').count() == 1
+        ladder.locator('.chart-btn').click()
+        page.wait_for_selector('.win.chartwin')
+        assert 'on' in ladder.locator('.chart-btn').get_attribute('class')
+        ladder.locator('.chart-btn').click()
+        page.wait_for_timeout(300)
+        assert page.locator('.win.chartwin').count() == 0
+        ladder.locator('.ladder-cog').click()
+        page.wait_for_selector('.cfgwin')
+        page.locator('.contractwin .winbtn.cog').click()
+        page.wait_for_timeout(300)
+        assert page.locator('.cfgwin').count() == 1          # one window, not two
         page.locator('.ladderwin .close').click()
         page.wait_for_timeout(300)
         assert page.locator('.ladderwin').count() == 0
-        win.locator('.open-ladder').click()
-        page.wait_for_selector('.ladderwin')
+        show(page, '__ladder__fef')
         assert page.locator('.ladderwin').is_visible()
         browser.close()
     assert errors == []

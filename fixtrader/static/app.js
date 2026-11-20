@@ -27,7 +27,10 @@ const state = {
   refresh: 500,
   timer: null,
   sound: true,
-  closed: new Set(JSON.parse(localStorage.getItem(LS + 'closed') || '[]')),
+  // A fresh desk is the MT5 desk's: the ladders. The Trading Monitor and
+  // Analysis open from the + menu.
+  closed: new Set(JSON.parse(localStorage.getItem(LS + 'closed') ||
+    (EMBED === null ? '["__positions__","__analysis__"]' : '[]'))),
   //: Windows minimised to the taskbar. Kept in this browser.
   minimised: new Set(JSON.parse(localStorage.getItem(LS + 'min') || '[]')),
   places: JSON.parse(localStorage.getItem(LS + 'places') || '{}'),
@@ -395,12 +398,15 @@ function windowFor(key) {
   el.querySelector('.close-now').onclick = () => closeNowAsk(key,
     el.querySelector('.title').textContent);
   el.querySelector('.cog').onclick = () => configWindow(key);
-  el.querySelector('.open-ladder').onclick = () => openLadder(key);
   el.querySelector('.aw-bt-run').onclick = () => runBacktest(el, key);
   document.getElementById('desktop').appendChild(el);
-
-  const place = state.places[key];
-  if (place) placeWindow(el, place.x, place.y);
+  // MT5: the Algo window floats at the desk's right edge, stepped so a
+  // second one does not land on the first.
+  if (EMBED === null) floatNew(el, key, 340, null, 'right');
+  else {
+    const place = state.places[key];
+    if (place) placeWindow(el, place.x, place.y);
+  }
   return el;
 }
 
@@ -510,6 +516,8 @@ function renderContract(c) {
   const q = (sel) => el.querySelector(sel);
 
   q('.title').textContent = c.name + ' · Algo';
+  q('.aw-leg').innerHTML = '<b>' + esc(c.symbol || c.key) + '</b> · TT ' +
+    esc(c.security_id || DASH) + ' · ' + esc(c.venue || '');
   q('.state').textContent = c.state;
   q('.state').className = 'state s-' + c.state;
   q('.state').title = c.halted_by ? 'Halted: ' + c.halted_by
@@ -1061,6 +1069,18 @@ function ladderFor(key) {
   el.dataset.key = wkey;
   el.dataset.contract = key;
   wireWindow(el, wkey);
+  // The MT5 ladder's title bar: Chart opens / closes this contract's chart,
+  // the gear its settings (the same ONE settings window as the Algo's).
+  el.querySelector('.chart-btn').onclick = (e) => {
+    e.stopPropagation();
+    if (state.charts.indexOf(key) >= 0) {
+      const cw = document.querySelector('.win[data-key="' + CSS.escape('__chart__' + key) + '"]');
+      if (cw) cw.querySelector('.close').click();
+    } else {
+      openChart(key);
+    }
+  };
+  el.querySelector('.ladder-cog').onclick = (e) => { e.stopPropagation(); configWindow(key); };
   const pref = ladderPref(key);
   el.querySelector('.ld-lockscroll').checked = !!pref.lock;
   el.querySelector('.ld-filter').checked = !!pref.filter;
@@ -1243,7 +1263,11 @@ async function manualOrder(el, key, side, price) {
   if (!review || !review.ok || !review.token) return;      // refused: already toasted
   const t = review.ticket || {};
   const dec = d.c.decimals === undefined ? 4 : d.c.decimals;
-  const ok = await ask(side + ' ' + t.quantity + ' ' + (d.c.name || key) + ' — send to TT?',
+  // ONE CLICK IS ONE ORDER, as on the MT5 desk: the engine has already
+  // checked the ticket (limits, the Algo's lock, the price) in its review;
+  // the trader's yes is asked only when the desk's settings say so.
+  const askFirst = !!(d.engine || {}).confirm_clicks;
+  const ok = !askFirst || await ask(side + ' ' + t.quantity + ' ' + (d.c.name || key) + ' — send to TT?',
     side + ' ' + t.quantity + ' @ ' + (t.order_type === 'MARKET' ? 'MARKET' : num(Number(t.price), dec) +
     ' LIMIT') + ' · ' + t.tif + ' · account ' + t.account + ' · Open/Close: OPEN (77=O). ' +
     'A manual ticket (FTM-), sent to TT ' + ((d.engine || {}).environment || '') +
@@ -1389,6 +1413,7 @@ function renderLadder(c, engine) {
   el.querySelector('.ld-o').textContent = num(hlo.open, d);
   el.querySelector('.ld-lt').textContent = num(c.last_trade, d);
 
+  el.querySelector('.chart-btn').classList.toggle('on', state.charts.indexOf(c.key) >= 0);
   const lock = el.querySelector('.ld-lock');
   const lockText = el.querySelector('.ld-lock-text');
   const word = ALGO_WORDS[algoState] || algoState;
@@ -1415,7 +1440,10 @@ function renderLadder(c, engine) {
     lockText.textContent = 'Manual orders are off: ' + c.manual_block;
     lock.title = '';
   } else if (manualOn) {
-    lock.className = 'ld-lock manual';
+    // As on the MT5 desk: a ladder the hand trades carries no banner — the
+    // rail's own line says how a click goes out. The words stay as the
+    // banner's text (hidden) for anything that reads them.
+    lock.className = 'ld-lock manual hidden';
     lockText.textContent = (algoState === 'DRY' ? 'SIGNALS — the Algo signals and watches your TP/SL, you trade. '
       : 'ALGO OFF — you trade. ') + 'BUY / SELL, or click a price: Bids buys, Asks sells.';
     lock.title = 'Every order is reviewed before it goes to TT: a manual ticket (FTM-), with ' +
@@ -1748,9 +1776,15 @@ function positionsWindow() {
   const tpl = document.getElementById('positions-template');
   el = tpl.content.firstElementChild.cloneNode(true);
   wireWindow(el, '__positions__');
-  document.getElementById('desktop').prepend(el);
-  const place = state.places['__positions__'];
-  if (place) placeWindow(el, place.x, place.y);
+  document.getElementById('desktop').appendChild(el);
+  // MT5: the Trading Monitor opens large over the desk, beside the ladders.
+  if (EMBED === null) {
+    const dk = document.getElementById('desktop');
+    floatNew(el, '__positions__', dk.clientWidth - 80, dk.clientHeight - 50);
+  } else {
+    const place = state.places['__positions__'];
+    if (place) placeWindow(el, place.x, place.y);
+  }
   tradingMonitor = TradingMonitor(el.querySelector('.tmon'), {
     storageKey: LS + 'monitor.tab',
     // The desk's own command(): it toasts a refusal itself, so the monitor
@@ -1819,8 +1853,13 @@ function analysisWindow() {
   el.onmousedown = () => raise(el);
   makeDraggable(el, '__analysis__');
   document.getElementById('desktop').appendChild(el);
-  const place = state.places['__analysis__'];
-  if (place) placeWindow(el, place.x, place.y);
+  if (EMBED === null) {
+    const dk = document.getElementById('desktop');
+    floatNew(el, '__analysis__', dk.clientWidth - 100, dk.clientHeight - 70);
+  } else {
+    const place = state.places['__analysis__'];
+    if (place) placeWindow(el, place.x, place.y);
+  }
   return el;
 }
 
@@ -2857,7 +2896,10 @@ async function tick() {
     window.__lastSnapshot = snap;
     const seen = new Set(['__positions__', '__analysis__']);
     (snap.contracts || []).filter((c) => EMBED === null || c.key === EMBED).forEach((c) => {
-      seen.add(c.key);
+      // The Algo window, as on the MT5 desk: there while the contract's
+      // Algo is on (Signals, Paper or sending), gone when it is Off.
+      const algoOn = EMBED !== null || (c.algo_state && c.algo_state !== 'OFF');
+      if (algoOn) seen.add(c.key);
       // A settings panel belongs to its contract and outlives a poll. The
       // sweep below removes windows for contracts that are gone; it must not
       // remove the panel of one that is still here.
@@ -2865,7 +2907,7 @@ async function tick() {
       seen.add('__ladder__' + c.key);
       // The ladder first: on a fresh desk it sits to the LEFT of its Algo.
       renderLadder(c, snap.engine);
-      renderContract(c);
+      if (algoOn) renderContract(c);
     });
     renderPositions(snap);
     if (EMBED === null) {
@@ -2934,35 +2976,33 @@ function setGridOpen(on) {
 
 const GRID_COLS = [
   ['Contract', 'the contract — click to open its ladder'],
-  ['Bid', 'the best bid — click to BUY at it (through the ladder)'],
-  ['Ask', 'the best offer — click to SELL at it (through the ladder)'],
-  ['Sprd', 'ask − bid'],
-  ['Mid', 'the mid of the book: the price the Algo reads'],
-  ['z', 'the Algo\'s z at the mid'],
-  ['H', 'today\'s high mid'],
-  ['L', 'today\'s low mid'],
-  ['Net', 'what is open: the Algo\'s position and your hand positions, + long / − short'],
+  ['Bid', 'the best bid — click to BUY at it, through the ladder'],
+  ['Ask', 'the best offer — click to SELL at it, through the ladder'],
+  ['Last', 'TT\'s last trade — shown, never used as a price'],
+  ['Chg', 'the mid against today\'s open'],
+  ['Incr', 'one row of the ladder; blank is the tick'],
+  ['Qty', 'the quantity a click sends — the ladder\'s'],
+  ['k $', 'what a move of 1.0 in the price is worth on one contract'],
+  ['Net', 'what is open: the Algo\'s and your hand positions, + long / − short'],
+  ['Work', 'working orders: buys / sells'],
   ['Avg', 'the average entry of what is open'],
   ['Open P&L', 'marked at the price each position would close at'],
-  ['Work', 'working orders: the Algo\'s and yours'],
-  ['Today', 'the Algo\'s P&L today, and its trades'],
-  ['Algo', 'this contract\'s Algo switch'],
+  ['Mode', 'how a ladder click goes out — the ladder\'s'],
+  ['TIF', 'time in force of a ladder order'],
   ['Feed', 'whether prices are arriving, and why not'],
-  ['Why', 'what holds the Algo\'s next entry'],
+  ['', ''],
 ];
 
 function gridWindow() {
   let el = document.querySelector('.win[data-key="__grid__"]');
   if (el) return el;
   el = document.createElement('section');
-  el.className = 'win gridwin';
+  el.className = 'win gridwin market-grid';
   el.dataset.key = '__grid__';
   el.innerHTML = '<div class="titlebar"><span class="swatch"></span>' +
     '<span class="title">Market Grid</span><span class="winbtns">' +
-    '<button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button>' +
     '<button class="winbtn close" title="Close this window">&times;</button></span></div>' +
-    '<div class="mg-body"><table class="grid mg"><thead><tr></tr></thead><tbody></tbody></table></div>' +
-    '<div class="wfoot"><span>Click Bid to buy at the bid, Ask to sell at the offer — each reviewed before it is sent, with the ladder\'s quantity.</span></div>';
+    '<div class="mg-body"><table class="mg"><thead><tr></tr></thead><tbody></tbody></table></div>';
   const head = el.querySelector('thead tr');
   GRID_COLS.forEach(([name, title]) => {
     const th = document.createElement('th');
@@ -2970,12 +3010,12 @@ function gridWindow() {
     head.appendChild(th);
   });
   el.querySelector('.close').onclick = () => { setGridOpen(false); el.remove(); renderTabs(); };
-  el.querySelector('.min').onclick = () => setMinimised(el, true);
   if (state.minimised.has('__grid__')) el.classList.add('minimised');
   el.onmousedown = () => { state.focused = '__grid__'; raise(el); };
   makeDraggable(el, '__grid__');
   document.getElementById('desktop').appendChild(el);
-  floatNew(el, '__grid__', 1180, 260);
+  { const dk = document.getElementById('desktop');
+    floatNew(el, '__grid__', dk.clientWidth - 90, dk.clientHeight - 60); }
   return el;
 }
 
@@ -3010,6 +3050,18 @@ async function gridTrade(key, side, price) {
   return manualOrder(el, key, side, price);
 }
 
+/* A grid control writes the LADDER's own control, so the two can never
+ * disagree: the ladder is where the order is built. */
+function gridToLadder(key, selector, value) {
+  const el = document.querySelector('.win[data-key="__ladder__' + CSS.escape(key) + '"]');
+  if (!el) return;
+  el.querySelectorAll(selector).forEach((box) => {
+    box.value = value;
+    box.dispatchEvent(new Event('input'));
+    box.dispatchEvent(new Event('change'));
+  });
+}
+
 function renderGrid(snap) {
   if (!state.gridOpen) return;
   const el = gridWindow();
@@ -3021,10 +3073,11 @@ function renderGrid(snap) {
     ['PENDING', 'NEW', 'PARTIALLY_FILLED', 'REPLACED'].includes(o.status));
   if (!contracts.length) {
     body.innerHTML = '<tr><td colspan="' + GRID_COLS.length + '" class="mg-none">no contracts — add one on the Exchanges page</td></tr>';
+    body.dataset.keys = '';
     return;
   }
   // Rebuilt only when the set of contracts changes: a row rebuilt twice a
-  // second loses the click that was on its way to it.
+  // second loses the click — or the figure being typed — on its way to it.
   const keys = contracts.map((c) => c.key).join('|');
   if (body.dataset.keys !== keys) {
     body.dataset.keys = keys;
@@ -3032,14 +3085,21 @@ function renderGrid(snap) {
     contracts.forEach((c) => {
       const tr = document.createElement('tr');
       tr.dataset.key = c.key;
-      GRID_COLS.forEach(() => tr.appendChild(document.createElement('td')));
-      const [name, bid, ask] = tr.children;
-      name.className = 'mg-name'; name.title = 'open the ladder';
-      name.onclick = () => openLadder(c.key);
-      bid.className = 'mg-bid'; bid.title = 'BUY at the bid';
-      bid.onclick = () => gridTrade(c.key, 'BUY', (ladderData[c.key] || { c }).c.market.bid);
-      ask.className = 'mg-ask'; ask.title = 'SELL at the offer';
-      ask.onclick = () => gridTrade(c.key, 'SELL', (ladderData[c.key] || { c }).c.market.ask);
+      tr.innerHTML = '<td class="contract mg-name" title="Open this ladder"></td>' +
+        '<td class="bid mg-bid"></td><td class="ask mg-ask"></td><td></td><td></td>' +
+        '<td><input class="incr" type="number" step="any" min="0"></td>' +
+        '<td><input class="qty" type="number" step="any" min="0"></td>' +
+        '<td></td><td></td><td></td><td></td><td></td>' +
+        '<td><select class="mode"><option value="LIMIT">LIMIT</option><option value="MARKET">MARKET</option></select></td>' +
+        '<td><select class="tif"><option value="DAY">DAY</option><option value="GTC">GTC</option></select></td>' +
+        '<td class="mg-feed"></td><td class="reason mg-why"></td>';
+      tr.querySelector('.mg-name').onclick = () => openLadder(c.key);
+      tr.querySelector('.mg-bid').onclick = () => gridTrade(c.key, 'BUY', (ladderData[c.key] || { c }).c.market.bid);
+      tr.querySelector('.mg-ask').onclick = () => gridTrade(c.key, 'SELL', (ladderData[c.key] || { c }).c.market.ask);
+      tr.querySelector('.incr').onchange = (e) => gridToLadder(c.key, '.ld-increment', e.target.value);
+      tr.querySelector('.qty').onchange = (e) => gridToLadder(c.key, '.ld-qtybox', e.target.value);
+      tr.querySelector('.mode').onchange = (e) => gridToLadder(c.key, '.ld-ot', e.target.value);
+      tr.querySelector('.tif').onchange = (e) => gridToLadder(c.key, '.ld-tif', e.target.value);
       body.appendChild(tr);
     });
   }
@@ -3064,41 +3124,53 @@ function renderGrid(snap) {
       if (has(p.entry_price)) { cost += Number(p.entry_price) * q; qtyAll += q; }
       if (has(p.floating_pnl)) pnl = (pnl || 0) + Number(p.floating_pnl);
     });
-    const work = (c.orders || []).length + working.filter((o) =>
-      o.ticket && sid && String(o.ticket.security_id) === sid).length;
+    const ours = (c.orders || []);
+    const theirs = working.filter((o) => o.ticket && sid && String(o.ticket.security_id) === sid);
+    const buys = ours.filter((o) => o.side === 'BUY').length + theirs.filter((o) => o.ticket.side === 'BUY').length;
+    const sells = ours.filter((o) => o.side === 'SELL').length + theirs.filter((o) => o.ticket.side === 'SELL').length;
     const hlo = c.hlo || {};
-    const z = (c.stats || {}).z;
+    const chg = has(m.mid) && has(hlo.open) ? m.mid - hlo.open : null;
     const md = c.md || null;
     const feed = c.feed || {};
-    const feedWord = md && !['LIVE', 'ONE_SIDED'].includes(md.state) ? md.state
-      : feed.stale ? 'STALE' : has(m.bid) || has(m.ask) ? 'LIVE' : '—';
-    const algo = c.algo || {};
-    const why = c.manual_block ? '' : (algo.blocked || (c.filters || {}).blocked_by || '');
+    const feedWord = md && !['LIVE', 'ONE_SIDED'].includes(md.state)
+      ? ({ REFUSED: 'REFUSED by TT', NO_ANSWER: 'NO ANSWER from TT', EMPTY: 'NO QUOTES',
+        WAITING: 'requesting…', NO_SESSION: 'MD not connected', NOT_REQUESTED: 'not requested',
+        NO_ID: 'no Security ID' })[md.state] || md.state
+      : feed.stale ? 'STALE (' + (has(feed.age_sec) ? feed.age_sec + 's' : 'no quote') + ')'
+      : has(feed.age_sec) ? 'OK (quote ' + feed.age_sec + 's)' : 'no quote yet';
+    const why = c.manual_block ? '' : ((c.algo || {}).blocked || (c.filters || {}).blocked_by || '');
     const cells = tr.children;
     const put = (i, text, cls, title) => {
       cells[i].textContent = text;
       if (cls !== undefined) cells[i].className = cls;
       if (title !== undefined) cells[i].title = title;
     };
-    put(0, c.name || c.key, 'mg-name', (c.symbol || '') + ' — open the ladder');
-    put(1, num(m.bid, d), 'mg-bid' + (feed.stale ? ' stale' : ''));
-    put(2, num(m.ask, d), 'mg-ask' + (feed.stale ? ' stale' : ''));
-    put(3, has(m.bid) && has(m.ask) ? (m.ask - m.bid).toFixed(d) : DASH, 'num');
-    put(4, num(m.mid, d), 'num');
-    put(5, signed(z, 2), 'num' + (has(z) && Math.abs(z) >= ((c.settings || {}).entry_threshold || 99) ? ' mg-hot' : ''));
-    put(6, num(hlo.high, d), 'num');
-    put(7, num(hlo.low, d), 'num');
-    put(8, net === 0 && !(pos && pos.side) && !mine.length ? DASH : (net > 0 ? '+' : '') + net,
-      'num ' + (net > 0 ? 'mg-long' : net < 0 ? 'mg-short' : ''));
-    put(9, qtyAll ? num(cost / qtyAll, d) : DASH, 'num');
-    put(10, pnl === null ? DASH : money(pnl), 'num ' + (pnl > 0 ? 'up' : pnl < 0 ? 'down' : ''));
-    put(11, work ? String(work) : DASH, 'num');
-    put(12, money(c.pnl_today) + ' · ' + (c.trades_today || 0), 'num ' + (c.pnl_today > 0 ? 'up' : c.pnl_today < 0 ? 'down' : ''));
-    const st = c.algo_state || 'OFF';
-    put(13, 'ALGO ' + (st === 'DRY' ? 'SIGNALS' : st === 'LIVE' ? sendWord() : st), 'mg-algo s-' + st);
-    put(14, feedWord, 'mg-feed ' + (feedWord === 'LIVE' ? 'ok' : feedWord === 'WAITING' ? 'warn' : 'bad'),
+    put(0, c.name || c.key);
+    put(1, num(m.bid, d), 'bid mg-bid' + (feed.stale ? ' stale' : ''), 'BUY at ' + num(m.bid, d) + ' — through the ladder');
+    put(2, num(m.ask, d), 'ask mg-ask' + (feed.stale ? ' stale' : ''), 'SELL at ' + num(m.ask, d) + ' — through the ladder');
+    put(3, num(c.last_trade, d));
+    put(4, chg === null ? DASH : (chg > 0 ? '+' : '') + chg.toFixed(d));
+    const lad = document.querySelector('.win[data-key="__ladder__' + CSS.escape(c.key) + '"]');
+    const sync = (cls, ladderSel, fallback) => {
+      const box = tr.querySelector(cls);
+      if (document.activeElement === box) return;
+      const src = lad && lad.querySelector(ladderSel);
+      box.value = src ? src.value : fallback;
+      box.disabled = !!(src && src.disabled);
+    };
+    sync('.incr', '.ld-increment', '');
+    sync('.qty', '.ld-qtybox.buy', '');
+    sync('.mode', '.ld-ot', 'LIMIT');
+    sync('.tif', '.ld-tif', 'DAY');
+    put(7, c.tick_value && c.tick_size ? money(c.tick_value / c.tick_size) : DASH);
+    put(8, net === 0 && !(pos && pos.side) && !mine.length ? '0' : (net > 0 ? '+' : '') + net,
+      net > 0 ? 'mg-long' : net < 0 ? 'mg-short' : '');
+    put(9, buys + '/' + sells);
+    put(10, qtyAll ? num(cost / qtyAll, d) : DASH);
+    put(11, pnl === null ? DASH : money(pnl), pnl > 0 ? 'up' : pnl < 0 ? 'down' : '');
+    put(14, feedWord, 'mg-feed ' + (feedWord.indexOf('OK') === 0 ? 'ok' : md && md.state === 'WAITING' ? 'warn' : 'bad'),
       md ? md.text : '');
-    put(15, why || '', 'mg-why', why || '');
+    put(15, why || '', 'reason mg-why', why || '');
   });
 }
 
@@ -3284,7 +3356,6 @@ function chartWindow(key) {
   el.dataset.contract = key;
   el.innerHTML = '<div class="titlebar"><span class="swatch"></span>' +
     '<span class="title"></span><span class="winbtns">' +
-    '<button class="winbtn min" title="Minimise — the taskbar button brings it back">&#8211;</button>' +
     '<button class="winbtn close" title="Close the chart">&times;</button></span></div>' +
     '<div class="cw-body"><div class="cw-bar">' +
     '<span class="cw-tfs" title="Candle size. The Algo reads its own timeframe; the others are for looking.">' +
@@ -3308,9 +3379,9 @@ function chartWindow(key) {
     state.charts = state.charts.filter((k) => k !== key);
     saveCharts();
     el.remove();
+    syncChartBtn(key);
     renderTabs();
   };
-  el.querySelector('.min').onclick = () => setMinimised(el, true);
   if (state.minimised.has(wkey)) el.classList.add('minimised');
   el.onmousedown = () => { state.focused = wkey; raise(el); };
   let tf = 15, shown = CHART_SHOWN;
@@ -3351,14 +3422,22 @@ function chartWindow(key) {
   });
   makeDraggable(el, wkey);
   document.getElementById('desktop').appendChild(el);
-  floatNew(el, wkey, 780, 500);
+  floatNew(el, wkey, 660, 520, 'right');
   if (window.ResizeObserver) new ResizeObserver(() => drawChart(key)).observe(el);
   loadChartHistory(key, true);
   return el;
 }
 
+/* The ladder's Chart button reads whether its chart is open — at once, not
+ * on the next poll. */
+function syncChartBtn(key) {
+  const b = document.querySelector('.win[data-key="__ladder__' + CSS.escape(key) + '"] .chart-btn');
+  if (b) b.classList.toggle('on', state.charts.indexOf(key) >= 0);
+}
+
 function openChart(key) {
   if (state.charts.indexOf(key) < 0) { state.charts.push(key); saveCharts(); }
+  syncChartBtn(key);
   const el = chartWindow(key);
   if (window.__lastSnapshot) renderCharts(window.__lastSnapshot);
   if (el.classList.contains('minimised')) setMinimised(el, false);
@@ -3660,22 +3739,31 @@ function freezeOthers(el) {
 
 /* A window that FLOATS when it first opens, as the MT5 desk's tool windows
  * do: over the ladders, cascaded, never pushing them about. */
-function floatNew(el, key, w, h) {
+function floatNew(el, key, w, h, side) {
   const place = state.places[key];
   if (place && place.x !== undefined) {
     placeWindow(el, place.x, place.y);
     return;
   }
-  freezeOthers(el);
   const deskEl = document.getElementById('desktop');
-  const n = document.querySelectorAll('.win.floated').length;
-  const width = Math.min(w, deskEl.clientWidth - 20);
-  const height = Math.min(h, deskEl.clientHeight - 20);
-  const x = Math.max(4, Math.min(40 + n * 26, deskEl.clientWidth - width - 4));
-  const y = Math.max(4, Math.min(24 + n * 26, deskEl.clientHeight - height - 4));
-  placeWindow(el, x + deskEl.scrollLeft, y + deskEl.scrollTop);
+  const n = document.querySelectorAll('.win.floated' + (side === 'right' ? '.on-right' : ':not(.on-right)')).length;
+  const width = Math.min(w, deskEl.clientWidth - 16);
+  const height = h === null ? null : Math.min(h, deskEl.clientHeight - 16);
+  let x, y;
+  if (side === 'right') {
+    x = Math.max(8, deskEl.scrollLeft + deskEl.clientWidth - width - 12 - n * 24);
+    y = Math.min(30 + n * 24, Math.max(deskEl.clientHeight - (height || 300) - 8, 0));
+    el.classList.add('on-right');
+  } else {
+    x = Math.max(4, Math.min(70 + n * 24, deskEl.clientWidth - width - 4)) + deskEl.scrollLeft;
+    y = Math.max(4, Math.min(26 + n * 24, deskEl.clientHeight - (height || 300) - 4));
+  }
+  placeWindow(el, x, y);
   el.classList.add('floated');
-  if (!el.style.width) { el.style.width = width + 'px'; el.style.height = height + 'px'; }
+  if (!el.style.width) {
+    el.style.width = width + 'px';
+    if (height !== null) el.style.height = height + 'px';
+  }
   state.places[key] = Object.assign({}, state.places[key],
     { x: parseFloat(el.style.left), y: parseFloat(el.style.top) });
   savePlaces();
@@ -3721,7 +3809,7 @@ function toolWindow(name, href) {
   el.onmousedown = () => { state.focused = key; raise(el); renderTabs(); };
   makeDraggable(el, key);
   document.getElementById('desktop').appendChild(el);
-  floatNew(el, key, 1180, 680);
+  floatNew(el, key, 1180, 700);
   return el;
 }
 

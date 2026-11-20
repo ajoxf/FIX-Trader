@@ -61,6 +61,11 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     #: missed once.
     'ALGO_MASTER_ENABLED': True,
     'CONFIRM_CLOSE': True,
+    #: Ladder, Market Grid and key clicks: OFF (default) — one click is one
+    #: order, as on the MT5 desk; the engine's checks (ManualTerminal's
+    #: review: limits, the Algo's lock) still run. ON — each is shown for a
+    #: yes before it goes to TT.
+    'CONFIRM_CLICKS': False,
     'SOUND_ENABLED': True,
     #: 'ask' / 'always' / 'never'. An unanswered prompt means NO.
     'SHUTDOWN_CLOSE_POSITIONS': 'ask',
