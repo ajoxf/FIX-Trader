@@ -76,53 +76,33 @@ def server(tmp_path):
 
 
 def test_an_inter_commodity_spread_is_found_by_its_tt_product(server):
+    """The Add instrument window, on TT's catalogue: a product typed the way
+    a person types it (`cl bz`) finds TT's `CL|BZ`, the legs in either order
+    are one product, and the rows sort by the legs' months."""
     errors = []
     with sync_playwright() as p:
         browser = _launch(p)
         page = browser.new_page(viewport={'width': 1400, 'height': 900})
         page.on('pageerror', lambda e: errors.append(str(e)))
-        page.goto(server + 'instruments', wait_until='domcontentloaded')
-        page.wait_for_function(
-            "document.querySelector('#explore-open') && window.fetch")
-        page.wait_for_timeout(1500)            # the first snapshot poll
-        page.click('#explore-open')
-        page.select_option('#explore-type', 'MLEG')
-        # typed the way a person types it, not the way TT spells it
-        page.fill('#explore-product-input', 'cl bz')
-        page.wait_for_function(
-            "document.querySelectorAll('#explore-contract option').length === 2")
-        products = page.eval_on_selector_all(
-            '#explore-product option', 'o => o.map(x => x.value)')
-        assert products == ['CL|BZ']
-        names = page.eval_on_selector_all(
-            '#explore-contract option', 'o => o.map(x => x.textContent)')
+        page.goto(server + 'add-instrument', wait_until='domcontentloaded')
+        page.wait_for_function("document.querySelector('#ai-product') && window.fetch")
+        page.select_option('#ai-exchange', 'CME')
+        page.select_option('#ai-type', 'MLEG')
+        page.fill('#ai-product', 'cl bz')
+        page.wait_for_function("document.querySelectorAll('#ai-rows tr').length === 2", timeout=10000)
+        names = page.eval_on_selector_all('#ai-rows td.nm', 'o => o.map(x => x.textContent)')
         assert names == ['+1xCL Nov26:-1xBZ Nov26', '+1xCL Nov26:-1xBZ Dec26']
-
+        assert 'Inter-commodity' in page.inner_text('#ai-rows')
         # the legs in the other order find the same product
-        page.fill('#explore-product-input', 'bz|cl')
-        page.wait_for_function(
-            "document.querySelectorAll('#explore-contract option').length === 2")
-        # a product that is not cached leaves every cached product visible
-        page.fill('#explore-product-input', 'HO|CL')
-        page.wait_for_function(
-            "document.querySelectorAll('#explore-product option').length === 2")
-        assert 'HO|CL' in page.inner_text('#explore-status')
-        page.fill('#explore-product-input', 'cl bz')
-        page.wait_for_function(
-            "document.querySelectorAll('#explore-contract option').length === 2")
-
-        page.fill('#explore-contract-filter', 'dec26')
-        page.wait_for_function(
-            "document.querySelectorAll('#explore-contract option').length === 1")
-        page.select_option('#explore-contract', index=0)
-        assert 'Inter-commodity' in page.inner_text('#explore-detail')
-
-        # Add to algo desk FILLS the contract form; it saves nothing.
-        page.click('#explore-algo')
-        page.wait_for_selector('#contract-form-card:not([hidden])')
-        assert page.input_value('#c-name') == '+1xCL Nov26:-1xBZ Dec26'
-        assert page.input_value('#c-symbol') == 'CL'
-        assert page.input_value('#c-security_exchange') == 'CME'
-        assert page.input_value('#c-tick_value') == '10.00'
+        page.fill('#ai-product', 'bz|cl')
+        page.wait_for_function("document.querySelectorAll('#ai-rows tr').length === 2")
+        # a product not loaded says to search for it
+        page.fill('#ai-product', 'HO|CL')
+        page.wait_for_function("document.querySelectorAll('#ai-rows tr').length === 0")
+        assert 'Search TT for HO|CL' in page.inner_text('#ai-status')
+        # the filter narrows
+        page.fill('#ai-product', 'CL|BZ')
+        page.fill('#ai-filter', 'dec26')
+        page.wait_for_function("document.querySelectorAll('#ai-rows tr').length === 1")
         browser.close()
     assert errors == []

@@ -32,8 +32,15 @@ def test_the_landing_page_is_the_one_desk_and_connection_is_a_page_on_it(tmp_pat
     assert b'contract-template' in client.get('/desk').data
     instruments = client.get('/instruments')
     assert instruments.status_code == 200
-    for element in ('explore-dialog', 'explore-exchange', 'explore-type', 'explore-product', 'explore-contract', 'review-dialog'):
-        assert ('id="' + element + '"').encode() in instruments.data
+    # Adding a contract is ONE place, the Add instrument window: the old page
+    # points to it and keeps its order ticket.
+    assert b'id="explore-open"' in instruments.data and b'Add instrument' in instruments.data
+    assert b'id="explore-dialog"' not in instruments.data
+    assert b'id="review-dialog"' in instruments.data
+    add = client.get('/add-instrument')
+    assert add.status_code == 200
+    for element in ('ai-exchange', 'ai-type', 'ai-product', 'ai-expiry', 'ai-search', 'ai-rows'):
+        assert ('id="' + element + '"').encode() in add.data
     # The market ladders and the account section left this page: the desk
     # has the ladder, the Account tab has the positions and P&L.
     for gone in ('ladders', 'account-summary', 'floating-pnl', 'realized-pnl'):

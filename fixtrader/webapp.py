@@ -95,6 +95,10 @@ def create_app(config_path: str = "config.json",
     def desk():
         return render_template('index.html', asset_version=ASSET_VERSION)
 
+    @app.get('/add-instrument')
+    def add_instrument_page():
+        return render_template('add_instrument.html', asset_version=ASSET_VERSION)
+
     @app.get('/api/instruments')
     def api_instruments():
         """The search answers and the catalogue the engine wrote beside the

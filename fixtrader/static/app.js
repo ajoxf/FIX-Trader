@@ -2966,6 +2966,7 @@ async function tick() {
     });
     renderTabs();
     revealPending();
+    addedSetupPending(snap);
   } catch (e) {
     const banner = document.getElementById('engine-banner');
     banner.classList.remove('hidden');
@@ -3721,8 +3722,10 @@ function renderCharts(snap) {
  * same page, with the same commands, never a second implementation.
  */
 const TOOLS = {
-  instruments: { title: 'Instruments & orders', url: '/instruments',
-                 note: 'find a contract, the watchlist, manual tickets' },
+  'add-instrument': { title: 'Add instrument', url: '/add-instrument',
+                      note: 'find a contract on TT and put it on the desk' },
+  instruments: { title: 'Order ticket (advanced)', url: '/instruments',
+                 note: 'STOP / GTD / iceberg tickets, the watchlist' },
   'order-tests': { title: 'Order tests', url: '/order-tests',
                    note: 'every order path, run on TT UAT' },
   connection: { title: 'Connection', url: '/connection',
@@ -3833,7 +3836,8 @@ function toolWindow(name, href) {
   el.onmousedown = () => { state.focused = key; raise(el); renderTabs(); };
   makeDraggable(el, key);
   document.getElementById('desktop').appendChild(el);
-  floatNew(el, key, 1180, 700);
+  if (name === 'add-instrument') floatNew(el, key, 1000, 460);
+  else floatNew(el, key, 1180, 700);
   return el;
 }
 
@@ -3858,6 +3862,25 @@ window.closeTool = (name) => {
   const el = document.querySelector('.win.toolwin[data-tool="' + name + '"]');
   if (el) el.querySelector('.close').click();
 };
+//: Add instrument added a contract: its Algo goes to SIGNALS, its chart
+//: opens, its ladder comes forward, and the Add instrument window closes —
+//: the trader is looking at the new contract, not at the list.
+window.contractAdded = (key, name) => {
+  window.revealContract(key);
+  state.addedSetup = { key, until: Date.now() + 30000 };
+  toast('OK', 'ADDED', name + ' is on the desk — its ladder is open, Algo on SIGNALS.');
+  window.closeTool('add-instrument');
+};
+function addedSetupPending(snap) {
+  const a = state.addedSetup;
+  if (!a) return;
+  if (Date.now() > a.until) { state.addedSetup = null; return; }
+  const c = (snap.contracts || []).find((x) => x.key === a.key);
+  if (!c) return;
+  state.addedSetup = null;
+  if ((c.algo_state || 'OFF') === 'OFF') command('algo_state', a.key, { state: 'DRY' });
+  if (state.charts.indexOf(a.key) < 0) openChart(a.key);
+}
 //: A contract just added: its ladder is brought forward as soon as the
 //: engine has it — the trader should not have to go looking.
 window.revealContract = (key) => { state.reveal = { key, until: Date.now() + 30000 }; };
@@ -3926,6 +3949,8 @@ function renderAddMenu() {
     b.onclick = () => { menu.classList.add('hidden'); open(); };
     menu.appendChild(b);
   };
+  item('Add instrument…', 'find a contract on TT and put it on the desk', '__tool__add-instrument',
+    () => openTool('/add-instrument'));
   title('Ladders');
   if (!contracts.length) {
     const n = document.createElement('div');
@@ -3952,7 +3977,7 @@ function renderAddMenu() {
   item('Analysis', 'the touch study, costs, journal, replay', '__analysis__',
     () => openWindow('__analysis__'));
   title('Program');
-  Object.keys(TOOLS).forEach((name) => item(TOOLS[name].title, TOOLS[name].note,
+  Object.keys(TOOLS).filter((n) => n !== 'add-instrument').forEach((name) => item(TOOLS[name].title, TOOLS[name].note,
     '__tool__' + name, () => openTool(TOOLS[name].url)));
 }
 

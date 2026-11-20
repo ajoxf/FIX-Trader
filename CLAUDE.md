@@ -162,13 +162,17 @@ the drawing wins.
   in `?embed=1` (no navigation of its own; a link inside it opens that
   page's window), never a second implementation. The look is ported from
   the MT5 desk's `ladder.css`; the bid is blue, the ask red, everywhere.
-- **A contract is PICKED from TT, not typed, in ONE step**: the Instruments
-  explorer (exchange · type · product · instrument, TT's own catalogue; from
-  Exchanges' "Pick from TT" it opens with `?explore=algo`) — "Add to the
-  desk" SAVES the contract from TT's definition (Security ID, tick, tick
-  value) on the one venue, the running engine takes it, and the desk brings
-  its ladder forward (`revealContract`). With more than one venue the form
-  opens (`prefill`) for the trader to choose. One explorer, never a second.
+- **A contract is PICKED from TT, not typed, in ONE step — the Add
+  instrument window** (`/add-instrument`, the + menu's first item, and
+  Exchanges' "Pick from TT"): Exchange · Type · Product · Expiry, Search TT,
+  TT's answer as a list (name, structure, description, expiry, Security ID,
+  tick, tick value), and Add on each row. Add SAVES the contract from TT's
+  definition on the one venue (more than one: the form opens, `prefill`),
+  the running engine takes it, its Algo goes to SIGNALS, its chart opens,
+  its ladder comes forward and the window closes (`contractAdded`). A row
+  already on the desk says On desk ✓. One explorer, never a second: the old
+  Instruments page is the "Order ticket (advanced)" and its Add instrument
+  button opens this window.
 - **Window places from another layout or screen are not trusted**
   (`placeOnDesk`, `LAYOUT_VERSION`): a place off the desk, or a size that
   does not fit, is dropped and the window opens where a new one would.

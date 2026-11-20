@@ -138,10 +138,11 @@ def test_the_instruments_window_on_the_desk_pulls_them(desk):
 
 
 def test_a_contract_is_added_to_the_desk_in_one_step_and_its_ladder_appears(desk):
-    """Exchanges -> Pick from TT -> exchange, type, product, instrument ->
-    Add to the desk: the contract is SAVED from TT's own definition, the
-    RUNNING engine takes it (no restart), the explorer's window closes and
-    the new ladder comes forward on the desk with TT's prices on it."""
+    """+ -> Add instrument -> CME, Spread, CL -> Search TT -> Add: the
+    contract is SAVED from TT's own definition, the RUNNING engine takes it
+    (no restart), its Algo goes to SIGNALS, its chart opens, its ladder comes
+    forward with TT's prices on it, and the Add instrument window closes. A
+    contract already on the desk says so instead of offering Add."""
     pw = pytest.importorskip('playwright.sync_api')
     from werkzeug.serving import make_server
     from tests.test_ui_browser import _launch
@@ -155,20 +156,18 @@ def test_a_contract_is_added_to_the_desk_in_one_step_and_its_ladder_appears(desk
             page.on('pageerror', lambda e: errors.append(str(e)))
             page.goto(f'http://127.0.0.1:{srv.server_port}/', wait_until='domcontentloaded')
             page.wait_for_selector('.win.ladderwin', timeout=10000)
-            page.click('#open-exchanges')
-            ex = page.frame_locator('.win.toolwin[data-tool="exchanges"] iframe')
-            ex.locator('#pick-contract').click()
-            inst = page.frame_locator('.win.toolwin[data-tool="instruments"] iframe')
-            inst.locator('#explore-dialog[open]').wait_for(timeout=10000)
-            assert inst.locator('#explore-algo').is_disabled()       # nothing picked yet
-            inst.locator('#explore-exchange-input').fill('CME')
-            inst.locator('#explore-type').select_option('MLEG')
-            inst.locator('#explore-product-input').fill('CL')
-            inst.locator('#explore-search').click()
-            inst.locator('#explore-contract option[value="CL2"]').wait_for(state='attached', timeout=15000)
-            inst.locator('#explore-contract').select_option('CL2')
-            inst.locator('#explore-algo').click()
-            # Saved from TT's definition — nothing typed.
+            page.click('#add-panel')
+            page.click('#add-menu [data-panel="__tool__add-instrument"]')
+            ai = page.frame_locator('.win.toolwin[data-tool="add-instrument"] iframe')
+            ai.locator('#ai-product').wait_for(timeout=10000)
+            ai.locator('#ai-exchange').select_option('CME')
+            ai.locator('#ai-type').select_option('MLEG')
+            ai.locator('#ai-product').fill('CL')
+            ai.locator('#ai-search').click()
+            ai.locator('#ai-rows tr:has-text("CL2") button.add').wait_for(timeout=15000)
+            # CL1 is already on the desk: it says so, and offers no Add.
+            assert 'On desk' in ai.locator('#ai-rows tr:has-text("CL1") button').inner_text()
+            ai.locator('#ai-rows tr:has-text("CL2") button.add').click()
             deadline = time.monotonic() + 15
             saved = None
             while time.monotonic() < deadline and saved is None:
@@ -177,17 +176,21 @@ def test_a_contract_is_added_to_the_desk_in_one_step_and_its_ladder_appears(desk
                 time.sleep(0.2)
             assert saved and saved['symbol'] == 'CL' and saved['venue'] == 'TT-UAT'
             assert float(saved['tick_size']) > 0
-            # The running engine took it: its ladder is on the desk, with prices.
             key = saved['key']
             page.wait_for_selector(f'.win.ladderwin[data-key="__ladder__{key}"]', timeout=20000)
             page.wait_for_function(
                 "(k) => (document.querySelector('.win[data-key=\"__ladder__' + k + '\"] .ld-bk-bid') || {}).textContent === '85.10'",
                 arg=key, timeout=20000)
-            # The explorer opened from Exchanges closed itself.
+            page.wait_for_selector(f'.win.chartwin[data-key="__chart__{key}"]', timeout=15000)
             page.wait_for_function(
-                "() => !document.querySelector('.win.toolwin[data-tool=\"instruments\"]')", timeout=5000)
-            snap = desk.d.snapshot()
-            assert key not in ' '.join(snap['engine'].get('config_restart_needed') or [])
+                "() => !document.querySelector('.win.toolwin[data-tool=\"add-instrument\"]')", timeout=5000)
+            deadline = time.monotonic() + 10
+            state = None
+            while time.monotonic() < deadline and state != 'DRY':
+                c = next((c for c in desk.d.snapshot()['contracts'] if c['key'] == key), {})
+                state = c.get('algo_state')
+                time.sleep(0.2)
+            assert state == 'DRY'                      # SIGNALS: nothing is sent
             assert errors == []
             browser.close()
     finally:

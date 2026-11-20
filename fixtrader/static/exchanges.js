@@ -340,7 +340,7 @@ document.getElementById('new-contract').onclick = () => showContract(null);
    choice comes back here as a filled form (prefillFromExplorer). One
    explorer, never a second one. */
 function pickFromTT() {
-  const href = '/instruments?explore=algo';
+  const href = '/add-instrument';
   if (window.parent !== window && window.parent.openTool) window.parent.openTool(href);
   else window.location.href = href;
 }

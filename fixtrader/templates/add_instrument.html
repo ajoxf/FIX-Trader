@@ -1,0 +1,38 @@
+{% extends "_page.html" %}
+{% block title %}Add instrument · Nexus FIX{% endblock %}
+{% block heading %}Add instrument{% endblock %}
+{% block crumb %}find a contract on TT and put it on the desk{% endblock %}
+
+{% block content %}
+<!-- ONE place to add a contract: choose the exchange, the type and the
+     product, ask TT, and Add the row wanted. The contract is saved from TT's
+     own definition (Security ID, tick, tick value) — nothing typed — and its
+     ladder comes onto the desk with its Algo on SIGNALS and its chart open. -->
+<section class="ai">
+  <div class="ai-bar">
+    <label>Exchange<select id="ai-exchange"></select></label>
+    <label>Type<select id="ai-type">
+      <option value="MLEG">Spread</option><option value="FUT">Future</option>
+      <option value="OPT">Option</option><option value="CS">Stock</option>
+      <option value="FOR">Forward</option><option value="SPOT">Spot</option>
+    </select></label>
+    <label>Product<input id="ai-product" list="ai-products" placeholder="CL, BZ, CL|BZ" autocomplete="off"></label>
+    <datalist id="ai-products"></datalist>
+    <label>Expiry<select id="ai-expiry"><option value="">Any</option></select></label>
+    <button type="button" id="ai-search" class="btn pri">Search TT</button>
+    <label class="ai-filter">Filter results<input id="ai-filter" placeholder="Jan27, Calendar…" autocomplete="off"></label>
+  </div>
+  <div id="ai-status" class="ai-status">Choose the exchange, the type and the product, then <b>Search TT</b>.</div>
+  <div class="ai-table">
+    <table class="grid ai-results">
+      <thead><tr><th>Instrument</th><th>Structure</th><th>Description</th><th>Expiry</th><th>TT Security ID</th><th class="r">Tick</th><th class="r">Tick value</th><th></th></tr></thead>
+      <tbody id="ai-rows"></tbody>
+    </table>
+  </div>
+  <div class="ai-foot">Every row is TT's own definition — Security ID, tick, tick value — nothing is typed. <b>Add</b> puts it on the desk: its ladder opens, its Algo on <b>SIGNALS</b>, its chart beside it. A contract already on the desk says <b>On desk ✓</b>.</div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='add_instrument.js') }}?v={{ asset_version }}"></script>
+{% endblock %}
