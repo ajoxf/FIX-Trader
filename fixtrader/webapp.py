@@ -12,6 +12,7 @@ the real one.
 """
 
 import logging
+import sys
 import re
 import os
 import io
@@ -1208,6 +1209,7 @@ def main(argv=None) -> int:
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [web] %(message)s",
+                        stream=sys.stdout,  # stderr reaches PowerShell 5.1 as error records, a blank line after each
                         datefmt="%H:%M:%S")
     quiet_access_log()
     app = create_app(args.config, args.status, args.commands, args.results)

@@ -197,6 +197,29 @@ def test_a_recording_already_in_trader_units_is_left_alone(tmp_path):
     assert db.samples_between('fef')[0][1] == 90.5
 
 
+def test_units_already_matching_keep_the_band_loaded_at_startup(tmp_path):
+    """Nothing to rescale means nothing to rebuild: the band and touch
+    study loaded at startup stand, rather than being read — and logged — a
+    second time the moment TT's factor arrives. The control: a factor that
+    does move the recording rebuilds them."""
+    from decimal import Decimal
+    from tests.test_engine_signal import build
+
+    engine, gw, db = build(tmp_path)
+    rt = engine.runtimes['fef']
+    rt.contract.security_id = 'CL1'
+    db.rescale_prices('fef', 1.0, 0.01)
+    factor = {'value': Decimal('0.01')}
+    gw.terminal = SimpleNamespace(price_factor=lambda sid: factor['value'],
+                                  open_business=lambda sid: [])
+    algo, window = rt.algo, rt.window
+    engine.poll(now=gw.now)
+    assert rt.algo is algo and rt.window is window and rt.units_seen == 0.01
+    factor['value'] = Decimal('0.1')                 # the control
+    engine.poll(now=gw.now)
+    assert rt.algo is not algo and rt.units_seen == 0.1
+
+
 def test_the_tick_is_tts_tick_times_the_factor_even_when_16552_is_in_fix_units(terminal):
     """ES on TT UAT: 969=25, 16552=25, 9787=0.01. The tick a trader prices in
     is 0.25 — read as 25, every price but whole hundreds was refused."""

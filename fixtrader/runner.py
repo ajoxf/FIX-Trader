@@ -294,6 +294,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s [engine] %(message)s",
+                        stream=sys.stdout,  # stderr reaches PowerShell 5.1 as error records, a blank line after each
                         datefmt="%H:%M:%S")
     run(args.config, args.status, args.commands, args.results, args.simulated)
     return 0

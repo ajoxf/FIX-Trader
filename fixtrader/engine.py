@@ -472,6 +472,12 @@ class Engine:
             return True
         stored = self.db.price_unit(key) if self.db is not None else None
         ratio = factor / (stored if stored else 1.0)
+        if stored is not None and abs(ratio - 1.0) <= 1e-12:
+            # The recording is in these units already: nothing to rescale,
+            # and the band and touch study loaded at startup stand as they
+            # are — rebuilt here they were read (and logged) a second time.
+            rt.units_seen = factor
+            return True
         if self.db is not None and (stored is None or abs(ratio - 1.0) > 1e-12):
             n = self.db.rescale_prices(key, ratio, factor)
             if n and abs(ratio - 1.0) > 1e-12:     # nothing moved: nothing to say

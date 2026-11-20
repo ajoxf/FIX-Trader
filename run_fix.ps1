@@ -21,6 +21,12 @@ if (-not $python) {
 }
 
 $env:PYTHONUNBUFFERED = '1'
+# One encoding end to end. Through the pipe below Python wrote its text in
+# the Windows ANSI code page and PowerShell read it in the console's OEM one:
+# every dash in the log came out as a stray letter. UTF-8 both ways.
+$env:PYTHONIOENCODING = 'utf-8'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+$OutputEncoding = [Console]::OutputEncoding
 # Python's logging writes to STDERR. Under Windows PowerShell 5.1, a native
 # command's stderr merged with 2>&1 arrives as an ErrorRecord, and with
 # $ErrorActionPreference = 'Stop' the FIRST such line - Flask's development
